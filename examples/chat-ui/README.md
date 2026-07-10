@@ -70,7 +70,7 @@ pnpm dev
 
 # this dir — SPA on :5173, /api → :8787
 cd examples/chat-ui
-pnpm install
+pnpm install --ignore-workspace   # standalone project; the flag keeps the install out of the repo's pnpm workspace
 pnpm dev
 ```
 
