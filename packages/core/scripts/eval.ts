@@ -157,7 +157,11 @@ function saveBaseline(path: string, data: Baseline): void {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
 }
 
-async function runOnce(args: Args, datasetName: string, token?: string): Promise<RunSummary | null> {
+async function runOnce(
+  args: Args,
+  datasetName: string,
+  token?: string,
+): Promise<RunSummary | null> {
   const url = `${args.baseUrl.replace(/\/$/, '')}/eval/datasets/${encodeURIComponent(
     datasetName,
   )}/run`;
@@ -190,7 +194,11 @@ async function runOnce(args: Args, datasetName: string, token?: string): Promise
     );
     if (detailResp.ok) {
       const detail = (await detailResp.json()) as {
-        scores: Array<{ tokens_input?: number | null; tokens_output?: number | null; tool_call_count?: number | null }>;
+        scores: Array<{
+          tokens_input?: number | null;
+          tokens_output?: number | null;
+          tool_call_count?: number | null;
+        }>;
       };
       const tokenSum = detail.scores.reduce(
         (acc, s) => acc + (s.tokens_input ?? 0) + (s.tokens_output ?? 0),
@@ -285,13 +293,17 @@ async function main(): Promise<number> {
       return 1;
     }
     console.log(
-      JSON.stringify({
-        dataset: advDataset,
-        candidate: args.candidate,
-        pass_rate: advSummary.pass_rate,
-        floor: args.adversarialFloor,
-        passed: advSummary.pass_rate >= args.adversarialFloor,
-      }, null, 2),
+      JSON.stringify(
+        {
+          dataset: advDataset,
+          candidate: args.candidate,
+          pass_rate: advSummary.pass_rate,
+          floor: args.adversarialFloor,
+          passed: advSummary.pass_rate >= args.adversarialFloor,
+        },
+        null,
+        2,
+      ),
     );
     if (advSummary.pass_rate < args.adversarialFloor) {
       console.error(

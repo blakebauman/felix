@@ -1,0 +1,92 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/block-generated.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/stale-bundle-reminder.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-sync-reminder.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-drift-stop.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm build)",
+      "Bash(pnpm build:manifests)",
+      "Bash(pnpm build:docs)",
+      "Bash(pnpm test)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm lint:fix)",
+      "Bash(pnpm format)",
+      "Bash(pnpm migrate:local)",
+      "Bash(pnpm tsx scripts/mint-jwt.ts *)",
+      "Bash(wrangler d1 migrations list *)",
+      "Bash(wrangler d1 execute * --local *)"
+    ],
+    "ask": [
+      "Bash(pnpm deploy)",
+      "Bash(pnpm deploy:staging)",
+      "Bash(pnpm migrate:staging)",
+      "Bash(pnpm migrate:production)",
+      "Bash(pnpm run deploy*)",
+      "Bash(pnpm run migrate:staging)",
+      "Bash(pnpm run migrate:production)",
+      "Bash(wrangler deploy *)",
+      "Bash(wrangler d1 migrations apply * --remote*)",
+      "Bash(wrangler secret *)",
+      "Bash(pnpm setup:vectorize:*)",
+      "Bash(pnpm eval*)"
+    ],
+    "deny": [
+      "Read(./.secrets/**)",
+      "Read(./.dev.vars)",
+      "Read(./.dev.vars.*)"
+    ]
+  }
+}

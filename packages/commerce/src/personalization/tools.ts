@@ -83,7 +83,7 @@ export function recommendProductsTool(): Tool {
       for (const id of ranked) {
         if (out.length >= max) break;
         const p = await getProduct(c.env, c.tenantId, id);
-        if (!p || !p.active || p.inventory === 0) continue;
+        if (!p?.active || p.inventory === 0) continue;
         out.push({
           id: p.id,
           title: p.title,

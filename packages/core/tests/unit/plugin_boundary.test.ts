@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SRC = path.join(ROOT, 'src');
-const PKG = path.join(ROOT, 'packages', 'commerce');
+const PKG = path.resolve(ROOT, '..', 'commerce');
 const WIRING_ROOT = path.join(SRC, 'composition.ts');
 
 function* walk(dir: string): Generator<string> {

@@ -1,53 +1,38 @@
 {
-  "name": "@felix/orchestrator",
+  "name": "felix-workspace",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Workers version of the Felix orchestrator (manifest-driven agent runtime with strict A2A/MCP/OpenAI parity)",
+  "description": "Felix workspace root — the orchestrator app lives in packages/core, feature plugins in packages/*",
   "type": "module",
-  "exports": {
-    "./*": "./src/*.ts"
-  },
   "scripts": {
-    "build:manifests": "tsx scripts/bundle-manifests.ts",
-    "build:docs": "tsx scripts/bundle-docs.ts",
-    "build": "pnpm build:manifests && pnpm build:docs",
-    "dev": "pnpm build:manifests && pnpm build:docs && wrangler dev",
-    "dev:remote": "pnpm build:manifests && pnpm build:docs && wrangler dev --remote",
-    "deploy": "pnpm build:manifests && pnpm build:docs && wrangler deploy --env production",
-    "deploy:staging": "pnpm build:manifests && pnpm build:docs && wrangler deploy --env staging",
+    "build:manifests": "pnpm --filter @felix/orchestrator build:manifests",
+    "build:docs": "pnpm --filter @felix/orchestrator build:docs",
+    "build": "pnpm --filter @felix/orchestrator build",
+    "dev": "pnpm --filter @felix/orchestrator dev",
+    "dev:remote": "pnpm --filter @felix/orchestrator dev:remote",
+    "deploy": "pnpm --filter @felix/orchestrator deploy",
+    "deploy:staging": "pnpm --filter @felix/orchestrator deploy:staging",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src tests packages",
-    "lint:fix": "biome check --write src tests packages",
-    "format": "biome format --write src tests packages",
-    "migrate:local": "wrangler d1 migrations apply orchestrator --local",
-    "migrate:staging": "wrangler d1 migrations apply orchestrator-staging --remote --env staging",
-    "migrate:production": "wrangler d1 migrations apply orchestrator-prod --remote --env production",
-    "setup:vectorize:staging": "bash scripts/setup-vectorize.sh felix-memory-staging",
-    "setup:vectorize:production": "bash scripts/setup-vectorize.sh felix-memory-prod",
-    "eval": "tsx scripts/eval.ts"
-  },
-  "dependencies": {
-    "@felix/commerce": "workspace:*",
-    "@hono/zod-openapi": "^1.4.0",
-    "@scalar/hono-api-reference": "^0.10.14",
-    "hono": "^4.12.18",
-    "jose": "^6.2.3",
-    "zod": "^4.4.3"
+    "lint": "biome check packages",
+    "lint:fix": "biome check --write packages",
+    "format": "biome format --write packages",
+    "migrate:local": "pnpm --filter @felix/orchestrator migrate:local",
+    "migrate:staging": "pnpm --filter @felix/orchestrator migrate:staging",
+    "migrate:production": "pnpm --filter @felix/orchestrator migrate:production",
+    "setup:vectorize:staging": "pnpm --filter @felix/orchestrator setup:vectorize:staging",
+    "setup:vectorize:production": "pnpm --filter @felix/orchestrator setup:vectorize:production",
+    "eval": "pnpm --filter @felix/orchestrator eval"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
     "@cloudflare/vitest-pool-workers": "^0.16.4",
     "@cloudflare/workers-types": "^4.20260511.1",
     "@types/node": "^25.7.0",
-    "marked": "^16.4.2",
-    "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.12",
-    "vitest": "^4.1.6",
-    "wrangler": "^4.90.1",
-    "yaml": "^2.9.0"
+    "vitest": "^4.1.6"
   },
   "engines": {
     "node": ">=20"
