@@ -1,0 +1,39 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: python-sandbox-demo
+  version: 1.0.0
+  description: Demonstrates the container-backed tool transport.
+spec:
+  pattern: react
+  model:
+    id: claude-sonnet-4
+    temperature: 0
+  system_prompt:
+    inline: |
+      You answer Python questions by running short snippets through the
+      python_runner tool. Always use the tool — don't try to evaluate
+      Python expressions yourself. Show the user the tool output verbatim.
+  containers:
+    - name: python_runner
+      description: Run a short Python snippet and return stdout.
+      gateway_url: https://sandbox.example.com/run   # replace with your gateway
+      image: ghcr.io/yourorg/python-sandbox:latest
+      timeout_ms: 10000
+      args_schema:
+        type: object
+        required: [code]
+        additionalProperties: false
+        properties:
+          code:
+            type: string
+            description: A short Python program. Print results with print().
+  memory:
+    checkpointer: do
+    store: none
+  limits:
+    max_tool_calls: 5
+    max_wall_clock_seconds: 30
+  auth:
+    inbound:
+      allow_anonymous: true

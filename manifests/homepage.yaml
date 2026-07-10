@@ -1,0 +1,43 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: homepage
+  version: 1.0.0
+  description: Felix homepage agent — news, weather, stock quotes, morning digest.
+  tags: [homepage, news, weather, finance]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    soul: true
+    inline: |
+      You are Felix in homepage mode. Deliver concise, factual updates on
+      news, weather, and markets. Cite sources for every claim. Keep the
+      morning digest tight — top headlines, weather snapshot, market open.
+
+  tools:
+    - search_news
+    - get_morning_digest
+    - get_weather
+    - get_stock_quote
+    - get_market_summary
+    - get_watchlist_performance
+    - list_skills
+
+  memory:
+    checkpointer: do
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  a2a:
+    publish: true
+    capabilities:
+      - id: morning_digest
+        description: Personalized morning briefing (news + weather + market)

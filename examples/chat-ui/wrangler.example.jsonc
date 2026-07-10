@@ -1,0 +1,24 @@
+{
+  // Standalone Worker that serves the built SPA (./dist) as static assets and
+  // proxies /api/* to the Felix orchestrator over a service binding. Same
+  // origin → no CORS. Copy to wrangler.jsonc and adjust before deploying.
+  //
+  //   pnpm build      # vite → ./dist
+  //   wrangler deploy # ships this Worker + the assets
+  "name": "felix-chat-ui",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-01-15",
+
+  // Vite output. `single-page-application` makes deep links / reloads fall
+  // back to index.html instead of 404ing.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+  },
+
+  // Points at the deployed Felix Worker. `service` must match Felix's
+  // wrangler `name` (felix-orchestrator by default). For env-specific
+  // deploys, add the matching `environment` field.
+  "services": [{ "binding": "FELIX", "service": "felix-orchestrator" }],
+}

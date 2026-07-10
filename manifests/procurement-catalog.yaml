@@ -1,0 +1,32 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: procurement-catalog
+  version: 1.0.0
+  description: Procurement sub-agent — finds products and account context.
+  tags: [b2b, procurement, catalog]
+
+spec:
+  pattern: react
+  model:
+    temperature: 0
+  system_prompt:
+    inline: |
+      You are the catalog specialist for a B2B procurement assistant. Find
+      products with catalog_search / catalog_get and look up the buyer's account
+      context with account_get / buyer_get. Report SKUs, prices (in cents), and
+      stock plainly so the quoting specialist can build a quote. Do not invent
+      products or prices.
+  tools:
+    - catalog_search
+    - catalog_get
+    - catalog_categories
+    - price_lookup
+    - account_get
+    - buyer_get
+  memory:
+    checkpointer: do
+    store: none
+  auth:
+    inbound:
+      allow_anonymous: true

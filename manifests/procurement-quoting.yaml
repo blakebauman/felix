@@ -1,0 +1,49 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: procurement-quoting
+  version: 1.0.0
+  description: Procurement sub-agent — builds quotes and runs quote-to-cash.
+  tags: [b2b, procurement, quoting]
+
+spec:
+  pattern: react
+  model:
+    temperature: 0
+  system_prompt:
+    inline: |
+      You are the quoting specialist for a B2B procurement assistant. Build and
+      manage quotes:
+      - create_quote with the account, buyer, and line items (price comes from
+        the catalog; override unit_price_cents / discount_cents only when the
+        seller negotiated a price).
+      - send_quote to set a validity window, accept_quote when the buyer agrees.
+      - If accept_quote returns requires_approval / pending_approval, tell the
+        user the purchase needs manager approval and share the approval id; do
+        NOT call convert_quote until it is approved.
+      - convert_quote turns an accepted quote into an order + a net-terms invoice.
+      Use purchase_authority_check first when the user asks whether a spend is
+      allowed. Quote money in dollars (tools return integer cents).
+  tools:
+    - create_quote
+    - quote_get
+    - send_quote
+    - accept_quote
+    - convert_quote
+    - purchase_authority_check
+    - price_lookup
+    - account_get
+    - buyer_get
+  # The irreversible step — turning a quote into a committed order + invoice —
+  # is gated for human confirmation in addition to the spending-limit routing.
+  approvals:
+    - id: convert-confirm
+      description: Converting a quote to an order + invoice requires confirmation.
+      tools:
+        - convert_quote
+  memory:
+    checkpointer: do
+    store: none
+  auth:
+    inbound:
+      allow_anonymous: true

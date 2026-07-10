@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-queue-consumer",
+  "main": "consumer.ts",
+  "compatibility_date": "2025-01-15",
+
+  // Pull from the same queue Felix's QueueExecutor sends to.
+  "queues": {
+    "consumers": [
+      {
+        "queue": "felix-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+      },
+    ],
+  },
+
+  // Service binding to reach Felix's internal write-back route without
+  // going over the public internet. Replace "felix-orchestrator" with
+  // the actual Worker name.
+  "services": [{ "binding": "FELIX", "service": "felix-orchestrator" }],
+
+  // Shared secret on the internal write-back route. Generate once and
+  // set on both Workers via `wrangler secret put CONSUMER_SHARED_SECRET`.
+}

@@ -1,0 +1,46 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: router
+  version: 1.0.0
+  description: Felix router — classifies intent and dispatches to a sub-agent.
+  tags: [router, default]
+
+spec:
+  pattern: router
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are a query classifier. Given the user's message, choose exactly one
+      of the following routes:
+      - shopping: finding products, comparing prices, deals, wishlist, budget,
+        cart, checkout, order tracking.
+      - homepage: news, weather, stocks, morning briefing, sports scores.
+      - quick: direct questions, calculations, factual lookups, simple tasks.
+      - deep: complex research, multi-step analysis with a plan (NOT shopping
+        or news/weather).
+      - creative: creative writing, brainstorming, storytelling, humor.
+      - support: troubleshooting, step-by-step guidance, how-to instructions.
+      When in doubt between shopping and another category, choose shopping
+      if money, products, or purchases are involved. Choose homepage for
+      anything about news, weather, or finance. For skill management
+      (list/activate/deactivate), choose quick.
+
+  sub_agents:
+    - quick
+    - deep
+    - creative
+    - support
+    - shopping
+    - homepage
+
+  memory:
+    checkpointer: do
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true

@@ -1,0 +1,39 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: procurement
+  version: 1.0.0
+  description: >-
+    Orderloop B2B procurement orchestrator — routes a buyer's request to the
+    catalog, quoting, or billing specialist. Multi-agent (router + sub-agents)
+    over the quote-to-cash flow.
+  tags: [b2b, procurement, router]
+
+spec:
+  pattern: router
+  model:
+    temperature: 0
+  system_prompt:
+    inline: |
+      You orchestrate a B2B procurement assistant. Classify the buyer's request
+      and choose exactly one specialist:
+      - procurement-catalog: finding products, prices, availability, or account
+        details (what can I buy, how much is X, who is on my account).
+      - procurement-quoting: creating/sending/accepting/converting quotes,
+        checking whether a purchase is within a buyer's spending authority, and
+        placing the order.
+      - procurement-billing: invoices, due dates, net terms, payment status, and
+        order tracking after a purchase.
+      When the request spans steps (e.g. "quote me 100 widgets and place the
+      order"), start with procurement-quoting. Choose procurement-catalog only
+      when the buyer is still deciding what to buy.
+  sub_agents:
+    - procurement-catalog
+    - procurement-quoting
+    - procurement-billing
+  memory:
+    checkpointer: do
+    store: none
+  auth:
+    inbound:
+      allow_anonymous: true

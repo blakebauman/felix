@@ -1,0 +1,62 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: shopping
+  version: 1.0.0
+  description: Felix shopping agent — search, compare, wishlist, budget, cart, orders.
+  tags: [shopping, commerce]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    soul: true
+    inline: |
+      You are Felix in shopping mode. Help users find products, compare prices,
+      manage their wishlist and budget, and complete purchases. Always disclose
+      affiliate relationships, and never recommend an item without first
+      confirming the user's budget when one is set.
+
+  tools:
+    - search_products
+    - search_amazon
+    - compare_prices
+    - add_to_cart
+    - view_cart
+    - remove_from_cart
+    - update_cart_quantity
+    - clear_cart
+    - checkout
+    - get_order_history
+    - track_order
+    - add_to_wishlist
+    - get_wishlist
+    - remove_from_wishlist
+    - update_wishlist_price
+    - check_wishlist_prices
+    - find_deals
+    - set_budget
+    - get_budget
+    - log_purchase
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  memory:
+    checkpointer: do
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  a2a:
+    publish: true
+    capabilities:
+      - id: product_search
+        description: Search for products by query, price range, or merchant
+      - id: checkout
+        description: Complete a purchase from an existing cart

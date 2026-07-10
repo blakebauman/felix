@@ -1,0 +1,63 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: chat-ui-demo
+  version: 1.0.0
+  description: >-
+    Demo agent for the chat-ui example. Exercises the harness-parity surfaces:
+    a skill (concise-style), a calculator gated behind human approval, and an
+    on-topic judge that scores every tool result.
+  tags: [demo, chat-ui, parity]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, a helpful AI assistant with access to tools.
+      Use the calculator for any arithmetic. Always refer to yourself as
+      Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  skills:
+    - name: concise-style
+
+  # Human-in-the-loop: every calculator call is gated. The first call returns
+  # an `[approval required]` stub and persists an approval_request; after the
+  # operator decides via POST /approvals/{id}/decide, the next retry with the
+  # same arguments goes through. Surfaced live in the chat-ui Inspector.
+  approvals:
+    - id: calc-writes
+      description: Calculator calls require human approval (demo of the approvals queue).
+      tools:
+        - calculator
+
+  # Inferential sensor: scores each tool result against a free-form criteria
+  # using the native Workers-AI binding. Emits a `judge_score` audit event per
+  # call (visible in the Inspector Activity feed); below threshold it denies.
+  guardrails:
+    judges:
+      - name: on-topic
+        criteria: >-
+          The tool result should be a plausible, on-topic answer to the user's
+          request (e.g. a numeric result for an arithmetic question).
+        threshold: 0.3
+
+  memory:
+    checkpointer: do
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

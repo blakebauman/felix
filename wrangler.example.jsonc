@@ -1,0 +1,341 @@
+{
+  // Template config — copy to wrangler.jsonc and fill in your own values:
+  //   cp wrangler.example.jsonc wrangler.jsonc
+  // Replace every REPLACE_* placeholder (Cloudflare account id, D1 database
+  // ids, KV namespace ids — each `wrangler <resource> create` prints the id)
+  // and adjust the custom-domain routes to your zone. wrangler.jsonc is
+  // gitignored so account-specific ids never land in the repo.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-orchestrator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // --- Runtime limits + observability -------------------------------------
+  // cpu_ms caps active execution time per invocation (Paid plan; default 30s,
+  // max 300_000). 60s covers governance + extended-thinking + multi-tool
+  // react loops without giving runaway loops the full 5 min budget.
+  "limits": { "cpu_ms": 60000 },
+
+  // Workers Logs pipeline. head_sampling_rate of 1 (100%) is the dev/staging
+  // default; production overrides this to 0.1 to control log volume.
+  // invocation_logs adds per-request metadata to console.log output.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": true },
+  },
+
+  // Auto-upload source maps so production stack traces resolve to the
+  // original TypeScript line numbers in Workers Logs / tail.
+  "upload_source_maps": true,
+
+  // --- AI bindings --------------------------------------------------------
+  // Workers AI (native Llama/Mistral) is bound directly. External providers
+  // (Anthropic, OpenAI) are reached through AI Gateway via fetch — the
+  // gateway slug is supplied as a var so different envs route differently.
+  "ai": {
+    "binding": "AI",
+  },
+
+  "vars": {
+    "ENVIRONMENT": "development",
+    // AI Gateway slug (account-scoped, configured in CF dashboard). The
+    // orchestrator hits ${AI_GATEWAY_BASE}/${AI_GATEWAY_SLUG}/anthropic/... etc.
+    "AI_GATEWAY_SLUG": "felix-dev",
+    "AI_GATEWAY_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+    // Default model id used when a manifest's spec.model.id is empty.
+    "DEFAULT_MODEL_ID": "claude-sonnet-4",
+    // Logical model id -> AI Gateway upstream lives in DEFAULT_MODEL_ROUTES
+    // in src/env.ts. Set MODEL_ROUTES here only to override per env (canary
+    // models, region-specific routing, etc.).
+    // JWT verifier configuration. Comma-separated list of "scheme:issuer" pairs;
+    // scheme is "access" (Cloudflare Access) or "cognito". The Cognito JWKS url
+    // is derived from the issuer. Cloudflare Access JWKS lives at
+    // https://<team>.cloudflareaccess.com/cdn-cgi/access/certs.
+    "JWT_VERIFIERS": "",
+  },
+
+  // --- D1 (audit, plans, jobs, approvals, skill_activation) ---------------
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "orchestrator",
+      "database_id": "REPLACE_AFTER_wrangler_d1_create",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // --- KV (JWKS cache, outbound OAuth token cache, manifest cache) --------
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_AFTER_wrangler_kv_create",
+    },
+  ],
+
+  // --- R2 (federation policy bundles, optional manifest overrides) --------
+  "r2_buckets": [
+    {
+      "binding": "BUNDLES",
+      "bucket_name": "felix-orchestrator-bundles",
+    },
+  ],
+
+  // --- Vectorize (semantic memory store) ----------------------------------
+  "vectorize": [
+    {
+      "binding": "MEMORY_VEC",
+      "index_name": "felix-memory",
+    },
+  ],
+
+  // --- Queues (audit batching, background jobs) ---------------------------
+  // `AUDIT_QUEUE` fans audit events out to the D1-bound consumer in
+  // index.ts. Additional queue producers (e.g. `JOBS_QUEUE` for the
+  // `transport: queue` tool dispatch) go in this block alongside
+  // AUDIT_QUEUE; the consumer-side Worker is a separate deployment
+  // (see examples/queue-consumer/).
+  "queues": {
+    "producers": [
+      {
+        "binding": "AUDIT_QUEUE",
+        "queue": "felix-audit",
+      },
+      // Uncomment when wiring `spec.queues[].queue_binding: JOBS_QUEUE`.
+      // The consumer for this queue lives in a separate Worker
+      // (examples/queue-consumer/) and writes results back through
+      // /internal/sessions/:thread_id/events using CONSUMER_SHARED_SECRET.
+      // { "binding": "JOBS_QUEUE", "queue": "felix-jobs" },
+    ],
+    "consumers": [
+      {
+        "queue": "felix-audit",
+        "max_batch_size": 50,
+        "max_batch_timeout": 5,
+      },
+    ],
+  },
+
+  // --- Durable Objects ----------------------------------------------------
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONVERSATION_DO", "class_name": "ConversationDO" },
+      { "name": "A2A_TASK_DO", "class_name": "A2ATaskDO" },
+      { "name": "APPROVALS_DO", "class_name": "ApprovalsDO" },
+      { "name": "FEDERATION_DO", "class_name": "FederationDO" },
+    ],
+  },
+
+  // --- Analytics Engine (counters + histograms) ---------------------------
+  // `recordCounter` / `recordHistogram` write data points to `felix_metrics`
+  // when this binding is present. SQL API queries:
+  //   SELECT blob1 AS metric, SUM(_sample_interval * double1) AS value
+  //     FROM felix_metrics
+  //    WHERE timestamp > NOW() - INTERVAL '1' HOUR AND blob1 = 'orchestrator_tool_calls'
+  //    GROUP BY metric
+  // index1 is the manifest_id (empty when absent) so queries can slice by it.
+  "analytics_engine_datasets": [
+    { "binding": "METRICS", "dataset": "felix_metrics" },
+  ],
+
+  // --- Workflows (durable agent execution) --------------------------------
+  // `spec.execution.mode: durable` on a manifest routes through this
+  // binding: every invocation becomes a Workflow instance that survives
+  // worker evictions and replays from its last completed step. The
+  // entrypoint class is `AgentWorkflow`, re-exported from src/index.ts.
+  "workflows": [
+    {
+      "name": "agent-workflow",
+      "binding": "AGENT_WORKFLOW",
+      "class_name": "AgentWorkflow",
+    },
+  ],
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "ConversationDO",
+        "A2ATaskDO",
+        "ApprovalsDO",
+        "FederationDO",
+      ],
+    },
+  ],
+
+  // --- Cron Triggers (federation refresh, jobs) ---------------------------
+  "triggers": {
+    "crons": ["*/10 * * * *"],
+  },
+
+  // --- Per-tenant rate limit ----------------------------------------------
+  // Sliding-window limiter keyed by the authenticated principal's tenantId.
+  // Anonymous traffic shares the `default` bucket. 100 requests per 60s is
+  // generous for chat-style workloads and cheap management reads (audit/plans
+  // list) but caps a runaway tenant before it dominates AI Gateway spend.
+  // Adjust per env via `wrangler.jsonc` overrides; bind name stays stable.
+  "ratelimits": [
+    {
+      "name": "TENANT_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 100, "period": 60 },
+    },
+  ],
+
+  // --- Per-env overrides --------------------------------------------------
+  // Top-level bindings (D1, KV, R2, Queues) above are the dev defaults; the
+  // staging/production blocks override them with isolated resources so the
+  // two envs never share state. Custom domains route felix.run subdomains
+  // to the right worker; Cloudflare provisions certs automatically on the
+  // first deploy.
+  "env": {
+    "staging": {
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "AI_GATEWAY_SLUG": "felix-staging",
+        "AI_GATEWAY_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+        "DEFAULT_MODEL_ID": "claude-sonnet-4",
+        // Self-issued issuer: the worker serves its own JWKS at
+        // /.well-known/jwks.json (set the JWKS_PUBLIC secret). Tokens are
+        // minted with the matching private key (scripts/mint-jwt.ts) for
+        // staging write-testing without a third-party IdP.
+        "JWT_VERIFIERS": "cognito https://staging-make.felix.run",
+      },
+      "ai": { "binding": "AI" },
+      // Smart Placement: move the isolate closer to the dominant back-end
+      // fan-out (AI Gateway + D1 + Vectorize). Needs steady traffic from
+      // multiple locations to take effect; can take ~15 min to settle after
+      // a deploy.
+      "placement": { "mode": "smart" },
+      "routes": [{ "pattern": "staging-make.felix.run", "custom_domain": true }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "orchestrator-staging",
+          "database_id": "REPLACE_AFTER_wrangler_d1_create",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
+      "r2_buckets": [
+        { "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-staging" },
+      ],
+      "vectorize": [{ "binding": "MEMORY_VEC", "index_name": "felix-memory-staging" }],
+      "queues": {
+        "producers": [{ "binding": "AUDIT_QUEUE", "queue": "felix-audit-staging" }],
+        "consumers": [
+          {
+            "queue": "felix-audit-staging",
+            "max_batch_size": 50,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "felix-audit-dlq-staging",
+          },
+        ],
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "CONVERSATION_DO", "class_name": "ConversationDO" },
+          { "name": "A2A_TASK_DO", "class_name": "A2ATaskDO" },
+          { "name": "APPROVALS_DO", "class_name": "ApprovalsDO" },
+          { "name": "FEDERATION_DO", "class_name": "FederationDO" },
+        ],
+      },
+      "analytics_engine_datasets": [
+        { "binding": "METRICS", "dataset": "felix_metrics_staging" },
+      ],
+      "workflows": [
+        {
+          "name": "agent-workflow-staging",
+          "binding": "AGENT_WORKFLOW",
+          "class_name": "AgentWorkflow",
+        },
+      ],
+      "ratelimits": [
+        {
+          "name": "TENANT_RATE_LIMIT",
+          "namespace_id": "1001",
+          "simple": { "limit": 100, "period": 60 },
+        },
+      ],
+    },
+    "production": {
+      "vars": {
+        "ENVIRONMENT": "production",
+        "AI_GATEWAY_SLUG": "felix-prod",
+        "AI_GATEWAY_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+        "DEFAULT_MODEL_ID": "claude-sonnet-4",
+        // Inbound auth MUST be configured in production — an empty value fails
+        // closed for bearer tokens but leaves every request anonymous (tenant
+        // `default`), collapsing multi-tenant isolation. This mirrors staging's
+        // self-issued issuer (worker serves its own JWKS at
+        // /.well-known/jwks.json; set the JWKS_PUBLIC secret). Replace the
+        // issuer/audience if production authenticates against a real IdP
+        // (e.g. `cognito https://cognito-idp.<region>.amazonaws.com/<pool> <aud>`).
+        "JWT_VERIFIERS": "cognito https://make.felix.run",
+      },
+      "ai": { "binding": "AI" },
+      "placement": { "mode": "smart" },
+      // Sample 10% of invocations in production; the top-level block keeps
+      // dev/staging at 100%. Adjust upward if Workers Logs visibility drops
+      // below what alerting needs.
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 0.1,
+        "logs": { "invocation_logs": true },
+      },
+      "routes": [{ "pattern": "make.felix.run", "custom_domain": true }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "orchestrator-prod",
+          "database_id": "REPLACE_AFTER_wrangler_d1_create",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
+      "r2_buckets": [
+        { "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-prod" },
+      ],
+      "vectorize": [{ "binding": "MEMORY_VEC", "index_name": "felix-memory-prod" }],
+      "queues": {
+        "producers": [{ "binding": "AUDIT_QUEUE", "queue": "felix-audit-prod" }],
+        "consumers": [
+          {
+            "queue": "felix-audit-prod",
+            "max_batch_size": 50,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "felix-audit-dlq-prod",
+          },
+        ],
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "CONVERSATION_DO", "class_name": "ConversationDO" },
+          { "name": "A2A_TASK_DO", "class_name": "A2ATaskDO" },
+          { "name": "APPROVALS_DO", "class_name": "ApprovalsDO" },
+          { "name": "FEDERATION_DO", "class_name": "FederationDO" },
+        ],
+      },
+      "analytics_engine_datasets": [
+        { "binding": "METRICS", "dataset": "felix_metrics_prod" },
+      ],
+      "workflows": [
+        {
+          "name": "agent-workflow-prod",
+          "binding": "AGENT_WORKFLOW",
+          "class_name": "AgentWorkflow",
+        },
+      ],
+      "ratelimits": [
+        {
+          "name": "TENANT_RATE_LIMIT",
+          "namespace_id": "1001",
+          "simple": { "limit": 100, "period": 60 },
+        },
+      ],
+    },
+  },
+}

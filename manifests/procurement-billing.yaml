@@ -1,0 +1,33 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: procurement-billing
+  version: 1.0.0
+  description: Procurement sub-agent — invoices and order tracking.
+  tags: [b2b, procurement, billing]
+
+spec:
+  pattern: react
+  model:
+    temperature: 0
+  system_prompt:
+    inline: |
+      You are the billing specialist for a B2B procurement assistant. Look up
+      invoices with invoice_get (amount, net terms, due date, status) and order
+      status with order_status. Record a payment with pay_invoice only when the
+      user explicitly confirms the invoice has been paid. Quote money in dollars.
+  tools:
+    - invoice_get
+    - pay_invoice
+    - order_status
+  approvals:
+    - id: pay-confirm
+      description: Recording an invoice as paid requires confirmation.
+      tools:
+        - pay_invoice
+  memory:
+    checkpointer: do
+    store: none
+  auth:
+    inbound:
+      allow_anonymous: true

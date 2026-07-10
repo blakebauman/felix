@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-browser-worker",
+  "main": "adapter.ts",
+  "compatibility_date": "2025-01-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Cloudflare Browser Rendering — provisions a Chromium runtime that
+  // `@cloudflare/puppeteer` drives. The binding name is fixed (`BROWSER`);
+  // the underlying service is selected by the account's Browser
+  // Rendering subscription.
+  "browser": {
+    "binding": "BROWSER",
+  },
+
+  // Tip: budget the browser-render service is paid per-second of active
+  // session time. Pair with Felix's `limits.max_tool_calls` on any
+  // manifest that exposes browser tools to bound per-run spend.
+}

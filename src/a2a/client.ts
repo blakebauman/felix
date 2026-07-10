@@ -1,0 +1,150 @@
+/**
+ * A2A client — call a remote orchestrator via the JSON-RPC `tasks/send`
+ * method and expose the call as a local tool named `peer_<name>`. The
+ * limits wrapper increments `peer_hops` for any tool whose name starts
+ * with `peer_` — that prefix is the contract.
+ *
+ * The peer URL passes through the SSRF guard at fetch time. We also build
+ * the request URL via `new URL('/a2a', base)` so a trailing-`?` peer URL
+ * can't smuggle the path into a query string.
+ *
+ * Transport seam: each peer tool carries an `A2AExecutor` (transport
+ * label = `a2a`) rather than a closure inside `defineTool`. Audit /
+ * observability code can branch on `tool.executor.transport` without
+ * inspecting the `peer_` name prefix. The executor owns args validation
+ * (only `{ message: string }` is allowed); invalid args return a string
+ * the model can recover from instead of throwing.
+ */
+
+import { z } from 'zod';
+import type { Env } from '../env';
+import type { A2APeerRef } from '../manifests/schema';
+import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
+import { codeForStatus, toolErrorOutput } from '../tools/errors';
+import type { ToolExecutor } from '../tools/executor';
+import {
+  defineToolWithExecutor,
+  type Tool,
+  type ToolInput,
+  type ToolInvocationCtx,
+  type ToolOutput,
+} from '../tools/types';
+
+type AuthHeaderProvider = (target: {
+  name?: string;
+  auth?: string;
+  url?: string;
+}) => Promise<string>;
+
+interface TaskSendParams {
+  task: {
+    id: string;
+    input: {
+      messages: Array<{ role: string; content: string }>;
+    };
+    continuation?: unknown;
+  };
+}
+
+interface TaskSendResult {
+  id: string;
+  status: 'completed' | 'failed' | 'in_progress' | string;
+  output?: {
+    messages?: Array<{ role: string; content: string }>;
+  };
+  error?: string;
+}
+
+function peerEndpoint(base: string): string {
+  // Safer than string concat — handles trailing slashes and rejects
+  // anything URL-unparseable.
+  return new URL('a2a', base.endsWith('/') ? base : `${base}/`).toString();
+}
+
+class A2AExecutor implements ToolExecutor {
+  readonly transport = 'a2a';
+  constructor(
+    private readonly ref: A2APeerRef,
+    private readonly env: Env,
+    private readonly authProvider?: AuthHeaderProvider,
+  ) {}
+
+  async execute(args: ToolInput, ctx?: ToolInvocationCtx): Promise<ToolOutput> {
+    const message = args.message;
+    if (typeof message !== 'string') {
+      return toolErrorOutput(
+        'invalid_arguments',
+        `[invalid args for peer_${this.ref.name}] message: required string`,
+      );
+    }
+    assertSafeOutboundUrlForEnv(this.ref.url, this.env);
+    const authHeader = this.authProvider ? await this.authProvider(this.ref) : '';
+    const params: TaskSendParams = {
+      task: {
+        id: crypto.randomUUID(),
+        input: { messages: [{ role: 'user', content: message }] },
+      },
+    };
+    try {
+      const resp = await fetch(peerEndpoint(this.ref.url), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(authHeader ? { authorization: authHeader } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: crypto.randomUUID(),
+          method: 'tasks/send',
+          params,
+        }),
+        // Cancellation propagates from the per-request abort signal —
+        // a wall-clock breach or request teardown will cancel the
+        // outbound peer call mid-flight instead of blocking the next one.
+        ...(ctx?.signal ? { signal: ctx.signal } : {}),
+      });
+      if (!resp.ok) {
+        return toolErrorOutput(
+          codeForStatus(resp.status),
+          `[peer error] ${this.ref.name}: ${resp.status}`,
+        );
+      }
+      const data = (await resp.json()) as {
+        result?: TaskSendResult;
+        error?: { message: string };
+      };
+      if (data.error)
+        return toolErrorOutput(
+          'provider_error',
+          `[peer error] ${this.ref.name}: ${data.error.message}`,
+        );
+      const last = data.result?.output?.messages?.slice(-1)[0];
+      return last?.content ?? '[peer returned no message]';
+    } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') {
+        return toolErrorOutput(
+          'user_aborted',
+          `[peer cancelled] ${this.ref.name}: ${(err as Error).message}`,
+        );
+      }
+      throw err;
+    }
+  }
+}
+
+export function makePeerTool(
+  ref: A2APeerRef,
+  env: Env,
+  authHeaderProvider?: AuthHeaderProvider,
+): Tool {
+  return defineToolWithExecutor({
+    name: `peer_${ref.name}`,
+    description: `Delegate the user's request to the remote A2A peer '${ref.name}'.`,
+    args: z.object({
+      message: z.string().describe('Message to send to the peer.'),
+    }),
+    isPeer: true,
+    source: `a2a:${ref.name}`,
+    executor: new A2AExecutor(ref, env, authHeaderProvider),
+  });
+}

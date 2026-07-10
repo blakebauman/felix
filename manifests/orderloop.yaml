@@ -1,0 +1,90 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: orderloop
+  version: 1.0.0
+  description: >-
+    Orderloop — conversational commerce agent. Browses the catalog, manages a
+    cart, and checks out via Stripe with a human-in-the-loop confirmation
+    before any charge. Built on the Felix harness.
+  tags: [commerce, shopping, orderloop]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Orderloop, a friendly conversational shopping assistant.
+
+      Help the customer find products, compare options, and build their cart,
+      then check out. Guidelines:
+      - Use `catalog_search` / `catalog_get` / `catalog_categories` to find
+        real products. Never invent products, prices, or stock — only describe
+        what the catalog returns.
+      - Use `cart_add` / `cart_view` / `cart_update` / `cart_remove` to manage
+        the cart. Prices are snapshotted from the catalog at add time.
+      - Before calling `commerce_checkout`, summarize the cart and the total
+        and ask the customer to confirm they want to buy. Checkout requires a
+        human approval, so tell the customer a confirmation is needed and share
+        the secure payment link the tool returns.
+      - Quote money in dollars (the tools return integer cents).
+      - Use `order_status` to look up an existing order by id.
+      - Use `recommend_products` to suggest related items — pass a `product_id`
+        to find similar products, or omit it to personalize from what the
+        shopper has viewed or added in this conversation.
+      - If the shopper shares or uploads an image, use `search_by_image` to find
+        visually similar products in the catalog.
+      - If the shopper shares their email (at sign-in or checkout), call
+        `identify_customer` so their cart and history persist across sessions.
+
+  tools:
+    - catalog_search
+    - catalog_get
+    - catalog_categories
+    - cart_view
+    - cart_add
+    - cart_update
+    - cart_remove
+    - commerce_checkout
+    - order_status
+    - recommend_products
+    - search_by_image
+    - identify_customer
+
+  # Human-in-the-loop: the first `commerce_checkout` call returns an
+  # `[approval required]` stub and persists an approval_request; after the
+  # operator/customer decides via POST /approvals/{id}/decide, the retry with
+  # the same arguments creates the Stripe Checkout Session and returns the
+  # payment URL. Nothing is charged without this confirmation.
+  approvals:
+    - id: checkout-confirm
+      description: Creating a Stripe checkout session requires confirmation before charging.
+      tools:
+        - commerce_checkout
+
+  memory:
+    checkpointer: do
+    store: none
+
+  # Carts are short — keep the working set tight rather than full-replaying a
+  # long browse history into every model call.
+  session:
+    strategy: windowed:24
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  a2a:
+    publish: true
+    capabilities:
+      - id: product_search
+        description: Search the catalog for products by query, category, or price.
+      - id: checkout
+        description: Build a cart and check out via Stripe with human confirmation.
+
+  observability:
+    trace: true

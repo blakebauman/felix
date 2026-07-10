@@ -1,0 +1,16 @@
+node_modules
+.wrangler
+dist
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.log
+src/manifests/bundled.ts
+src/skills/bundled.ts
+src/docs/bundled.ts
+
+# self-issued JWT signing key (mint-jwt.ts)
+.secrets/
+
+# Real deployment config (copy from wrangler.example.jsonc; holds account/resource ids)
+wrangler.jsonc

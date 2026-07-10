@@ -1,0 +1,41 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: hybrid-router
+  version: 1.0.0
+  description: >-
+    Hybrid routing — a Claude Haiku classifier picks the intent, then dispatches
+    to open-source Llama sub-agents that do the actual work. The strong model
+    only pays for the (short) classification turn; execution stays on Workers AI.
+  tags: [router, hybrid, oss]
+
+spec:
+  pattern: router
+
+  model:
+    # Intent classification on a strong, cheap model. The classifier turn is
+    # tiny (one routed token), so this is the only Anthropic spend per request.
+    # Swap to an OSS route (e.g. llama-3-pro) to drop the last proprietary call.
+    id: claude-haiku-4
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are a query classifier. Given the user's message, choose exactly one
+      of the following routes:
+      - oss-only: anything needing tools — calculations, skill management, or
+        tasks that benefit from memory/recall.
+      - oss-fast: simple direct questions, quick factual replies, casual chat.
+      When in doubt, choose oss-fast.
+
+  sub_agents:
+    - oss-only
+    - oss-fast
+
+  memory:
+    checkpointer: do
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true

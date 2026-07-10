@@ -1,0 +1,68 @@
+# Local dev secrets for `wrangler dev`. Copy to `.dev.vars` and fill in.
+# Wrangler reads this file when running locally; it is NOT used by staging
+# or production. For deployed envs, set secrets via:
+#   pnpm exec wrangler secret put <NAME> --env staging
+#   pnpm exec wrangler secret put <NAME> --env production
+
+# ---- LLM providers ----
+# Anthropic API key. Required if any manifest's model.id resolves to a
+# `provider: anthropic` route in MODEL_ROUTES (the default `claude-sonnet-4`
+# does).
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI API key. Required only if a manifest routes to a `provider: openai`
+# model. Leave unset otherwise.
+OPENAI_API_KEY=sk-...
+
+# Cloudflare AI Gateway "Authenticated Gateway" token. Required only when
+# the AI_GATEWAY_SLUG has Authenticated Gateway enabled in the dashboard.
+# Sent as `cf-aig-authorization: Bearer <token>` on every gateway call.
+# Leave unset for unauthenticated gateways (felix-dev defaults to unauth).
+CF_AIG_TOKEN=
+
+# ---- At-rest encryption ----
+# Base64-encoded 32-byte AES-256 key for encrypting oauth_token_cache rows.
+# Generate with: `openssl rand -base64 32`.
+# Optional in dev (falls back to plaintext with a warning); required in
+# staging/production.
+OAUTH_CACHE_KEY=
+
+# ---- Continuous eval (canary online benchmarking) ----
+# Optional JSON override for the continuous-eval cron knobs. Missing/invalid
+# fields fall back to defaults: sample_rate 0.01, max_replays_per_tick 10,
+# window_ms 600000 (10m, matching the */10 cron). Tune per-env without a
+# redeploy. Example: CONTINUOUS_EVAL={"sample_rate":0.05,"max_replays_per_tick":25}
+CONTINUOUS_EVAL=
+
+# ---- Commerce (Stripe direct) ----
+# Stripe secret key, used by the `commerce_checkout` tool to create hosted
+# Checkout Sessions. Use a test key (`sk_test_...`) in dev. When unset, the
+# tool reports checkout unavailable rather than crashing.
+STRIPE_SECRET_KEY=sk_test_...
+# Stripe webhook signing secret (`whsec_...`) for POST /commerce/stripe/webhook.
+# From the Stripe dashboard, or `stripe listen` when testing locally. When
+# unset, the webhook route returns 503.
+STRIPE_WEBHOOK_SECRET=whsec_...
+# Optional redirect overrides (default to shop.felix.run).
+STRIPE_SUCCESS_URL=
+STRIPE_CANCEL_URL=
+# Agentic Commerce Protocol (merchant side). Bearer API key you issue to agents
+# (ChatGPT Instant Checkout, etc.) that call /acp/*. When unset, /acp returns 503.
+ACP_API_KEY=
+# Merchant tenant that owns the ACP catalog + orders (default `default`).
+ACP_MERCHANT_TENANT=
+# Flat sales tax in basis points applied by ACP checkout (100 = 1%). Default 0.
+COMMERCE_TAX_BPS=
+# JSON shipping config; invalid/missing falls back to standard/express defaults.
+# e.g. {"free_threshold_cents":7500,"options":[{"id":"standard","title":"Standard","subtitle":"5-7 days","carrier":"USPS","amount_cents":500,"min_days":5,"max_days":7}]}
+COMMERCE_SHIPPING=
+# CSV of ISO-3166 countries the buyer-side checkout ships to (default US).
+COMMERCE_SHIP_COUNTRIES=
+# Enable Stripe Tax on buyer-side Checkout (requires Stripe Tax on the account).
+STRIPE_AUTOMATIC_TAX=
+
+# ---- Federation ----
+# Base64-encoded Ed25519 raw public key (32 bytes) for verifying the
+# PolicyBundle signature on federation refresh. Optional in dev (unsigned
+# bundles produce a warning); required in staging/production.
+POLICY_BUNDLE_PUBKEY=

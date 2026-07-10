@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-sandbox-worker",
+  "main": "adapter.ts",
+  "compatibility_date": "2025-01-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The Sandbox SDK runs each session as a Durable Object backed by a
+  // Container. Re-export the `Sandbox` class from `adapter.ts` so
+  // wrangler can resolve it here.
+  "durable_objects": {
+    "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+
+  // The Container running inside each Sandbox DO. Image registry +
+  // image name come from the @cloudflare/sandbox SDK; the default
+  // Ubuntu-based image ships Python 3, Node, and standard CLI tools.
+  // Override `image` here if you bake your own with extra runtimes.
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "docker.io/cloudflare/sandbox:0.3.0",
+      "max_instances": 100,
+      "name": "felix-sandbox",
+    },
+  ],
+}

@@ -1,0 +1,45 @@
+apiVersion: orchestrator/v1
+kind: Agent
+metadata:
+  name: oss-only
+  version: 1.0.0
+  description: >-
+    Fully open-source agent — runs entirely on Cloudflare Workers AI
+    (Llama 3.3 70B) with no Anthropic/OpenAI keys. Tools, memory embeddings,
+    and any guardrail/eval judges all stay on Workers AI.
+  tags: [react, oss, workers-ai]
+
+spec:
+  pattern: react
+
+  model:
+    # Resolves through MODEL_ROUTES to @cf/meta/llama-3.3-70b-instruct-fp8-fast,
+    # one of the tool-capable Workers AI models (see WORKERS_AI_TOOL_CAPABLE).
+    # No AI Gateway / CF_AIG_TOKEN needed — Workers AI uses the native env.AI binding.
+    id: llama-3-pro
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, a helpful AI assistant running entirely on open-source
+      models via Cloudflare Workers AI. Use your tools when they help you
+      answer accurately. Always refer to yourself as Felix, never as Claude
+      or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  memory:
+    checkpointer: do
+    # Long-term semantic memory embeds via BGE on Workers AI — also key-free.
+    store: vectorize
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true
