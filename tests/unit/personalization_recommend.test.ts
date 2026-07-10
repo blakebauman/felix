@@ -2,9 +2,9 @@
  * Recommendation ranking (pure).
  */
 
+import type { SimilarProduct } from '@felix/commerce/personalization/embeddings';
+import { rankRecommendations } from '@felix/commerce/personalization/recommend';
 import { describe, expect, it } from 'vitest';
-import type { SimilarProduct } from '../../src/commerce/personalization/embeddings';
-import { rankRecommendations } from '../../src/commerce/personalization/recommend';
 
 const s = (product_id: string, score: number): SimilarProduct => ({ product_id, score });
 

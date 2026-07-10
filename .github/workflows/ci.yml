@@ -44,6 +44,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      # this example package has no lockfile, so no --frozen-lockfile
-      - run: pnpm install
+      # this example package has no lockfile, so no --frozen-lockfile.
+      # --ignore-workspace keeps the install local to this dir — the repo root
+      # is a pnpm workspace, and without the flag pnpm installs the workspace
+      # instead of this project's deps (the .npmrc form of the setting is not
+      # honored for workspace detection in pnpm 10).
+      - run: pnpm install --ignore-workspace
       - run: pnpm build

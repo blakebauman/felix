@@ -9,11 +9,11 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
+import { runWithBrandContext } from '@felix/commerce/storefront/context';
+import { catalogSearchTool } from '@felix/commerce/tools';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
-import { runWithBrandContext } from '../../src/commerce/storefront/context';
-import { catalogSearchTool } from '../../src/commerce/tools';
 import type { Env as AppEnv } from '../../src/env';
 import { _clearResolverCache } from '../../src/manifests/resolver';
 import { applyMigrations } from './setup';

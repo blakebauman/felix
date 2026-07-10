@@ -102,7 +102,7 @@ describe('self-authenticating mounts bypass JWT verification', () => {
     // its own API key. With JWT_VERIFIERS set, the global middleware must NOT
     // parse that bearer as a JWT and 401 before the ACP router's own check.
     const app = new Hono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
-    app.use('*', authMiddleware());
+    app.use('*', authMiddleware({ selfAuthenticatingMounts: ['/acp'] }));
     app.post('/acp/checkout_sessions', (c) => {
       const auth = c.get('auth');
       return c.json({ anon: isAnonymous(auth) });

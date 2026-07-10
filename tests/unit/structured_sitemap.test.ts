@@ -2,10 +2,10 @@
  * sitemap.xml + robots.txt builders (pure).
  */
 
+import type { Product } from '@felix/commerce/models';
+import { AI_CRAWLERS, robotsTxt } from '@felix/commerce/structured/robots';
+import { productsToSitemapXml, sitemapIndexXml } from '@felix/commerce/structured/sitemap';
 import { describe, expect, it } from 'vitest';
-import type { Product } from '../../src/commerce/models';
-import { AI_CRAWLERS, robotsTxt } from '../../src/commerce/structured/robots';
-import { productsToSitemapXml, sitemapIndexXml } from '../../src/commerce/structured/sitemap';
 
 function product(over: Partial<Product> = {}): Product {
   return {

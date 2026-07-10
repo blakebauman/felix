@@ -5,16 +5,16 @@
  */
 
 import { env } from 'cloudflare:test';
+import { resolveEffectivePrice } from '@felix/commerce/b2b/pricing';
+import { upsertContractPrice } from '@felix/commerce/b2b/pricing-store';
+import { priceQuote } from '@felix/commerce/b2b/quote-logic';
+import { upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
+import { recordBehaviorEvent } from '@felix/commerce/personalization/customer-store';
+import { competitorPriceStore } from '@felix/commerce/pricing/competitor-store';
+import { upsertPricingRule } from '@felix/commerce/pricing/rules-store';
+import { catalogGetTool } from '@felix/commerce/tools';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { resolveEffectivePrice } from '../../src/commerce/b2b/pricing';
-import { upsertContractPrice } from '../../src/commerce/b2b/pricing-store';
-import { priceQuote } from '../../src/commerce/b2b/quote-logic';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
-import { recordBehaviorEvent } from '../../src/commerce/personalization/customer-store';
-import { competitorPriceStore } from '../../src/commerce/pricing/competitor-store';
-import { upsertPricingRule } from '../../src/commerce/pricing/rules-store';
-import { catalogGetTool } from '../../src/commerce/tools';
 import { buildAnonymousContext, runWithContext } from '../../src/context';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';

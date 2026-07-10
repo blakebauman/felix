@@ -3,8 +3,8 @@
  * stub via a fake env.DB).
  */
 
+import { dueAt, netDays, priceQuote } from '@felix/commerce/b2b/quote-logic';
 import { describe, expect, it } from 'vitest';
-import { dueAt, netDays, priceQuote } from '../../src/commerce/b2b/quote-logic';
 import type { Env } from '../../src/env';
 
 /** Fake D1 that returns a fixed product row for getProduct. */

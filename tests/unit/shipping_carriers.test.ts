@@ -2,8 +2,8 @@
  * Carrier rate-shopping seam (pure; env is just a config string).
  */
 
+import { parseCarrierConfig, rateShop } from '@felix/commerce/shipping-carriers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseCarrierConfig, rateShop } from '../../src/commerce/shipping-carriers';
 import type { Env } from '../../src/env';
 
 function env(carriers?: unknown): Env {

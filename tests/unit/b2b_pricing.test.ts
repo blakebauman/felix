@@ -2,8 +2,8 @@
  * Volume-tier selection (pure).
  */
 
+import { effectiveTierPrice } from '@felix/commerce/b2b/pricing-models';
 import { describe, expect, it } from 'vitest';
-import { effectiveTierPrice } from '../../src/commerce/b2b/pricing-models';
 
 const tiers = [
   { min_qty: 1, unit_price_cents: 1000 },

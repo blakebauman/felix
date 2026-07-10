@@ -4,13 +4,13 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { upsertProduct } from '@felix/commerce/catalog-store';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import '../../src/commerce/b2b/store';
-import '../../src/commerce/b2b/quote-store';
-import type { ContractPrice } from '../../src/commerce/b2b/pricing-models';
-import type { Quote } from '../../src/commerce/b2b/quote-models';
-import type { Product } from '../../src/commerce/models';
+import '@felix/commerce/b2b/store';
+import '@felix/commerce/b2b/quote-store';
+import type { ContractPrice } from '@felix/commerce/b2b/pricing-models';
+import type { Quote } from '@felix/commerce/b2b/quote-models';
+import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

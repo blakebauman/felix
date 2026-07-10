@@ -4,9 +4,9 @@
  * highest-seq snapshot wins. Totals are always computed server-side.
  */
 
+import { addItem, readCart, removeItem, setQty, writeCart } from '@felix/commerce/cart-session';
+import { type Cart, cartTotalCents } from '@felix/commerce/models';
 import { describe, expect, it } from 'vitest';
-import { addItem, readCart, removeItem, setQty, writeCart } from '../../src/commerce/cart-session';
-import { type Cart, cartTotalCents } from '../../src/commerce/models';
 import type { Session, SessionEvent } from '../../src/session/types';
 
 function cartEvent(seq: number, cart: Cart): SessionEvent {

@@ -5,19 +5,19 @@
  */
 
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { accountStore, buyerStore } from '../../src/commerce/b2b/store';
+import { accountStore, buyerStore } from '@felix/commerce/b2b/store';
 import {
   acceptQuoteTool,
   convertQuoteTool,
   createQuoteTool,
   purchaseAuthorityTool,
   sendQuoteTool,
-} from '../../src/commerce/b2b/tools';
+} from '@felix/commerce/b2b/tools';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { buildAnonymousContext, runWithContext } from '../../src/context';
-import '../../src/commerce/b2b/quote-store';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
+import '@felix/commerce/b2b/quote-store';
+import { upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '../../src/env';
 import type { Tool } from '../../src/tools/types';
 import { applyMigrations } from './setup';

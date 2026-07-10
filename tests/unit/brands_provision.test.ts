@@ -2,10 +2,10 @@
  * Brand manifest overlay + catalog import mapping (pure logic).
  */
 
+import { parsePrice } from '@felix/commerce/brands/import';
+import type { Brand } from '@felix/commerce/brands/models';
+import { buildBrandManifest } from '@felix/commerce/brands/provision';
 import { describe, expect, it } from 'vitest';
-import { parsePrice } from '../../src/commerce/brands/import';
-import type { Brand } from '../../src/commerce/brands/models';
-import { buildBrandManifest } from '../../src/commerce/brands/provision';
 import { loadManifest } from '../../src/manifests/loader';
 
 function brand(over: Partial<Brand> = {}): Brand {
