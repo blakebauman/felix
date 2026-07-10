@@ -4,6 +4,9 @@
   "private": true,
   "description": "Cloudflare Workers version of the Felix orchestrator (manifest-driven agent runtime with strict A2A/MCP/OpenAI parity)",
   "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
   "scripts": {
     "build:manifests": "tsx scripts/bundle-manifests.ts",
     "build:docs": "tsx scripts/bundle-docs.ts",
@@ -15,9 +18,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src tests",
-    "lint:fix": "biome check --write src tests",
-    "format": "biome format --write src tests",
+    "lint": "biome check src tests packages",
+    "lint:fix": "biome check --write src tests packages",
+    "format": "biome format --write src tests packages",
     "migrate:local": "wrangler d1 migrations apply orchestrator --local",
     "migrate:staging": "wrangler d1 migrations apply orchestrator-staging --remote --env staging",
     "migrate:production": "wrangler d1 migrations apply orchestrator-prod --remote --env production",
@@ -26,11 +29,11 @@
     "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
+    "@felix/commerce": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
     "@scalar/hono-api-reference": "^0.10.14",
     "hono": "^4.12.18",
     "jose": "^6.2.3",
-    "stripe": "^22.2.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

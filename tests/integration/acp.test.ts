@@ -7,12 +7,12 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { finalizeOrder } from '@felix/commerce/acp/checkout';
+import type { AcpCheckoutSession } from '@felix/commerce/acp/models';
+import { getProduct, upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
+import { getOrder } from '@felix/commerce/order-store';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { finalizeOrder } from '../../src/commerce/acp/checkout';
-import type { AcpCheckoutSession } from '../../src/commerce/acp/models';
-import { getProduct, upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
-import { getOrder } from '../../src/commerce/order-store';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

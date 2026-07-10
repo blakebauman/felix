@@ -7,8 +7,8 @@
  * line here. No orchestrator changes needed.
  */
 
+import { commercePlugin } from '@felix/commerce';
 import { z } from 'zod';
-import { commercePlugin } from './commerce/plugin';
 import { getContext } from './context';
 import type { Env } from './env';
 import { resolveManifest } from './manifests/resolver';

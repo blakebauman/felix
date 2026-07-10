@@ -7,12 +7,12 @@
  */
 
 import { env } from 'cloudflare:test';
+import { readCart, writeCart } from '@felix/commerce/cart-session';
+import { searchProducts, upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
+import { getOrder } from '@felix/commerce/order-store';
+import { handleCheckoutCompleted } from '@felix/commerce/webhook';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { readCart, writeCart } from '../../src/commerce/cart-session';
-import { searchProducts, upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
-import { getOrder } from '../../src/commerce/order-store';
-import { handleCheckoutCompleted } from '../../src/commerce/webhook';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

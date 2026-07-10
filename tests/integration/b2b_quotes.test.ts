@@ -4,12 +4,12 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import type { Invoice, Quote } from '@felix/commerce/b2b/quote-models';
+import { upsertProduct } from '@felix/commerce/catalog-store';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { Invoice, Quote } from '../../src/commerce/b2b/quote-models';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import '../../src/commerce/b2b/store';
-import '../../src/commerce/b2b/quote-store';
-import type { Product } from '../../src/commerce/models';
+import '@felix/commerce/b2b/store';
+import '@felix/commerce/b2b/quote-store';
+import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

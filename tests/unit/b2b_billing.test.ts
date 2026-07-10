@@ -3,13 +3,13 @@
  * invoice param shape (pure — no Stripe call).
  */
 
+import type { Invoice } from '@felix/commerce/b2b/quote-models';
+import { getBillingProvider, listBillingProviders } from '@felix/commerce/billing/registry';
+import { buildInvoiceParams } from '@felix/commerce/billing/stripe';
 import { describe, expect, it } from 'vitest';
-import type { Invoice } from '../../src/commerce/b2b/quote-models';
-import { getBillingProvider, listBillingProviders } from '../../src/commerce/billing/registry';
-import { buildInvoiceParams } from '../../src/commerce/billing/stripe';
 // Side-effect: register the built-ins.
-import '../../src/commerce/billing/internal';
-import '../../src/commerce/billing/stripe';
+import '@felix/commerce/billing/internal';
+import '@felix/commerce/billing/stripe';
 
 function invoice(over: Partial<Invoice> = {}): Invoice {
   return {

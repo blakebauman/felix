@@ -5,16 +5,16 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { writeCart } from '../../src/commerce/cart-session';
+import { writeCart } from '@felix/commerce/cart-session';
 import {
   decrementInventory,
   getProduct,
   listProductsPage,
   upsertProduct,
-} from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
-import { handleCheckoutCompleted } from '../../src/commerce/webhook';
+} from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
+import { handleCheckoutCompleted } from '@felix/commerce/webhook';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

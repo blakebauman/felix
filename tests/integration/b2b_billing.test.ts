@@ -5,11 +5,11 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { accountStore, buyerStore } from '@felix/commerce/b2b/store';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { accountStore, buyerStore } from '../../src/commerce/b2b/store';
-import '../../src/commerce/b2b/quote-store';
-import type { Account, Buyer } from '../../src/commerce/b2b/models';
-import type { Invoice } from '../../src/commerce/b2b/quote-models';
+import '@felix/commerce/b2b/quote-store';
+import type { Account, Buyer } from '@felix/commerce/b2b/models';
+import type { Invoice } from '@felix/commerce/b2b/quote-models';
 import {
   acceptQuote,
   convertQuote,
@@ -17,11 +17,11 @@ import {
   markInvoicePaidByRef,
   payInvoice,
   sendQuote,
-} from '../../src/commerce/b2b/service';
-import { setBillingSettings } from '../../src/commerce/billing/config-store';
-import { registerBillingProvider } from '../../src/commerce/billing/registry';
-import { upsertProduct } from '../../src/commerce/catalog-store';
-import type { Product } from '../../src/commerce/models';
+} from '@felix/commerce/b2b/service';
+import { setBillingSettings } from '@felix/commerce/billing/config-store';
+import { registerBillingProvider } from '@felix/commerce/billing/registry';
+import { upsertProduct } from '@felix/commerce/catalog-store';
+import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

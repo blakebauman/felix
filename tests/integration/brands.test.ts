@@ -4,8 +4,8 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import type { Brand } from '@felix/commerce/brands/models';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Brand } from '../../src/commerce/brands/models';
 import type { Env as AppEnv } from '../../src/env';
 import { _clearResolverCache, resolveManifest } from '../../src/manifests/resolver';
 import { applyMigrations } from './setup';

@@ -5,23 +5,23 @@
  */
 
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { writeCart } from '../../src/commerce/cart-session';
+import { writeCart } from '@felix/commerce/cart-session';
 import {
   attributionSummary,
   getAttribution,
   latestConsentForThread,
   listConsents,
   recordConsent,
-} from '../../src/commerce/consent/store';
-import { handleCheckoutCompleted } from '../../src/commerce/webhook';
-import type { Env as AppEnv } from '../../src/env';
+} from '@felix/commerce/consent/store';
 import {
   listActiveQueries,
   listObservations,
   putObservation,
   upsertQuery,
-} from '../../src/geo/store';
+} from '@felix/commerce/geo/store';
+import { handleCheckoutCompleted } from '@felix/commerce/webhook';
+import { beforeAll, describe, expect, it } from 'vitest';
+import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;

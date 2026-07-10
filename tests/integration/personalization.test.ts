@@ -9,8 +9,7 @@
  */
 
 import { env } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { runAbandonedCartScan } from '../../src/commerce/personalization/abandoned-cart-job';
+import { runAbandonedCartScan } from '@felix/commerce/personalization/abandoned-cart-job';
 import {
   findAbandonedCandidates,
   getCustomer,
@@ -20,12 +19,10 @@ import {
   markAbandoned,
   recordBehaviorEvent,
   upsertCustomer,
-} from '../../src/commerce/personalization/customer-store';
-import { dispatchRecovery } from '../../src/commerce/personalization/recovery';
-import {
-  identifyCustomerTool,
-  recommendProductsTool,
-} from '../../src/commerce/personalization/tools';
+} from '@felix/commerce/personalization/customer-store';
+import { dispatchRecovery } from '@felix/commerce/personalization/recovery';
+import { identifyCustomerTool, recommendProductsTool } from '@felix/commerce/personalization/tools';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildAnonymousContext, runWithContext } from '../../src/context';
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';

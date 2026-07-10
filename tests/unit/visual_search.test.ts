@@ -2,14 +2,14 @@
  * Visual search caption→embed→query orchestration (pure-ish, fakes injected).
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Product } from '../../src/commerce/models';
+import type { Product } from '@felix/commerce/models';
 import {
   captionImage,
   productImageVectorId,
   queryByImage,
   upsertProductImageEmbedding,
-} from '../../src/commerce/visual/embeddings';
+} from '@felix/commerce/visual/embeddings';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../src/env';
 
 interface FakeOpts {

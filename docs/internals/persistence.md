@@ -135,7 +135,7 @@ CREATE TABLE oauth_token_cache (
 
 The commerce layer adds ~25 tables following the same conventions; their shapes and semantics are documented alongside the features in [commerce.md](commerce.md). Highlights that affect persistence reasoning:
 
-- **The cart is not a table.** It lives in the ConversationDO session log as the latest `kind: 'audit'` event with `metadata: { type: 'cart', pinned: true }` (`src/commerce/cart-session.ts`) — highest `seq` wins, and render strategies skip audit events so it never enters the model window.
+- **The cart is not a table.** It lives in the ConversationDO session log as the latest `kind: 'audit'` event with `metadata: { type: 'cart', pinned: true }` (`packages/commerce/src/cart-session.ts`) — highest `seq` wins, and render strategies skip audit events so it never enters the model window.
 - `consents` and `behavior_events` are **append-only** streams (consent withdrawal is a new `granted = 0` row, never an update).
 - `orders` is written only by verified payment paths (Stripe webhook, ACP complete, B2B convert), with deterministic ids on the ACP path for idempotency.
 - `data_sources` (the entity seam config) can redirect reads of B2B entities to federated/synced 3p systems — D1 is the default `native` backend, not an assumption.

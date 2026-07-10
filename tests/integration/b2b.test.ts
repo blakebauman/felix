@@ -6,12 +6,12 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import type { Account } from '@felix/commerce/b2b/models';
+import { setDataSourceConfig } from '@felix/commerce/entities/config-store';
+import { registerEntityConnector } from '@felix/commerce/entities/connectors';
+import { resolveEntitySource } from '@felix/commerce/entities/resolver';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { Account } from '../../src/commerce/b2b/models';
-import { setDataSourceConfig } from '../../src/entities/config-store';
-import { registerEntityConnector } from '../../src/entities/connectors';
-import { resolveEntitySource } from '../../src/entities/resolver';
-import '../../src/commerce/b2b/store'; // registers 'account' / 'buyer' entity types
+import '@felix/commerce/b2b/store'; // registers 'account' / 'buyer' entity types
 import type { Env as AppEnv } from '../../src/env';
 import { applyMigrations } from './setup';
 

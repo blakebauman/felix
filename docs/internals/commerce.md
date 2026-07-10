@@ -2,7 +2,7 @@
 
 Felix Commerce is the conversational-commerce layer built on the harness. It adds no new harness abstractions — it is a vertical assembled from the existing seams: commerce capabilities are ordinary `Tool`s, the cart lives in the append-only session log, checkout rides the human-in-the-loop approvals pipeline, brand storefronts are per-tenant manifests resolved through the standard 4-layer resolver, and B2B data flows through a pluggable entity data-source seam. All money is integer cents. Everything is tenant-scoped.
 
-The whole layer is packaged as a single **`FelixPlugin`** (`src/commerce/plugin.ts`; contract in `src/plugins/types.ts`): its routers, tool factories, cron tasks (abandoned-cart scan, GEO monitor), the `/acp` self-authenticating mount, the storefront/ACP rate-limit keying, and the 12 MB body-size floor for visual-search uploads are all declared there. Core wires it in through the one `commercePlugin` entry in `src/composition.ts:installedPlugins()` and is otherwise commerce-blind — enforced by `tests/unit/plugin_boundary.test.ts`. Commerce env vars merge into the core `Env` interface via module augmentation in `src/commerce/env.ts`.
+The whole layer is the **`@felix/commerce`** workspace package (`packages/commerce/`), exporting a single **`FelixPlugin`** (`packages/commerce/src/plugin.ts`; contract in `src/plugins/types.ts`): its routers, tool factories, cron tasks (abandoned-cart scan, GEO monitor), the `/acp` self-authenticating mount, the storefront/ACP rate-limit keying, and the 12 MB body-size floor for visual-search uploads are all declared there. Core wires it in through the one `commercePlugin` entry in `src/composition.ts:installedPlugins()` and is otherwise commerce-blind — enforced by `tests/unit/plugin_boundary.test.ts`. The package consumes core seams via `@felix/orchestrator/<path>` source exports (both packages export TS source; no build step), and commerce env vars merge into the core `Env` interface via module augmentation in `packages/commerce/src/env.ts`.
 
 The surfaces, roughly buyer-side → merchant-side:
 
@@ -18,24 +18,24 @@ The surfaces, roughly buyer-side → merchant-side:
 
 ## Conversational commerce core
 
-**Catalog** — `src/commerce/catalog-store.ts`, D1 `products` (`0006_commerce.sql`). Product: `id` (SKU), `title`, `description`, `price_cents`, `currency`, `image_url`, `category`, `inventory` (`-1` = unlimited), `active`, `attrs`. On product write, text and image-caption embeddings are pushed to Vectorize (`MEMORY_VEC`) off the response path via `waitUntil`, so catalog writes never fail on an unprovisioned index.
+**Catalog** — `packages/commerce/src/catalog-store.ts`, D1 `products` (`0006_commerce.sql`). Product: `id` (SKU), `title`, `description`, `price_cents`, `currency`, `image_url`, `category`, `inventory` (`-1` = unlimited), `active`, `attrs`. On product write, text and image-caption embeddings are pushed to Vectorize (`MEMORY_VEC`) off the response path via `waitUntil`, so catalog writes never fail on an unprovisioned index.
 
-**Cart** — `src/commerce/cart-session.ts`. Deliberately **not** a D1 table: the cart is a `kind: 'audit'` event in the ConversationDO session log with `metadata: { type: 'cart', pinned: true }`. The highest-`seq` snapshot wins; render strategies skip audit events, so the cart never pollutes the model's message window. The server always recomputes totals — the model never supplies amounts.
+**Cart** — `packages/commerce/src/cart-session.ts`. Deliberately **not** a D1 table: the cart is a `kind: 'audit'` event in the ConversationDO session log with `metadata: { type: 'cart', pinned: true }`. The highest-`seq` snapshot wins; render strategies skip audit events, so the cart never pollutes the model's message window. The server always recomputes totals — the model never supplies amounts.
 
-**Checkout** — the `commerce_checkout` tool (`src/commerce/stripe-tool.ts`) reads the session cart, recomputes the total, and creates a hosted Stripe Checkout Session; card capture never touches the Worker. The tool is approval-gated in the manifests (`approvals: [{ id: checkout-confirm, tools: [commerce_checkout] }]`): the first call persists an approval request and returns a deny stub; after `POST /approvals/:id/decide`, the retry creates the session. Stripe metadata carries `tenant_id`, `thread_id`, `channel`, `manifest_id`, `buyer_subject`, `consent_id` for attribution. When `COMMERCE_REQUIRE_CONSENT=true` the tool denies until a granted consent exists for the thread.
+**Checkout** — the `commerce_checkout` tool (`packages/commerce/src/stripe-tool.ts`) reads the session cart, recomputes the total, and creates a hosted Stripe Checkout Session; card capture never touches the Worker. The tool is approval-gated in the manifests (`approvals: [{ id: checkout-confirm, tools: [commerce_checkout] }]`): the first call persists an approval request and returns a deny stub; after `POST /approvals/:id/decide`, the retry creates the session. Stripe metadata carries `tenant_id`, `thread_id`, `channel`, `manifest_id`, `buyer_subject`, `consent_id` for attribution. When `COMMERCE_REQUIRE_CONSENT=true` the tool denies until a granted consent exists for the thread.
 
-**Orders** — `src/commerce/order-store.ts`, D1 `orders` + `order_items`. Status `pending | paid | fulfilled | cancelled`. The Stripe webhook (`POST /commerce/stripe/webhook`, `src/commerce/webhook.ts`) verifies the Stripe signature (Web Crypto provider — no Node `http`), and on `checkout.session.completed` writes the order as `paid`, decrements inventory, records `purchase` behavior events, writes `order_attribution`, clears the cart, and emits a `commerce_order` audit event.
+**Orders** — `packages/commerce/src/order-store.ts`, D1 `orders` + `order_items`. Status `pending | paid | fulfilled | cancelled`. The Stripe webhook (`POST /commerce/stripe/webhook`, `packages/commerce/src/webhook.ts`) verifies the Stripe signature (Web Crypto provider — no Node `http`), and on `checkout.session.completed` writes the order as `paid`, decrements inventory, records `purchase` behavior events, writes `order_attribution`, clears the cart, and emits a `commerce_order` audit event.
 
-**Payment idempotency** — ACP completion uses a deterministic Stripe idempotency key (`acp-complete-<sessionId>`) and a deterministic order id (`acp_order_<sessionId>`) with an existence check, so retries and concurrent completions cannot double-charge or double-decrement inventory (`src/commerce/acp/payment.ts`).
+**Payment idempotency** — ACP completion uses a deterministic Stripe idempotency key (`acp-complete-<sessionId>`) and a deterministic order id (`acp_order_<sessionId>`) with an existence check, so retries and concurrent completions cannot double-charge or double-decrement inventory (`packages/commerce/src/acp/payment.ts`).
 
 **Shipping, carriers, tax** — three seams designed for provider replacement:
-- `src/commerce/shipping.ts` — static options from `COMMERCE_SHIPPING` JSON (defaults: standard $5 / 5–7d, express $15 / 2–3d; `free_threshold_cents` zeroes the cheapest option).
-- `src/commerce/shipping-carriers.ts` — `COMMERCE_CARRIERS` JSON; per-carrier `static` (base + per-item × zone multiplier) or `live` (POST cart context to the carrier URL, SSRF-guarded, falls back to static on failure). `rateShop` returns quotes cheapest-first.
-- `src/commerce/tax.ts` — v1 flat `COMMERCE_TAX_BPS` on subtotal + shipping; the signature carries address/line context so Stripe Tax or Avalara can replace `computeTax` without touching callers. Buyer-side checkout can instead use Stripe `automatic_tax` (`STRIPE_AUTOMATIC_TAX=true`).
+- `packages/commerce/src/shipping.ts` — static options from `COMMERCE_SHIPPING` JSON (defaults: standard $5 / 5–7d, express $15 / 2–3d; `free_threshold_cents` zeroes the cheapest option).
+- `packages/commerce/src/shipping-carriers.ts` — `COMMERCE_CARRIERS` JSON; per-carrier `static` (base + per-item × zone multiplier) or `live` (POST cart context to the carrier URL, SSRF-guarded, falls back to static on failure). `rateShop` returns quotes cheapest-first.
+- `packages/commerce/src/tax.ts` — v1 flat `COMMERCE_TAX_BPS` on subtotal + shipping; the signature carries address/line context so Stripe Tax or Avalara can replace `computeTax` without touching callers. Buyer-side checkout can instead use Stripe `automatic_tax` (`STRIPE_AUTOMATIC_TAX=true`).
 
 ## ACP merchant surface (`/acp`)
 
-`src/commerce/acp/` implements the merchant side of the Agentic Commerce Protocol so external buyer agents (e.g. ChatGPT shopping) can discover the catalog and check out.
+`packages/commerce/src/acp/` implements the merchant side of the Agentic Commerce Protocol so external buyer agents (e.g. ChatGPT shopping) can discover the catalog and check out.
 
 | Method + path | Purpose |
 |---|---|
@@ -52,9 +52,9 @@ The surfaces, roughly buyer-side → merchant-side:
 
 ## D2C: brands, storefronts, widget
 
-**Brands** (`src/commerce/brands/`, `/brands`, writes gated `brands:write`) — a brand record lives under the operator tenant; the brand's *data* (catalog, orders, manifest) lives under its own `brand_tenant`. `POST /brands` provisions the brand: `provision.ts` derives a per-brand `orderloop` manifest from the bundled base (inheriting the tool list and checkout approval), overlays the brand's voice/identity onto the system prompt, and writes + activates it under `brand_tenant` — from then on `resolveManifest(brand_tenant, 'orderloop')` returns the branded agent. Also: catalog import (`POST /brands/:id/catalog`), embedding backfill (`POST /brands/:id/reindex`), and custom-domain mapping (`POST /brands/:id/domains` → D1 `brand_domains`, keyed by host — the one deliberately tenant-less table, since it routes anonymous public traffic).
+**Brands** (`packages/commerce/src/brands/`, `/brands`, writes gated `brands:write`) — a brand record lives under the operator tenant; the brand's *data* (catalog, orders, manifest) lives under its own `brand_tenant`. `POST /brands` provisions the brand: `provision.ts` derives a per-brand `orderloop` manifest from the bundled base (inheriting the tool list and checkout approval), overlays the brand's voice/identity onto the system prompt, and writes + activates it under `brand_tenant` — from then on `resolveManifest(brand_tenant, 'orderloop')` returns the branded agent. Also: catalog import (`POST /brands/:id/catalog`), embedding backfill (`POST /brands/:id/reindex`), and custom-domain mapping (`POST /brands/:id/domains` → D1 `brand_domains`, keyed by host — the one deliberately tenant-less table, since it routes anonymous public traffic).
 
-**Storefront serving** (`src/commerce/storefront/router.ts`, `/shop`) — public, anonymous. The brand resolves from the `:storefront` path segment or the `Host` header (via `brand_domains`). `GET /shop/config`, `POST /shop/chat`, `POST /shop/chat/stream` (SSE), `POST /shop/visual-search` (multipart image, 8 MB). Requests run the brand's agent under `runWithBrandContext` scoped to `brand_tenant`; thread ids are namespaced `<brand_tenant>:<suffix>` so brands are isolated.
+**Storefront serving** (`packages/commerce/src/storefront/router.ts`, `/shop`) — public, anonymous. The brand resolves from the `:storefront` path segment or the `Host` header (via `brand_domains`). `GET /shop/config`, `POST /shop/chat`, `POST /shop/chat/stream` (SSE), `POST /shop/visual-search` (multipart image, 8 MB). Requests run the brand's agent under `runWithBrandContext` scoped to `brand_tenant`; thread ids are namespaced `<brand_tenant>:<suffix>` so brands are isolated.
 
 **Widget** (`storefront/widget.ts`, `/widget`) — `GET /widget/loader.js` injects a launcher button + iframe; `GET /widget/frame` is a self-contained SSR chat UI (no build step) that streams from `/shop/:storefront/chat/stream`, rendering product cards from `catalog_*` output and a Pay button from `commerce_checkout` output. Embed with:
 
@@ -66,13 +66,13 @@ The surfaces, roughly buyer-side → merchant-side:
 
 ## Discoverability: structured data + GEO monitoring
 
-**Structured data** (`src/commerce/structured/`, public, brand-resolved, gated on the brand's `identity.structured_data.enabled`): `GET /structured/feed.jsonld` (schema.org `ItemList`), `GET /structured/products/:id` (`Product` + `BreadcrumbList` in a `@graph`), plus `sitemap.xml` and `robots.txt` — each also available under `/structured/:storefront/*`. Root aliases serve host-resolved `GET /robots.txt`, `GET /sitemap.xml`, and `GET /.well-known/ai-catalog.json` (a discovery document pointing answer engines at the feed — the commerce analogue of the agent card). Responses carry weak ETags + `Cache-Control`.
+**Structured data** (`packages/commerce/src/structured/`, public, brand-resolved, gated on the brand's `identity.structured_data.enabled`): `GET /structured/feed.jsonld` (schema.org `ItemList`), `GET /structured/products/:id` (`Product` + `BreadcrumbList` in a `@graph`), plus `sitemap.xml` and `robots.txt` — each also available under `/structured/:storefront/*`. Root aliases serve host-resolved `GET /robots.txt`, `GET /sitemap.xml`, and `GET /.well-known/ai-catalog.json` (a discovery document pointing answer engines at the feed — the commerce analogue of the agent card). Responses carry weak ETags + `Cache-Control`.
 
-**GEO/AEO monitoring** (`src/geo/`, API `src/geo/router.ts` at `/geo`, cron `src/geo/monitor-job.ts`) answers "how does this brand show up when an AI does the shopping?" Tenants register tracked queries (`POST /geo/queries`, gated `geo:write`); each cron tick replays active queries through a generative engine (Workers AI by default), extracts whether the brand was `mentioned`, its `rank`, `competitors[]`, and `products[]`, and writes `geo_observations` plus a `geo_observation` audit event, `orchestrator_geo_mention` counter, and `orchestrator_geo_rank` histogram. Read back via `GET /geo/observations` and `GET /geo/summary`. Tuned by the `GEO_MONITOR` env JSON.
+**GEO/AEO monitoring** (`packages/commerce/src/geo/`, API `packages/commerce/src/geo/router.ts` at `/geo`, cron `packages/commerce/src/geo/monitor-job.ts`) answers "how does this brand show up when an AI does the shopping?" Tenants register tracked queries (`POST /geo/queries`, gated `geo:write`); each cron tick replays active queries through a generative engine (Workers AI by default), extracts whether the brand was `mentioned`, its `rank`, `competitors[]`, and `products[]`, and writes `geo_observations` plus a `geo_observation` audit event, `orchestrator_geo_mention` counter, and `orchestrator_geo_rank` histogram. Read back via `GET /geo/observations` and `GET /geo/summary`. Tuned by the `GEO_MONITOR` env JSON.
 
 ## B2B: accounts, authority, quote-to-cash
 
-`src/commerce/b2b/` (+ `src/commerce/billing/`). Writes gated `b2b:write`; reads flow through the entity seam so any of these can be backed by a third-party ERP.
+`packages/commerce/src/b2b/` (+ `packages/commerce/src/billing/`). Writes gated `b2b:write`; reads flow through the entity seam so any of these can be backed by a third-party ERP.
 
 - **Accounts / buyers** (D1 `accounts`, `buyers`): accounts carry `payment_terms` (`prepaid|net15|net30|net60`) and `credit_limit_cents`; buyers carry `role` (`admin|approver|purchaser|viewer`) and `spending_limit_cents`.
 - **Purchase authority** (`authority.ts`, pure function): `allowed`, `requires_approval` (over buyer limit — routes into the standard approvals pipeline), or `blocked` (suspended account, viewer role, over credit). Exposed as `POST /b2b/accounts/:id/purchase-check` and the `purchase_authority_check` tool.
@@ -83,7 +83,7 @@ The surfaces, roughly buyer-side → merchant-side:
 
 ## Entity data-source seam
 
-`src/entities/` virtualizes *data* the way the harness virtualizes tools. `resolveEntitySource<T>(env, tenant, type)` returns an `EntitySource<T>` (`get`/`list`) in one of three modes, configured per tenant + entity type in D1 `data_sources`:
+`packages/commerce/src/entities/` virtualizes *data* the way the harness virtualizes tools. `resolveEntitySource<T>(env, tenant, type)` returns an `EntitySource<T>` (`get`/`list`) in one of three modes, configured per tenant + entity type in D1 `data_sources`:
 
 - `native` — D1 is the source of truth (default).
 - `federated` — live read-through to a connector; invalid config degrades to native (fail-safe).
@@ -93,21 +93,21 @@ Connectors are an open registry (`registerEntityConnector`): `http` (`GET {url}/
 
 ## Personalization, visual search, dynamic pricing
 
-**Personalization** (`src/commerce/personalization/`, D1 `customers`, `customer_sessions`, `behavior_events`, `abandoned_carts`): behavior telemetry (`view`, `add_to_cart`, `checkout_start`, `purchase`) is captured fire-and-forget from the catalog/cart tools. `recommend_products` runs Vectorize similarity seeded from a product id or the thread's recent behavior; `identify_customer` upserts a customer by email, links the session, and back-attaches the thread's behavior events for cross-session continuity.
+**Personalization** (`packages/commerce/src/personalization/`, D1 `customers`, `customer_sessions`, `behavior_events`, `abandoned_carts`): behavior telemetry (`view`, `add_to_cart`, `checkout_start`, `purchase`) is captured fire-and-forget from the catalog/cart tools. `recommend_products` runs Vectorize similarity seeded from a product id or the thread's recent behavior; `identify_customer` upserts a customer by email, links the session, and back-attaches the thread's behavior events for cross-session continuity.
 
-**Cart recovery** — the abandoned-cart cron (`src/commerce/personalization/abandoned-cart-job.ts`) scans `behavior_events` for threads with purchase intent but no purchase, idle over an hour; it records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events + an `orchestrator_abandoned_carts_detected` counter, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured (SSRF-guarded; audit-only when unset).
+**Cart recovery** — the abandoned-cart cron (`packages/commerce/src/personalization/abandoned-cart-job.ts`) scans `behavior_events` for threads with purchase intent but no purchase, idle over an hour; it records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events + an `orchestrator_abandoned_carts_detected` counter, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured (SSRF-guarded; audit-only when unset).
 
-**Visual search** (`src/commerce/visual/`) — caption-then-embed: product images are captioned by a Workers AI vision model, the caption embedded into the same 768-dim BGE index; an uploaded query image runs the identical caption → embed → cosine path. Exposed as the `search_by_image` tool and `POST /shop/visual-search`.
+**Visual search** (`packages/commerce/src/visual/`) — caption-then-embed: product images are captioned by a Workers AI vision model, the caption embedded into the same 768-dim BGE index; an uploaded query image runs the identical caption → embed → cosine path. Exposed as the `search_by_image` tool and `POST /shop/visual-search`.
 
-**Dynamic pricing** (`src/commerce/pricing/`, D1 `pricing_rules`, `competitor_prices`): rules have `scope` (`catalog|category|product`), `kind` (`time|velocity|competitor`), a signed `adjustment_bps` (negative = discount), and floor/ceiling clamps. Matching adjustments sum and clamp. Applied at catalog display and B2B quote pricing; cart items snapshot their price at add time so a rule change never silently reprices a cart.
+**Dynamic pricing** (`packages/commerce/src/pricing/`, D1 `pricing_rules`, `competitor_prices`): rules have `scope` (`catalog|category|product`), `kind` (`time|velocity|competitor`), a signed `adjustment_bps` (negative = discount), and floor/ceiling clamps. Matching adjustments sum and clamp. Applied at catalog display and B2B quote pricing; cart items snapshot their price at add time so a rule change never silently reprices a cart.
 
 ## Consent + attribution
 
-`src/commerce/consent/` (tool + store + the `/commerce/consents` router). D1 `consents` is **append-only** — withdrawal is a new `granted: 0` row, never an update; the latest row per thread is authoritative. The `commerce_record_consent` tool captures `granted` + `scopes[]` (e.g. `["terms","data_share","marketing"]`), stamping `COMMERCE_TERMS_VERSION` / `COMMERCE_PRIVACY_URL`, and emits a `consent_recorded` audit event. Every order gets an `order_attribution` row (`channel` ∈ `chat|acp|b2b|widget`, `manifest_id`, `thread_id`, `buyer_subject`, `consent_id`, `utm`) written by the Stripe webhook, ACP complete, and B2B convert. Read APIs (gated `consent:read`): `GET /commerce/consents`, `GET /commerce/attribution/summary` (agent-mediated revenue by channel/manifest), `GET /commerce/attribution/orders/:id`.
+`packages/commerce/src/consent/` (tool + store + the `/commerce/consents` router). D1 `consents` is **append-only** — withdrawal is a new `granted: 0` row, never an update; the latest row per thread is authoritative. The `commerce_record_consent` tool captures `granted` + `scopes[]` (e.g. `["terms","data_share","marketing"]`), stamping `COMMERCE_TERMS_VERSION` / `COMMERCE_PRIVACY_URL`, and emits a `consent_recorded` audit event. Every order gets an `order_attribution` row (`channel` ∈ `chat|acp|b2b|widget`, `manifest_id`, `thread_id`, `buyer_subject`, `consent_id`, `utm`) written by the Stripe webhook, ACP complete, and B2B convert. Read APIs (gated `consent:read`): `GET /commerce/consents`, `GET /commerce/attribution/summary` (agent-mediated revenue by channel/manifest), `GET /commerce/attribution/orders/:id`.
 
 ## Tool catalog
 
-All registered by `commercePlugin.registerTools` (`src/commerce/plugin.ts`); any manifest can pick them up by name.
+All registered by `commercePlugin.registerTools` (`packages/commerce/src/plugin.ts`); any manifest can pick them up by name.
 
 | Group | Tools |
 |---|---|
@@ -123,7 +123,7 @@ Bundled commerce manifests: `orderloop` (D2C buyer agent — react, anonymous-al
 
 **Migrations** `0006`–`0018`: `products` / `orders` / `order_items` (0006), `acp_checkout_sessions` (0007), `brands` (0008), `brand_domains` (0009), `data_sources` (0010), `accounts` / `buyers` (0011), `quotes` / `quote_items` / `invoices` (0012), `contract_prices` (0013), `billing_settings` (0014), `geo_queries` / `geo_observations` (0015), `consents` / `order_attribution` (0016), `customers` / `customer_sessions` / `behavior_events` / `abandoned_carts` (0017), `pricing_rules` / `competitor_prices` (0018). All follow the composite tenant-key convention except `brand_domains` (host-keyed by design). See [persistence.md](persistence.md). Core (`0001`–`0005`) and commerce share one D1 database and one migrations dir; name new commerce-owned migrations `NNNN_commerce_*` so ownership stays legible.
 
-**Env / secrets** (typed in `src/commerce/env.ts`, except `CONSUMER_SHARED_SECRET` which is core):
+**Env / secrets** (typed in `packages/commerce/src/env.ts`, except `CONSUMER_SHARED_SECRET` which is core):
 
 | Var | Purpose |
 |---|---|
