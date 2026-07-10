@@ -7,7 +7,7 @@ import {
   DEFAULT_GEO_MONITOR_OPTS,
   parseExtraction,
   parseGeoMonitorOpts,
-} from '../../src/jobs/geo-monitor';
+} from '../../src/geo/monitor-job';
 
 describe('parseExtraction', () => {
   it('parses a well-formed reply', () => {

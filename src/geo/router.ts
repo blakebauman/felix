@@ -15,8 +15,8 @@ import { Hono } from 'hono';
 import type { AuthContext } from '../auth/context';
 import { requireScope } from '../auth/middleware';
 import type { Env } from '../env';
-import { CreateGeoQueryRequest, type GeoQuery } from '../geo/models';
-import { deleteQuery, listObservations, listQueries, upsertQuery } from '../geo/store';
+import { CreateGeoQueryRequest, type GeoQuery } from './models';
+import { deleteQuery, listObservations, listQueries, upsertQuery } from './store';
 
 const WRITE_SCOPE = 'geo:write';
 type Vars = { Variables: { auth: AuthContext } };

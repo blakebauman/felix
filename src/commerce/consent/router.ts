@@ -13,10 +13,10 @@
  */
 
 import { Hono } from 'hono';
-import type { AuthContext } from '../auth/context';
-import { requireScope } from '../auth/middleware';
-import { attributionSummary, getAttribution, listConsents } from '../commerce/consent/store';
-import type { Env } from '../env';
+import type { AuthContext } from '../../auth/context';
+import { requireScope } from '../../auth/middleware';
+import type { Env } from '../../env';
+import { attributionSummary, getAttribution, listConsents } from './store';
 
 type Vars = { Variables: { auth: AuthContext } };
 

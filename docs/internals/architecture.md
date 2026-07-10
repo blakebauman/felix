@@ -47,14 +47,14 @@ export { AgentWorkflow } from './workflows/agent-workflow';
 `src/app.ts`:
 
 ```ts
-app.use('*', bodyLimit({ maxSize: 12 * 1024 * 1024, onError: … }));  // 413 payload_too_large
-app.use('*', authMiddleware());
-app.use('*', rateLimitMiddleware());
+app.use('*', bodyLimit({ maxSize: max(1 MB core floor, ...plugin bodyLimitBytes), onError: … }));  // 413 payload_too_large
+app.use('*', authMiddleware({ selfAuthenticatingMounts }));   // mounts contributed by plugins
+app.use('*', rateLimitMiddleware({ keyResolvers }));          // resolvers contributed by plugins
 ```
 
-All three run before every route. Order matters: the 12 MB body cap (sized for the storefront visual-search image upload) rejects oversized payloads before any parsing; auth runs before the rate limiter so it can key on the resolved tenant id.
+All three run before every route. Order matters: the body cap (the commerce plugin raises it to 12 MB for the storefront visual-search image upload) rejects oversized payloads before any parsing; auth runs before the rate limiter so it can key on the resolved tenant id.
 
-A small set of mounts is **self-authenticating** (`SELF_AUTHENTICATING_MOUNTS` in `src/auth/middleware.ts`, currently `/acp`): the middleware still installs an anonymous `RequestContext` but skips JWT bearer parsing, because the mount enforces its own credential (constant-time `ACP_API_KEY` compare) inside the router.
+A small set of mounts is **self-authenticating** (`selfAuthenticatingMounts` on a plugin, threaded into `authMiddleware` — currently `/acp` from the commerce plugin): the middleware still installs an anonymous `RequestContext` but skips JWT bearer parsing, because the mount enforces its own credential (constant-time `ACP_API_KEY` compare) inside the router.
 
 ### authMiddleware
 
@@ -85,7 +85,7 @@ return runWithContext(ctx, async () => { try { await next(); } finally { dispose
 
 ### rateLimitMiddleware
 
-`src/security/rate-limit.ts`. Reads `c.env.TENANT_RATE_LIMIT` and keys on `principal.tenantId`. Soft-fails open if the binding is absent (unit tests, dev probes without the unsafe binding wired). Skips `/health`, `/.well-known/*`, `/docs`, `/openapi.json`.
+`src/security/rate-limit.ts`. Reads `c.env.TENANT_RATE_LIMIT` and keys on `principal.tenantId`, after consulting plugin-contributed `keyResolvers` in order (the commerce plugin derives per-storefront / per-host / ACP buckets for its public anonymous surfaces). Soft-fails open if the binding is absent (unit tests, dev probes without the unsafe binding wired). Skips `/health`, `/.well-known/*`, `/docs`, `/openapi.json`.
 
 ## App composition
 
@@ -102,18 +102,7 @@ OpenAPIHono<{ Bindings: Env, Variables: { auth: AuthContext } }>
   route    /v1          buildOpenAIRouter
   route    /chat        buildChatRouter
   route    /internal    buildInternalRouter         (queue consumers POST tool_results here; x-consumer-secret)
-  route    /commerce    buildCommerceRouter         (Stripe webhook) + buildConsentRouter (consents, attribution)
-  route    /acp         buildAcpRouter              (Agentic Commerce Protocol; ACP_API_KEY bearer)
-  route    /brands      buildBrandsRouter           (D2C brand provisioning, catalog import, domains)
-  route    /shop        buildStorefrontRouter       (public per-brand storefront chat + visual search)
-  route    /widget      buildWidgetRouter           (embeddable chat widget loader + frame)
-  route    /structured  buildStructuredRouter       (schema.org JSON-LD feeds, sitemap, robots)
-  route    /            buildStructuredRootRouter   (root robots.txt, sitemap.xml, .well-known/ai-catalog.json)
-  route    /entities    buildEntitiesRouter         (entity data-source seam: config, sync, push)
-  route    /b2b         buildB2bRouter + buildB2bQuotesRouter
-  route    /b2b/billing buildBillingRouter
   route    /audit       buildAuditRouter            (incl. /audit/metrics, /audit/ab)
-  route    /geo         buildGeoRouter              (GEO/AEO tracked queries + observations)
   route    /approvals   buildApprovalsRouter
   route    /plans       buildPlansRouter
   route    /jobs        buildJobsRouter
@@ -121,6 +110,19 @@ OpenAPIHono<{ Bindings: Env, Variables: { auth: AuthContext } }>
   route    /eval        buildEvalRouter
   route    /a2a         buildA2ARouter
   route    /mcp         buildMcpRouter
+  for each plugin: plugin.routes(app, { tools })     (feature plugins — see src/plugins/types.ts)
+    commerce plugin mounts:
+      route    /commerce    buildCommerceRouter         (Stripe webhook) + buildConsentRouter (consents, attribution)
+      route    /acp         buildAcpRouter              (Agentic Commerce Protocol; ACP_API_KEY bearer)
+      route    /brands      buildBrandsRouter           (D2C brand provisioning, catalog import, domains)
+      route    /shop        buildStorefrontRouter       (public per-brand storefront chat + visual search)
+      route    /widget      buildWidgetRouter           (embeddable chat widget loader + frame)
+      route    /structured  buildStructuredRouter       (schema.org JSON-LD feeds, sitemap, robots)
+      route    /            buildStructuredRootRouter   (root robots.txt, sitemap.xml, .well-known/ai-catalog.json)
+      route    /entities    buildEntitiesRouter         (entity data-source seam: config, sync, push)
+      route    /b2b         buildB2bRouter + buildB2bQuotesRouter
+      route    /b2b/billing buildBillingRouter
+      route    /geo         buildGeoRouter              (GEO/AEO tracked queries + observations)
   doc31    GET  /openapi.json    -> OpenAPI 3.1.0
   get      GET  /docs            -> Scalar UI rendered from /openapi.json
   route    /docs        buildDocsSiteRouter          (prose docs rendered as a site: /docs/home, /docs/guide/*, /docs/internals/*)
@@ -182,9 +184,10 @@ scheduled(_event, env, ctx):
       await runScheduledJobs(env)                              // sweep jobs table, run due ones
       await sweepOrphanQueueDispatches(env)                    // resolve stale queue dispatches
       await runAnomalyScan(env)                                // per-tool error-rate anomaly scan
-      await runAbandonedCartScan(env)                          // flag carts with intent but no purchase
       await runContinuousEvalTick(env, tools, opts, now, ctx)  // online-benchmark in-flight canaries
-      await runGeoMonitorTick(env, geoOpts, now, ctx)          // replay tracked queries through a generative engine
+      for each plugin cronTask: task.run({ env, tools, now, execCtx })
+        // commerce: abandoned_cart_scan (flag carts with intent but no purchase)
+        // commerce: geo_monitor_tick (replay tracked queries through a generative engine)
     } finally {
       disposeLimitState(reqCtx.limitState)
     }
@@ -195,12 +198,12 @@ Each step is wrapped in its own `try/catch` so one failure doesn't abort the res
 
 `runScheduledJobs` (`src/jobs/cron.ts`) loads up to 500 jobs whose `next_run_at <= now`, re-verifies the cron expression against the current minute (`cronMatches`) to defend against index over-selection, records the run, and recomputes `next_run_at`. Failures are recorded as `last_status: error` and audit-logged but don't abort the sweep.
 
-Five additional cron jobs land in the same handler:
+Additional cron work lands in the same handler — three core jobs plus every installed plugin's `cronTasks` (each isolated in its own `try/catch`):
 
 - `sweepOrphanQueueDispatches(env)` (`src/jobs/queue-orphan-cleanup.ts`) — writes a synthetic `[expired]` `tool_result` for any `queue_dispatch` older than its deadline without a paired `queue_complete` / `queue_expired`, so an async (`queue` transport) cycle can resolve even when the consumer is unreachable.
 - `runAnomalyScan(env)` (`src/jobs/anomaly-detector.ts`) — sweeps the last cron window of `audit_events` (tool_call rows), computes per-`(tenant, manifest, tool, error_code)` error rates, fires `anomaly_detected` events when an error rate is 3σ above a 24h EWMA baseline. When the offending `manifest_id` matches a current canary pointer, atomically sets `canary_weight = 0` and emits `auto_rollback`.
-- `runAbandonedCartScan(env)` (`src/jobs/abandoned-cart.ts`) — scans `behavior_events` for threads with purchase intent (`add_to_cart` / `checkout_start`) but no `purchase`, idle over an hour; records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured. See [commerce.md](commerce.md).
-- `runGeoMonitorTick(env, opts, now, ctx)` (`src/jobs/geo-monitor.ts`) — replays each tenant's tracked shopping queries (`geo_queries`) through a generative engine and records brand presence/rank/competitors into `geo_observations`. Tuned via the `GEO_MONITOR` env JSON. See [commerce.md](commerce.md).
+- `abandoned_cart_scan` (commerce plugin; `src/commerce/personalization/abandoned-cart-job.ts`) — scans `behavior_events` for threads with purchase intent (`add_to_cart` / `checkout_start`) but no `purchase`, idle over an hour; records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured. See [commerce.md](commerce.md).
+- `geo_monitor_tick` (commerce plugin; `src/geo/monitor-job.ts`) — replays each tenant's tracked shopping queries (`geo_queries`) through a generative engine and records brand presence/rank/competitors into `geo_observations`. Tuned via the `GEO_MONITOR` env JSON. See [commerce.md](commerce.md).
 - `runContinuousEvalTick(env, tools, opts, now, ctx)` (`src/jobs/continuous-eval.ts`) — online benchmarking of in-flight canaries. For every manifest with a live canary (`listActiveCanaries`), it samples recent production inputs (captured as `user_input` on `tool_call` audit rows by the react loop) within the last window, replays each through the canary *version* (built directly from the versioned manifest, not the stable/canary resolver), scores the response with the Workers-AI judge against a generic quality rubric, and emits `judge_score` events tagged `payload.source: 'continuous'` under the canary's tenant — a regression shows up as a drop in the canary's pass rate vs. its stable baseline. Stateless: time-windowed sampling like the anomaly detector, with a deterministic per-input hash gate (`sample_rate`) and a hard `max_replays_per_tick` cap. Replays run under the anonymous cron context so their own `tool_call` rows land under `default` and are never re-sampled (`listActiveCanaries` skips `default`); each replay gets a fresh `LimitState`.
 
 ## Queue handler

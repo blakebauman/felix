@@ -23,9 +23,9 @@ import { recordEventDetached } from '../audit/store';
 import { getBrand } from '../commerce/brands/store';
 import { listProductsPage } from '../commerce/catalog-store';
 import type { Env } from '../env';
-import type { GeoObservation, GeoQuery } from '../geo/models';
-import { listActiveQueries, putObservation } from '../geo/store';
 import { recordCounter, recordHistogram } from '../observability/metrics';
+import type { GeoObservation, GeoQuery } from './models';
+import { listActiveQueries, putObservation } from './store';
 
 export interface GeoMonitorOpts {
   /** Hard cap on queries processed per tick — bounds Workers-AI spend. */

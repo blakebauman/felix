@@ -11,15 +11,14 @@
 import { createApp } from './app';
 import type { AuditEvent } from './audit/models';
 import { persistBatch } from './audit/store';
-import { compose } from './composition';
+import { compose, installedPlugins } from './composition';
 import { buildAnonymousContext, disposeLimitState, runWithContext } from './context';
 import type { Env } from './env';
-import { runAbandonedCartScan } from './jobs/abandoned-cart';
 import { runAnomalyScan } from './jobs/anomaly-detector';
 import { parseContinuousEvalOpts, runContinuousEvalTick } from './jobs/continuous-eval';
 import { runScheduledJobs } from './jobs/cron';
-import { parseGeoMonitorOpts, runGeoMonitorTick } from './jobs/geo-monitor';
 import { sweepOrphanQueueDispatches } from './jobs/queue-orphan-cleanup';
+import type { FelixPlugin } from './plugins/types';
 import { federationStub } from './policy/federation-do';
 
 export { A2ATaskDO } from './a2a/task-do';
@@ -30,15 +29,25 @@ export { AgentWorkflow } from './workflows/agent-workflow';
 
 let cachedApp: ReturnType<typeof createApp> | null = null;
 let cachedTools: ReturnType<typeof compose> | null = null;
+let cachedPlugins: FelixPlugin[] | null = null;
 
 function toolsFor(env: Env): ReturnType<typeof compose> {
   if (!cachedTools) cachedTools = compose(env);
   return cachedTools;
 }
 
+function pluginsInstalled(): FelixPlugin[] {
+  if (!cachedPlugins) cachedPlugins = installedPlugins();
+  return cachedPlugins;
+}
+
 function appFor(env: Env): ReturnType<typeof createApp> {
   if (!cachedApp) {
-    cachedApp = createApp({ tools: toolsFor(env), defaultManifest: 'quick' });
+    cachedApp = createApp({
+      tools: toolsFor(env),
+      defaultManifest: 'quick',
+      plugins: pluginsInstalled(),
+    });
   }
   return cachedApp;
 }
@@ -78,14 +87,6 @@ export default {
             console.error('anomaly scan failed', err);
           }
           try {
-            // Predictive personalization: flag carts with purchase intent but
-            // no completed purchase, idle past the threshold. No-op when there
-            // are no recent behavior events.
-            await runAbandonedCartScan(env);
-          } catch (err) {
-            console.error('abandoned-cart scan failed', err);
-          }
-          try {
             // Online benchmarking: replay sampled production inputs
             // through each in-flight canary and judge the result. No-op
             // when no canaries are live.
@@ -99,13 +100,17 @@ export default {
           } catch (err) {
             console.error('continuous eval tick failed', err);
           }
-          try {
-            // GEO/AEO monitoring: replay tracked shopping queries through a
-            // generative engine and record where each brand shows up. No-op
-            // when no queries are registered or env.AI is absent.
-            await runGeoMonitorTick(env, parseGeoMonitorOpts(env), Date.now(), ctx);
-          } catch (err) {
-            console.error('geo monitor tick failed', err);
+          // Feature-plugin cron tasks (e.g. commerce abandoned-cart scan,
+          // GEO monitor). Each task is isolated so one failing plugin task
+          // never starves core crons or other plugins.
+          for (const plugin of pluginsInstalled()) {
+            for (const task of plugin.cronTasks ?? []) {
+              try {
+                await task.run({ env, tools: toolsFor(env), now: Date.now(), execCtx: ctx });
+              } catch (err) {
+                console.error(`${plugin.name} cron task ${task.name} failed`, err);
+              }
+            }
           }
         } finally {
           disposeLimitState(reqCtx.limitState);

@@ -26,17 +26,22 @@ import { outboundAuthHeader } from './providers';
 
 type AppContext = Context<{ Bindings: Env; Variables: { auth: AuthContext } }>;
 
-// Path prefixes that carry their own `Authorization: Bearer <key>` scheme
-// (NOT a JWT) and enforce it inside the router. If we let the JWT verifier see
-// their bearer it would reject the non-JWT key as `invalid_token` and 401
-// before the router's own constant-time key check runs — so we skip JWT
-// verification for these and let them run as ANONYMOUS at the middleware layer.
-// `/internal` (x-consumer-secret) and the Stripe webhook (stripe-signature)
-// don't use the Authorization header, so they don't need to be listed here.
-const SELF_AUTHENTICATING_MOUNTS = ['/acp'];
+export interface AuthMiddlewareOptions {
+  /**
+   * Path prefixes that carry their own `Authorization: Bearer <key>` scheme
+   * (NOT a JWT) and enforce it inside the router. If we let the JWT verifier
+   * see their bearer it would reject the non-JWT key as `invalid_token` and
+   * 401 before the router's own constant-time key check runs — so we skip JWT
+   * verification for these and let them run as ANONYMOUS at the middleware
+   * layer. Contributed by plugins (e.g. commerce declares `/acp`); routes
+   * that don't use the Authorization header (x-consumer-secret,
+   * stripe-signature) don't need to be listed.
+   */
+  selfAuthenticatingMounts?: readonly string[];
+}
 
-function usesOwnAuthScheme(path: string): boolean {
-  return SELF_AUTHENTICATING_MOUNTS.some((m) => path === m || path.startsWith(`${m}/`));
+function usesOwnAuthScheme(path: string, mounts: readonly string[]): boolean {
+  return mounts.some((m) => path === m || path.startsWith(`${m}/`));
 }
 
 let warnedNoVerifiers = false;
@@ -64,7 +69,8 @@ function assertVerifiersConfigured(env: Env): void {
   );
 }
 
-export function authMiddleware() {
+export function authMiddleware(opts: AuthMiddlewareOptions = {}) {
+  const selfAuthMounts = opts.selfAuthenticatingMounts ?? [];
   return async (c: AppContext, next: Next): Promise<Response | undefined> => {
     const env = c.env;
     assertVerifiersConfigured(env);
@@ -72,7 +78,10 @@ export function authMiddleware() {
     const path = new URL(c.req.url).pathname;
     let auth: AuthContext = ANONYMOUS;
 
-    if (authHeader.toLowerCase().startsWith('bearer ') && !usesOwnAuthScheme(path)) {
+    if (
+      authHeader.toLowerCase().startsWith('bearer ') &&
+      !usesOwnAuthScheme(path, selfAuthMounts)
+    ) {
       const token = authHeader.slice(7).trim();
       const verifiers = parseVerifiers(env);
       if (verifiers.length === 0) {

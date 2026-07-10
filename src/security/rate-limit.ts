@@ -38,31 +38,26 @@ function shouldSkip(path: string): boolean {
   return SKIP_PREFIX.some((p) => path.startsWith(p));
 }
 
-// First path segment after `/shop/` that denotes a host-resolved action rather
-// than a `:storefront` slug (see commerce/storefront/router.ts).
-const STOREFRONT_HOST_ACTIONS = new Set(['config', 'chat', 'visual-search']);
+export interface RateLimitMiddlewareOptions {
+  /**
+   * Plugin-contributed key resolvers, consulted in order before the default
+   * per-tenant keying. Public anonymous surfaces (e.g. commerce storefronts)
+   * run as tenant `default`, so keying them on the principal tenant would
+   * lump every brand's traffic (and its LLM spend) into one bucket — a
+   * resolver lets the owning plugin derive an isolation key (per-slug,
+   * per-host, per-surface) instead. Return undefined to fall through.
+   */
+  keyResolvers?: readonly ((c: AppContext) => string | undefined)[];
+}
 
-/**
- * Public, anonymous surfaces run as tenant `default`, so keying the limiter on
- * the principal tenant would lump every brand's storefront traffic (and its
- * LLM spend) into one bucket — one brand could then exhaust the window for all
- * others. Derive a per-brand key for `/shop/*` (by storefront slug, or by Host
- * for the host-resolved routes) and a dedicated bucket for `/acp`, so these
- * anonymous surfaces are isolated from each other and from `default`.
- */
-function deriveKey(c: AppContext, path: string): string {
-  if (path === '/acp' || path.startsWith('/acp/')) return 'acp';
-
-  if (path.startsWith('/shop/')) {
-    const first = path.slice('/shop/'.length).split('/')[0] ?? '';
-    if (first && !STOREFRONT_HOST_ACTIONS.has(first)) {
-      // `/shop/:storefront/...` — isolate by the (globally-unique) storefront slug.
-      return `shop:${first}`;
-    }
-    // Host-resolved `/shop/config|chat|visual-search` — isolate by Host header.
-    return `shop-host:${(c.req.header('host') ?? '').toLowerCase() || 'unknown'}`;
+function deriveKey(
+  c: AppContext,
+  resolvers: readonly ((c: AppContext) => string | undefined)[],
+): string {
+  for (const resolve of resolvers) {
+    const key = resolve(c);
+    if (key !== undefined) return key;
   }
-
   const auth = c.get('auth');
   // Empty/missing tenant -> `default`. Rate Limiting keys are already
   // namespaced by the binding's `namespace_id`, so a raw tenant id is
@@ -70,7 +65,8 @@ function deriveKey(c: AppContext, path: string): string {
   return auth?.principal?.tenantId || 'default';
 }
 
-export function rateLimitMiddleware() {
+export function rateLimitMiddleware(opts: RateLimitMiddlewareOptions = {}) {
+  const resolvers = opts.keyResolvers ?? [];
   return async (c: AppContext, next: Next): Promise<Response | undefined> => {
     const limiter = c.env.TENANT_RATE_LIMIT;
     if (!limiter) {
@@ -85,7 +81,7 @@ export function rateLimitMiddleware() {
 
     let outcome: { success: boolean };
     try {
-      outcome = await limiter.limit({ key: deriveKey(c, path) });
+      outcome = await limiter.limit({ key: deriveKey(c, resolvers) });
     } catch (err) {
       // Binding misconfigured at the platform level — fail open rather than
       // 503ing every request. The platform error is logged for ops and a

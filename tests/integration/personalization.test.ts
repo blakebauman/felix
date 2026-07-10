@@ -10,6 +10,7 @@
 
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { runAbandonedCartScan } from '../../src/commerce/personalization/abandoned-cart-job';
 import {
   findAbandonedCandidates,
   getCustomer,
@@ -27,7 +28,6 @@ import {
 } from '../../src/commerce/personalization/tools';
 import { buildAnonymousContext, runWithContext } from '../../src/context';
 import type { Env as AppEnv } from '../../src/env';
-import { runAbandonedCartScan } from '../../src/jobs/abandoned-cart';
 import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;

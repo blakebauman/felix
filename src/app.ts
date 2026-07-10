@@ -20,9 +20,7 @@ import { buildA2ARouter } from './a2a/server';
 import { buildApprovalsRouter } from './api/approvals';
 import { buildAuditRouter } from './api/audit';
 import { buildChatRouter } from './api/chat';
-import { buildConsentRouter } from './api/consent';
 import { buildEvalRouter } from './api/eval';
-import { buildGeoRouter } from './api/geo';
 import { buildInternalRouter } from './api/internal';
 import { buildJobsRouter } from './api/jobs';
 import { buildManifestsRouter } from './api/manifests';
@@ -31,21 +29,12 @@ import { buildPlansRouter } from './api/plans';
 import { recordEventDetached } from './audit/store';
 import type { AuthContext } from './auth/context';
 import { authMiddleware } from './auth/middleware';
-import { buildAcpRouter } from './commerce/acp/router';
-import { buildB2bQuotesRouter } from './commerce/b2b/quote-router';
-import { buildB2bRouter } from './commerce/b2b/router';
-import { buildBillingRouter } from './commerce/billing/router';
-import { buildBrandsRouter } from './commerce/brands/router';
-import { buildStorefrontRouter } from './commerce/storefront/router';
-import { buildWidgetRouter } from './commerce/storefront/widget';
-import { buildStructuredRootRouter, buildStructuredRouter } from './commerce/structured/router';
-import { buildCommerceRouter } from './commerce/webhook';
 import { buildDocsSiteRouter } from './docs/site';
-import { buildEntitiesRouter } from './entities/router';
 import type { Env } from './env';
 import { loadManifest } from './manifests/loader';
 import { buildMcpRouter } from './mcp/server';
 import { recordCounter } from './observability/metrics';
+import type { FelixPlugin } from './plugins/types';
 import { getActiveBundle } from './policy/bundle';
 import { rateLimitMiddleware } from './security/rate-limit';
 import type { ToolProvider } from './tools/provider';
@@ -54,7 +43,18 @@ export interface AppOptions {
   tools: ToolProvider;
   /** Default manifest exposed under /a2a, /mcp, /.well-known/agent-card.json. */
   defaultManifest: string;
+  /**
+   * Installed feature plugins (see `src/plugins/types.ts`). Contribute
+   * routes, middleware knobs (self-auth mounts, rate-limit keying, body-size
+   * floor); tool registration happens in `compose`, cron tasks in
+   * `index.ts:scheduled`. Defaults to none — `index.ts` passes
+   * `installedPlugins()`.
+   */
+  plugins?: readonly FelixPlugin[];
 }
+
+/** Body-size cap for a core-only deployment; JSON surfaces are small. */
+const CORE_BODY_LIMIT_BYTES = 1024 * 1024;
 
 // Scalar reference UI theme — same neutral monochrome palette as the prose
 // docs site (`src/docs/site.ts`): white background, near-black text, subtle
@@ -159,24 +159,36 @@ export function createApp(
   opts: AppOptions,
 ): OpenAPIHono<{ Bindings: Env; Variables: { auth: AuthContext } }> {
   const app = new OpenAPIHono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
+  const plugins = opts.plugins ?? [];
 
-  // Cap request bodies before any handler buffers them. The ceiling
-  // accommodates the storefront visual-search image upload (8 MB, see
-  // storefront/router.ts) with form/multipart overhead; JSON surfaces are far
-  // smaller. Guards against a single oversized body exhausting isolate memory.
+  // Cap request bodies before any handler buffers them. Plugins raise the
+  // ceiling when their routes need it (e.g. the commerce storefront's
+  // visual-search image upload); the core floor covers JSON surfaces.
+  // Guards against a single oversized body exhausting isolate memory.
   app.use(
     '*',
     bodyLimit({
-      maxSize: 12 * 1024 * 1024,
+      maxSize: Math.max(CORE_BODY_LIMIT_BYTES, ...plugins.map((p) => p.bodyLimitBytes ?? 0)),
       onError: (c) => c.json({ error: 'payload_too_large' }, 413),
     }),
   );
 
-  app.use('*', authMiddleware());
+  app.use(
+    '*',
+    authMiddleware({
+      selfAuthenticatingMounts: plugins.flatMap((p) => p.selfAuthenticatingMounts ?? []),
+    }),
+  );
   // Rate limit runs after auth so it can key on the resolved tenant id.
   // It skips /health, /.well-known/*, /docs, /openapi.json internally —
-  // see rate-limit.ts.
-  app.use('*', rateLimitMiddleware());
+  // see rate-limit.ts. Plugins may derive their own bucket keys (public
+  // anonymous surfaces) before the default per-tenant keying applies.
+  app.use(
+    '*',
+    rateLimitMiddleware({
+      keyResolvers: plugins.flatMap((p) => (p.rateLimitKey ? [p.rateLimitKey.bind(p)] : [])),
+    }),
+  );
 
   // Unhandled-exception boundary. `HTTPException` carries its own response
   // (used by routes that throw 4xx); everything else is treated as a bug
@@ -303,22 +315,7 @@ export function createApp(
   app.route('/v1', buildOpenAIRouter({ tools: opts.tools }));
   app.route('/chat', buildChatRouter({ tools: opts.tools }));
   app.route('/internal', buildInternalRouter());
-  app.route('/commerce', buildCommerceRouter());
-  app.route('/commerce', buildConsentRouter());
-  app.route('/acp', buildAcpRouter());
-  app.route('/brands', buildBrandsRouter());
-  app.route('/shop', buildStorefrontRouter({ tools: opts.tools }));
-  app.route('/widget', buildWidgetRouter());
-  app.route('/structured', buildStructuredRouter());
-  // Crawler-facing root aliases (/robots.txt, /sitemap.xml, /.well-known/ai-catalog.json),
-  // host-resolved to a brand. Mounted at root where answer engines look.
-  app.route('/', buildStructuredRootRouter());
-  app.route('/entities', buildEntitiesRouter());
-  app.route('/b2b', buildB2bRouter());
-  app.route('/b2b', buildB2bQuotesRouter());
-  app.route('/b2b/billing', buildBillingRouter());
   app.route('/audit', buildAuditRouter());
-  app.route('/geo', buildGeoRouter());
   app.route('/approvals', buildApprovalsRouter());
   app.route('/plans', buildPlansRouter());
   app.route('/jobs', buildJobsRouter());
@@ -326,6 +323,16 @@ export function createApp(
   app.route('/eval', buildEvalRouter({ tools: opts.tools }));
   app.route('/a2a', buildA2ARouter({ tools: opts.tools, defaultManifest: opts.defaultManifest }));
   app.route('/mcp', buildMcpRouter({ tools: opts.tools, defaultManifest: opts.defaultManifest }));
+
+  // -------------------------------------------------------------------
+  // Feature-plugin routes
+  // -------------------------------------------------------------------
+  // Mounted after the core sub-routers and before the /docs site. Plugins
+  // may claim root paths (e.g. the commerce structured-data router serves
+  // /robots.txt) — core exact routes registered above still win.
+  for (const plugin of plugins) {
+    plugin.routes?.(app, { tools: opts.tools });
+  }
 
   // -------------------------------------------------------------------
   // OpenAPI spec + Scalar UI

@@ -8,20 +8,26 @@
  */
 
 import { z } from 'zod';
-import { b2bToolFactories } from './commerce/b2b/tools';
-import { commerceRecordConsentTool } from './commerce/consent/tool';
-import { personalizationToolFactories } from './commerce/personalization/tools';
-import { commerceCheckoutTool } from './commerce/stripe-tool';
-import { commerceToolFactories } from './commerce/tools';
-import { visualToolFactories } from './commerce/visual/tools';
+import { commercePlugin } from './commerce/plugin';
 import { getContext } from './context';
 import type { Env } from './env';
 import { resolveManifest } from './manifests/resolver';
 import type { Manifest } from './manifests/schema';
+import type { FelixPlugin } from './plugins/types';
 import { evaluateExpression } from './security/expr';
 import { getActivated, setActivated } from './skills/activation-store';
 import { InMemoryToolProvider, type ToolProvider } from './tools/provider';
 import { defineTool } from './tools/types';
+
+/**
+ * The installed feature plugins. This is the ONLY core-side line that names a
+ * plugin — removing a feature is deleting its entry here. `index.ts` threads
+ * the list into `createApp` (routes, middleware knobs) and `scheduled`
+ * (cron tasks); `compose` registers each plugin's tools.
+ */
+export function installedPlugins(): FelixPlugin[] {
+  return [commercePlugin];
+}
 
 async function loadForSkill(
   env: Env,
@@ -147,32 +153,10 @@ export function compose(_env: Env): ToolProvider {
     }),
   );
 
-  // Orderloop commerce tools. Catalog tools read the D1 `products` table; cart
-  // tools read/write the session-backed cart; `commerce_checkout` creates a
-  // Stripe Checkout Session (gate it with a manifest approval rule). The
-  // external catalog-MCP path (spec.mcp_servers) remains an alternative source.
-  for (const [name, factory] of Object.entries(commerceToolFactories())) {
-    provider.register(name, factory);
-  }
-  provider.register('commerce_checkout', commerceCheckoutTool);
-  provider.register('commerce_record_consent', commerceRecordConsentTool);
-
-  // Predictive-personalization tools (recommendations). Read tenant from the
-  // RequestContext + seed from session behavior like the commerce tools.
-  for (const [name, factory] of Object.entries(personalizationToolFactories())) {
-    provider.register(name, factory);
-  }
-
-  // Visual search — match an uploaded image against the catalog's image
-  // embeddings (caption-then-embed in Vectorize).
-  for (const [name, factory] of Object.entries(visualToolFactories())) {
-    provider.register(name, factory);
-  }
-
-  // B2B procurement tools — quote-to-cash + authority for the procurement
-  // multi-agent. Read tenant from the RequestContext like the commerce tools.
-  for (const [name, factory] of Object.entries(b2bToolFactories())) {
-    provider.register(name, factory);
+  // Feature-plugin tools (commerce catalog/cart/checkout, personalization,
+  // visual search, B2B, …) register through the plugin seam.
+  for (const plugin of installedPlugins()) {
+    plugin.registerTools?.((name, factory) => provider.register(name, factory));
   }
 
   return provider;

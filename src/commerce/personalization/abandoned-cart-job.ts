@@ -14,16 +14,16 @@
  * so `recordEvent` enqueues audit rows normally.
  */
 
-import { recordEvent } from '../audit/store';
+import { recordEvent } from '../../audit/store';
+import type { Env } from '../../env';
+import { recordCounter } from '../../observability/metrics';
 import {
   type AbandonedCandidate,
   findAbandonedCandidates,
   getCustomer,
   markAbandoned,
-} from '../commerce/personalization/customer-store';
-import { dispatchRecovery } from '../commerce/personalization/recovery';
-import type { Env } from '../env';
-import { recordCounter } from '../observability/metrics';
+} from './customer-store';
+import { dispatchRecovery } from './recovery';
 
 const IDLE_MS = 60 * 60 * 1000; // 1h since last activity → considered abandoned
 const LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000; // only scan the last week of events

@@ -1,6 +1,8 @@
 # Agentic commerce
 
-Felix Commerce is the conversational-commerce layer built on the harness. It adds no new harness abstractions — it is a vertical assembled from the existing seams: commerce capabilities are ordinary `Tool`s registered in `src/composition.ts`, the cart lives in the append-only session log, checkout rides the human-in-the-loop approvals pipeline, brand storefronts are per-tenant manifests resolved through the standard 4-layer resolver, and B2B data flows through a pluggable entity data-source seam. All money is integer cents. Everything is tenant-scoped.
+Felix Commerce is the conversational-commerce layer built on the harness. It adds no new harness abstractions — it is a vertical assembled from the existing seams: commerce capabilities are ordinary `Tool`s, the cart lives in the append-only session log, checkout rides the human-in-the-loop approvals pipeline, brand storefronts are per-tenant manifests resolved through the standard 4-layer resolver, and B2B data flows through a pluggable entity data-source seam. All money is integer cents. Everything is tenant-scoped.
+
+The whole layer is packaged as a single **`FelixPlugin`** (`src/commerce/plugin.ts`; contract in `src/plugins/types.ts`): its routers, tool factories, cron tasks (abandoned-cart scan, GEO monitor), the `/acp` self-authenticating mount, the storefront/ACP rate-limit keying, and the 12 MB body-size floor for visual-search uploads are all declared there. Core wires it in through the one `commercePlugin` entry in `src/composition.ts:installedPlugins()` and is otherwise commerce-blind — enforced by `tests/unit/plugin_boundary.test.ts`. Commerce env vars merge into the core `Env` interface via module augmentation in `src/commerce/env.ts`.
 
 The surfaces, roughly buyer-side → merchant-side:
 
@@ -44,7 +46,7 @@ The surfaces, roughly buyer-side → merchant-side:
 | `POST /acp/checkout_sessions/:id/complete` | charge + create order (idempotent) |
 | `POST /acp/checkout_sessions/:id/cancel` | cancel |
 
-**Auth**: `/acp` is listed in `SELF_AUTHENTICATING_MOUNTS` (`src/auth/middleware.ts`), so the global JWT middleware skips bearer parsing for it. The router compares `Authorization: Bearer …` against `env.ACP_API_KEY` in constant time (`src/security/constant-time.ts`); when the key is unset the surface returns 503 `not_configured`. Single-merchant: sessions belong to `env.ACP_MERCHANT_TENANT` (default `default`).
+**Auth**: `/acp` is declared in the commerce plugin's `selfAuthenticatingMounts` (threaded into `authMiddleware` by `createApp`), so the global JWT middleware skips bearer parsing for it. The router compares `Authorization: Bearer …` against `env.ACP_API_KEY` in constant time (`src/security/constant-time.ts`); when the key is unset the surface returns 503 `not_configured`. Single-merchant: sessions belong to `env.ACP_MERCHANT_TENANT` (default `default`).
 
 **Pricing is server-side only** — the buyer agent supplies items, address, and a payment token, never amounts. `complete` rebuilds the session to lock pricing, then settles a **Stripe Shared Payment Token** by creating + confirming a PaymentIntent (delegated payment: buyer credentials never reach the Worker). Sessions persist in D1 `acp_checkout_sessions` (full session JSON with `status` / `order_id` promoted to columns).
 
@@ -66,7 +68,7 @@ The surfaces, roughly buyer-side → merchant-side:
 
 **Structured data** (`src/commerce/structured/`, public, brand-resolved, gated on the brand's `identity.structured_data.enabled`): `GET /structured/feed.jsonld` (schema.org `ItemList`), `GET /structured/products/:id` (`Product` + `BreadcrumbList` in a `@graph`), plus `sitemap.xml` and `robots.txt` — each also available under `/structured/:storefront/*`. Root aliases serve host-resolved `GET /robots.txt`, `GET /sitemap.xml`, and `GET /.well-known/ai-catalog.json` (a discovery document pointing answer engines at the feed — the commerce analogue of the agent card). Responses carry weak ETags + `Cache-Control`.
 
-**GEO/AEO monitoring** (`src/geo/`, API `src/api/geo.ts` at `/geo`, cron `src/jobs/geo-monitor.ts`) answers "how does this brand show up when an AI does the shopping?" Tenants register tracked queries (`POST /geo/queries`, gated `geo:write`); each cron tick replays active queries through a generative engine (Workers AI by default), extracts whether the brand was `mentioned`, its `rank`, `competitors[]`, and `products[]`, and writes `geo_observations` plus a `geo_observation` audit event, `orchestrator_geo_mention` counter, and `orchestrator_geo_rank` histogram. Read back via `GET /geo/observations` and `GET /geo/summary`. Tuned by the `GEO_MONITOR` env JSON.
+**GEO/AEO monitoring** (`src/geo/`, API `src/geo/router.ts` at `/geo`, cron `src/geo/monitor-job.ts`) answers "how does this brand show up when an AI does the shopping?" Tenants register tracked queries (`POST /geo/queries`, gated `geo:write`); each cron tick replays active queries through a generative engine (Workers AI by default), extracts whether the brand was `mentioned`, its `rank`, `competitors[]`, and `products[]`, and writes `geo_observations` plus a `geo_observation` audit event, `orchestrator_geo_mention` counter, and `orchestrator_geo_rank` histogram. Read back via `GET /geo/observations` and `GET /geo/summary`. Tuned by the `GEO_MONITOR` env JSON.
 
 ## B2B: accounts, authority, quote-to-cash
 
@@ -93,7 +95,7 @@ Connectors are an open registry (`registerEntityConnector`): `http` (`GET {url}/
 
 **Personalization** (`src/commerce/personalization/`, D1 `customers`, `customer_sessions`, `behavior_events`, `abandoned_carts`): behavior telemetry (`view`, `add_to_cart`, `checkout_start`, `purchase`) is captured fire-and-forget from the catalog/cart tools. `recommend_products` runs Vectorize similarity seeded from a product id or the thread's recent behavior; `identify_customer` upserts a customer by email, links the session, and back-attaches the thread's behavior events for cross-session continuity.
 
-**Cart recovery** — the abandoned-cart cron (`src/jobs/abandoned-cart.ts`) scans `behavior_events` for threads with purchase intent but no purchase, idle over an hour; it records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events + an `orchestrator_abandoned_carts_detected` counter, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured (SSRF-guarded; audit-only when unset).
+**Cart recovery** — the abandoned-cart cron (`src/commerce/personalization/abandoned-cart-job.ts`) scans `behavior_events` for threads with purchase intent but no purchase, idle over an hour; it records `abandoned_carts` rows (deduped), emits `cart_abandoned` audit events + an `orchestrator_abandoned_carts_detected` counter, and dispatches to `COMMERCE_RECOVERY_WEBHOOK` when configured (SSRF-guarded; audit-only when unset).
 
 **Visual search** (`src/commerce/visual/`) — caption-then-embed: product images are captioned by a Workers AI vision model, the caption embedded into the same 768-dim BGE index; an uploaded query image runs the identical caption → embed → cosine path. Exposed as the `search_by_image` tool and `POST /shop/visual-search`.
 
@@ -101,11 +103,11 @@ Connectors are an open registry (`registerEntityConnector`): `http` (`GET {url}/
 
 ## Consent + attribution
 
-`src/commerce/consent/` + `src/api/consent.ts`. D1 `consents` is **append-only** — withdrawal is a new `granted: 0` row, never an update; the latest row per thread is authoritative. The `commerce_record_consent` tool captures `granted` + `scopes[]` (e.g. `["terms","data_share","marketing"]`), stamping `COMMERCE_TERMS_VERSION` / `COMMERCE_PRIVACY_URL`, and emits a `consent_recorded` audit event. Every order gets an `order_attribution` row (`channel` ∈ `chat|acp|b2b|widget`, `manifest_id`, `thread_id`, `buyer_subject`, `consent_id`, `utm`) written by the Stripe webhook, ACP complete, and B2B convert. Read APIs (gated `consent:read`): `GET /commerce/consents`, `GET /commerce/attribution/summary` (agent-mediated revenue by channel/manifest), `GET /commerce/attribution/orders/:id`.
+`src/commerce/consent/` (tool + store + the `/commerce/consents` router). D1 `consents` is **append-only** — withdrawal is a new `granted: 0` row, never an update; the latest row per thread is authoritative. The `commerce_record_consent` tool captures `granted` + `scopes[]` (e.g. `["terms","data_share","marketing"]`), stamping `COMMERCE_TERMS_VERSION` / `COMMERCE_PRIVACY_URL`, and emits a `consent_recorded` audit event. Every order gets an `order_attribution` row (`channel` ∈ `chat|acp|b2b|widget`, `manifest_id`, `thread_id`, `buyer_subject`, `consent_id`, `utm`) written by the Stripe webhook, ACP complete, and B2B convert. Read APIs (gated `consent:read`): `GET /commerce/consents`, `GET /commerce/attribution/summary` (agent-mediated revenue by channel/manifest), `GET /commerce/attribution/orders/:id`.
 
 ## Tool catalog
 
-All registered in `src/composition.ts`; any manifest can pick them up by name.
+All registered by `commercePlugin.registerTools` (`src/commerce/plugin.ts`); any manifest can pick them up by name.
 
 | Group | Tools |
 |---|---|
@@ -119,9 +121,9 @@ Bundled commerce manifests: `orderloop` (D2C buyer agent — react, anonymous-al
 
 ## Data model + configuration
 
-**Migrations** `0006`–`0018`: `products` / `orders` / `order_items` (0006), `acp_checkout_sessions` (0007), `brands` (0008), `brand_domains` (0009), `data_sources` (0010), `accounts` / `buyers` (0011), `quotes` / `quote_items` / `invoices` (0012), `contract_prices` (0013), `billing_settings` (0014), `geo_queries` / `geo_observations` (0015), `consents` / `order_attribution` (0016), `customers` / `customer_sessions` / `behavior_events` / `abandoned_carts` (0017), `pricing_rules` / `competitor_prices` (0018). All follow the composite tenant-key convention except `brand_domains` (host-keyed by design). See [persistence.md](persistence.md).
+**Migrations** `0006`–`0018`: `products` / `orders` / `order_items` (0006), `acp_checkout_sessions` (0007), `brands` (0008), `brand_domains` (0009), `data_sources` (0010), `accounts` / `buyers` (0011), `quotes` / `quote_items` / `invoices` (0012), `contract_prices` (0013), `billing_settings` (0014), `geo_queries` / `geo_observations` (0015), `consents` / `order_attribution` (0016), `customers` / `customer_sessions` / `behavior_events` / `abandoned_carts` (0017), `pricing_rules` / `competitor_prices` (0018). All follow the composite tenant-key convention except `brand_domains` (host-keyed by design). See [persistence.md](persistence.md). Core (`0001`–`0005`) and commerce share one D1 database and one migrations dir; name new commerce-owned migrations `NNNN_commerce_*` so ownership stays legible.
 
-**Env / secrets** (`src/env.ts`):
+**Env / secrets** (typed in `src/commerce/env.ts`, except `CONSUMER_SHARED_SECRET` which is core):
 
 | Var | Purpose |
 |---|---|
