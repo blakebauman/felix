@@ -2,15 +2,15 @@
  * schema.org / JSON-LD mappers (pure).
  */
 
-import type { Brand } from '@felix/commerce/brands/models';
-import type { Product } from '@felix/commerce/models';
+import { describe, expect, it } from 'vitest';
+import type { Brand } from '../src/brands/models';
+import type { Product } from '../src/models';
 import {
   brandToOrganization,
   breadcrumbFor,
   feedToItemList,
   productToJsonLd,
-} from '@felix/commerce/structured/jsonld';
-import { describe, expect, it } from 'vitest';
+} from '../src/structured/jsonld';
 
 function brand(): Brand {
   return {

@@ -15,9 +15,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # version comes from the root package.json `packageManager` field
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -38,9 +37,8 @@ jobs:
         working-directory: examples/chat-ui
     steps:
       - uses: actions/checkout@v7
+      # version comes from the root package.json `packageManager` field
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - uses: actions/setup-node@v6
         with:
           node-version: 22
