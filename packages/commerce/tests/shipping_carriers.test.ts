@@ -2,9 +2,9 @@
  * Carrier rate-shopping seam (pure; env is just a config string).
  */
 
-import { parseCarrierConfig, rateShop } from '@felix/commerce/shipping-carriers';
+import type { Env } from '@felix/orchestrator/env';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Env } from '../../src/env';
+import { parseCarrierConfig, rateShop } from '../src/shipping-carriers';
 
 function env(carriers?: unknown): Env {
   return { COMMERCE_CARRIERS: carriers ? JSON.stringify(carriers) : undefined } as unknown as Env;

@@ -3,13 +3,13 @@
  * connector, so the seam is proven without network).
  */
 
-import { purchaseAuthority } from '@felix/commerce/b2b/authority';
-import type { Account, Buyer } from '@felix/commerce/b2b/models';
-import { mapAccount } from '@felix/commerce/b2b/store';
-import { registerEntityConnector } from '@felix/commerce/entities/connectors';
-import { federatedSource } from '@felix/commerce/entities/source';
-import type { EntityConnector, EntityTypeSpec } from '@felix/commerce/entities/types';
 import { describe, expect, it } from 'vitest';
+import { purchaseAuthority } from '../src/b2b/authority';
+import type { Account, Buyer } from '../src/b2b/models';
+import { mapAccount } from '../src/b2b/store';
+import { registerEntityConnector } from '../src/entities/connectors';
+import { federatedSource } from '../src/entities/source';
+import type { EntityConnector, EntityTypeSpec } from '../src/entities/types';
 
 function account(over: Partial<Account> = {}): Account {
   return {

@@ -3,9 +3,9 @@
  * stub via a fake env.DB).
  */
 
-import { dueAt, netDays, priceQuote } from '@felix/commerce/b2b/quote-logic';
+import type { Env } from '@felix/orchestrator/env';
 import { describe, expect, it } from 'vitest';
-import type { Env } from '../../src/env';
+import { dueAt, netDays, priceQuote } from '../src/b2b/quote-logic';
 
 /** Fake D1 that returns a fixed product row for getProduct. */
 function envWith(

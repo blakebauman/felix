@@ -4,7 +4,8 @@ import { defineConfig, defineProject } from 'vitest/config';
 /**
  * Two test projects:
  *
- *   - `unit`     plain node pool. Covers tests/unit/** — pure logic,
+ *   - `unit`     plain node pool. Covers tests/unit/** (core) and each
+ *                package's tests/ dir (feature plugins) — pure logic,
  *                governance wrappers, manifest schema, fake DO stubs.
  *   - `workers`  miniflare/workerd pool. Covers tests/integration/**.
  *                Bindings are configured explicitly so the bundled
@@ -17,7 +18,7 @@ export default defineConfig({
       defineProject({
         test: {
           name: 'unit',
-          include: ['tests/unit/**/*.test.ts'],
+          include: ['tests/unit/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
           environment: 'node',
         },
       }),

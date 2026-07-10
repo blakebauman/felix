@@ -39,13 +39,13 @@ export function Inspector({
           <XIcon className="size-4" />
         </Button>
       </div>
-      <Tabs defaultValue="activity" className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="mx-3 mt-2 grid grid-cols-5 text-[11px]">
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-          <TabsTrigger value="metrics">Metrics</TabsTrigger>
-          <TabsTrigger value="approvals">Approvals</TabsTrigger>
-          <TabsTrigger value="plans">Plans</TabsTrigger>
-          <TabsTrigger value="skills">Skills</TabsTrigger>
+      <Tabs defaultValue="activity" className="flex min-h-0 flex-1 flex-col gap-0">
+        <TabsList variant="line" className="w-full justify-start gap-0 border-b px-1">
+          <InspectorTab value="activity">Activity</InspectorTab>
+          <InspectorTab value="metrics">Metrics</InspectorTab>
+          <InspectorTab value="approvals">Approvals</InspectorTab>
+          <InspectorTab value="plans">Plans</InspectorTab>
+          <InspectorTab value="skills">Skills</InspectorTab>
         </TabsList>
         <TabsContent value="activity" className="min-h-0 flex-1">
           <ActivityTab enabled={open} />
@@ -64,6 +64,19 @@ export function Inspector({
         </TabsContent>
       </Tabs>
     </aside>
+  );
+}
+
+/**
+ * Content-sized underline tab: five labels of uneven width can't share a
+ * 22rem panel as equal grid columns, so each trigger hugs its label and the
+ * active state is the line-variant underline sitting on the list's border.
+ */
+function InspectorTab({ value, children }: { value: string; children: React.ReactNode }) {
+  return (
+    <TabsTrigger value={value} className="flex-none px-2 text-xs">
+      {children}
+    </TabsTrigger>
   );
 }
 

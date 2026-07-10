@@ -2,12 +2,12 @@
  * GEO monitor — extraction parsing + env opts clamping (pure logic).
  */
 
+import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_GEO_MONITOR_OPTS,
   parseExtraction,
   parseGeoMonitorOpts,
-} from '@felix/commerce/geo/monitor-job';
-import { describe, expect, it } from 'vitest';
+} from '../src/geo/monitor-job';
 
 describe('parseExtraction', () => {
   it('parses a well-formed reply', () => {

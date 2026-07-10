@@ -2,10 +2,10 @@
  * Tax + shipping seams (pure given env config).
  */
 
-import { parseShippingConfig, shippingOptions } from '@felix/commerce/shipping';
-import { computeTax, parseTaxBps } from '@felix/commerce/tax';
+import type { Env } from '@felix/orchestrator/env';
 import { describe, expect, it } from 'vitest';
-import type { Env } from '../../src/env';
+import { parseShippingConfig, shippingOptions } from '../src/shipping';
+import { computeTax, parseTaxBps } from '../src/tax';
 
 function env(over: Partial<Env> = {}): Env {
   return over as Env;
