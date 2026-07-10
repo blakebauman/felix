@@ -19,6 +19,6 @@
     "forceConsistentCasingInFileNames": true,
     "ignoreDeprecations": "6.0"
   },
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*", "packages/*/src/**/*", "packages/*/tests/**/*"],
+  "include": ["packages/*/src/**/*", "packages/*/tests/**/*", "packages/*/scripts/**/*"],
   "exclude": ["node_modules", "dist", ".wrangler"]
 }

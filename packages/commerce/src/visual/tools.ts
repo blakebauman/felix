@@ -44,7 +44,7 @@ export async function hydrateMatches(
     if (!m.product_id || seen.has(m.product_id)) continue;
     seen.add(m.product_id);
     const p = await getProduct(env, tenantId, m.product_id);
-    if (!p || !p.active || p.inventory === 0) continue;
+    if (!p?.active || p.inventory === 0) continue;
     out.push({
       id: p.id,
       title: p.title,

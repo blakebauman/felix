@@ -1,13 +1,13 @@
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
-import { defineConfig, defineProject } from 'vitest/config';
+import { configDefaults, defineConfig, defineProject } from 'vitest/config';
 
 /**
  * Two test projects:
  *
- *   - `unit`     plain node pool. Covers tests/unit/** (core) and each
+ *   - `unit`     plain node pool. Covers packages/core/tests/unit/** and each
  *                package's tests/ dir (feature plugins) — pure logic,
  *                governance wrappers, manifest schema, fake DO stubs.
- *   - `workers`  miniflare/workerd pool. Covers tests/integration/**.
+ *   - `workers`  miniflare/workerd pool. Covers packages/core/tests/integration/**.
  *                Bindings are configured explicitly so the bundled
  *                workerd doesn't choke on the wrapped AI binding from
  *                wrangler.jsonc.
@@ -18,7 +18,8 @@ export default defineConfig({
       defineProject({
         test: {
           name: 'unit',
-          include: ['tests/unit/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
+          include: ['packages/*/tests/**/*.test.ts'],
+          exclude: [...configDefaults.exclude, 'packages/core/tests/integration/**'],
           environment: 'node',
         },
       }),
@@ -27,7 +28,7 @@ export default defineConfig({
           cloudflareTest({
             // `main` is required for `SELF.fetch` — the runner needs to know
             // where the worker entrypoint lives.
-            main: './src/index.ts',
+            main: './packages/core/src/index.ts',
             // We don't point at wrangler.jsonc here: the bundled workerd
             // doesn't support the wrapped AI binding our production config
             // declares. Tests bind D1 / KV / R2 / DOs explicitly and stub
@@ -65,7 +66,7 @@ export default defineConfig({
         ],
         test: {
           name: 'workers',
-          include: ['tests/integration/**/*.test.ts'],
+          include: ['packages/core/tests/integration/**/*.test.ts'],
         },
       }),
     ],

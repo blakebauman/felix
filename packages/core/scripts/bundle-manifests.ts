@@ -8,8 +8,8 @@
  * Sources are local to this repo (`manifests/`, `skills/`) — the orchestrator
  * owns its own manifest definitions and does not read from any sibling repo.
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
@@ -60,4 +60,6 @@ export const BUNDLED_SKILL_NAMES = Object.freeze(Object.keys(BUNDLED_SKILLS));
 writeFileSync(join(__dirname, '../src/manifests/bundled.ts'), manifestOut);
 writeFileSync(join(__dirname, '../src/skills/bundled.ts'), skillOut);
 
-console.log(`Bundled ${Object.keys(manifests).length} manifests, ${Object.keys(skills).length} skills.`);
+console.log(
+  `Bundled ${Object.keys(manifests).length} manifests, ${Object.keys(skills).length} skills.`,
+);

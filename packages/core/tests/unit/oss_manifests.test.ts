@@ -57,7 +57,6 @@ function fakeSubAgent(name: string): Agent {
     manifestId: name,
     manifestVersion: '1.0.0',
     invoke: async () => ({ messages: [], final: { role: 'assistant', content: '' } }),
-    // biome-ignore lint/correctness/useYield: stub never emits
     async *streamEvents() {},
   };
 }
