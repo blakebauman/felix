@@ -1,3 +1,7 @@
+---
+description: "The mental model behind Felix — manifests, tenants, threads, patterns, tools, memory, and auth."
+---
+
 # Concepts
 
 The mental model behind Felix. Read this before writing a manifest or integrating a client.
@@ -8,6 +12,10 @@ Felix is a **managed agents harness** in the shape Anthropic describes in [Manag
 
 A YAML or JSON document with `apiVersion: orchestrator/v1` and `kind: Agent`. The schema is defined in `src/manifests/schema.ts` and uses Zod `.strict()`, so unknown keys are rejected outright. A manifest declares everything an agent needs: pattern, model, system prompt, tools, skills, MCP servers, A2A peers, memory backend, auth requirements, policies, limits, guardrails, approvals.
 
+:::tip
+See [manifest-reference.md](manifest-reference.md) for every field with defaults and examples, and [management-api.md](management-api.md) for the `/manifests` REST surface used to deploy manifests at runtime.
+:::
+
 Manifests can be loaded from four sources. The request-path resolver `resolveManifest(env, tenantId, name)` (`src/manifests/resolver.ts`) walks them in order and returns the first hit:
 
 1. **Tenant D1 active version** — the `manifests` table + `manifest_active` pointer (`migrations/0003_manifests.sql`). Tenants populate this through the `/manifests` REST surface; rows are append-only and rollback flips the pointer.
@@ -15,7 +23,9 @@ Manifests can be loaded from four sources. The request-path resolver `resolveMan
 3. **Global R2 override** — `manifests/<name>.json` in `BUNDLES`. Affects every tenant.
 4. **Bundled** — `pnpm build:manifests` reads the repo-local `manifests/*.yaml`, validates each with the Zod schema, and emits `src/manifests/bundled.ts`.
 
+:::caution[Use `resolveManifest` in request handlers]
 The sync `loadManifest(name)` (`src/manifests/loader.ts:22-33`) is kept for system-only call sites that have no tenant context — cron, A2A discovery, MCP default. Request handlers (`/chat`, `/v1/chat/completions`, `/a2a` `tasks/send`) MUST use `resolveManifest` so per-tenant overrides take effect.
+:::
 
 The bundled set is also exposed as OpenAI "models" through `GET /v1/models`.
 
@@ -39,6 +49,10 @@ Conversation persistence is per-thread. A thread id is always `${tenantId}:${suf
 - `POST /chat` and `POST /chat/stream` — `thread_id` in the JSON body
 - `POST /v1/chat/completions` — `x-thread-id` header; **without it each request is stateless**, so `/v1` remains a clean OpenAI-compatible surface by default
 - `POST /a2a` (`tasks/send`, `tasks/sendSubscribe`) — the A2A task id becomes the thread suffix, so a continuation task replays the same conversation
+
+:::note[Thread suffix validation]
+Suffixes containing `:` or `#` are rejected with HTTP 400 so the authenticated tenant prefix cannot be smuggled away. The server always produces the full id as `${tenantId}:${suffix}`.
+:::
 
 A `Session` is the harness's external context object for a thread. The session log is append-only, with each `SessionEvent` carrying `seq`, `kind`, the message-shaped payload, and optional `metadata`. Felix exposes the log via `ConversationDO` (one Durable Object per thread id; `blockConcurrencyWhile` serializes appends so parallel sub-agents writing to the same thread can't race). A pluggable `SessionStrategy` decides what the model sees on each turn — see the Memory section below.
 
@@ -106,7 +120,9 @@ Tools come from these sources (orthogonal to transport):
 
 Every tool is wrapped by the governance pipeline before being exposed to the model — see [internals/governance.md](../internals/governance.md). Wrappers replace `tool.executor` while preserving the inner `transport` label so audit and observability report the true transport even after composition.
 
-**JIT tool retrieval** (`spec.tools_retrieval.enabled: true`) filters the tool list down to the top-K most relevant tools per turn by cosine similarity between BGE-embedded tool descriptions and the recent conversation. Crucial at 30+ tool catalogs; falls back to the full list when `env.AI` is absent.
+:::tip[JIT tool retrieval]
+`spec.tools_retrieval.enabled: true` filters the tool list down to the top-K most relevant tools per turn by cosine similarity between BGE-embedded tool descriptions and the recent conversation. Essential at 30+ tool catalogs — without it the full list inflates every model call's prompt. Falls back to the full list when `env.AI` is absent.
+:::
 
 **Reference-based artifacts** (`spec.artifacts.enabled: true`) spill tool results above `threshold_chars` to R2 and replace them with a `[artifact:REF]` stub the model can fetch piecewise via `fetch_artifact`. Cuts context spent on sandbox stdout dumps, scraped HTML, and large JSON arrays.
 
@@ -128,6 +144,10 @@ All memory queries are tenant-scoped: `recall` filters on `{ tenant }` and `forg
 `spec.execution.mode: durable` wraps every invocation in an `AgentWorkflow` instance (Cloudflare Workflows, `AGENT_WORKFLOW` binding). The Workflow re-resolves the manifest with `execution.mode` forced to `transient` to break recursion, rebuilds the agent, and runs `agent.invoke()` inside `step.do(...)` with conservative retry policy (3 attempts, exponential backoff, 15-minute timeout). A worker eviction mid-run replays the step rather than losing the branch. The instance id is returned to the caller; A2A `tasks/resubscribe` then resumes from the live Workflow's status.
 
 Valid on any single-agent pattern (`react`, `deep`, `reflect`, `plan_execute`). Multi-agent patterns must opt their children's leaf manifests in instead. Requires `memory.checkpointer != 'none'`. Binding-graceful: falls back to in-isolate invocation with a warning when `AGENT_WORKFLOW` is absent (dev probes, unit tests).
+
+:::note
+The `orchestrator_durable_fallback` counter fires whenever durable mode degrades to in-isolate execution. It **should be zero in production** — a non-zero value means `AGENT_WORKFLOW` is not bound in the current environment.
+:::
 
 ## Canary rollouts
 
@@ -172,6 +192,10 @@ Outbound: client-credentials OAuth tokens cached in the `oauth_token_cache` D1 t
 A central authority can ship a signed `PolicyBundle` to R2 at the key configured by `POLICY_BUNDLE_KEY`. Every Felix isolate refreshes its in-process bundle cache from `FederationDO` every 10 minutes via the worker cron (`*/10 * * * *`). The bundle's policies and approvals are merged with each manifest's during `buildAgent` — bundle policies win on `id` collision so a central revocation cannot be silently disabled.
 
 Bundles are signed Ed25519 and the public key lives in `POLICY_BUNDLE_PUBKEY`. In staging and production an unsigned or tampered bundle is rejected; in development it logs a warning and keeps loading so local iteration isn't blocked.
+
+:::caution
+In staging and production, an unsigned or tampered `PolicyBundle` is **rejected** — the previous active bundle is kept. Never test federation bundle changes on production directly; verify on staging first.
+:::
 
 ## Where the request goes
 

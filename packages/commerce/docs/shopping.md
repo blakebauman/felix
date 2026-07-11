@@ -1,3 +1,7 @@
+---
+description: "Catalog search, cart management, and approval-gated Stripe checkout as Felix tools — the complete D2C buyer flow."
+---
+
 # Conversational shopping
 
 The buyer-side agent tools — `catalog_*`, `cart_*`, `commerce_checkout`, `order_status` — that turn any chat surface (native `/chat`, `/v1/chat/completions`, A2A, a brand's `/shop` storefront) into a catalog → cart → checkout flow. All money is integer cents; the server always recomputes totals, the model never supplies amounts.

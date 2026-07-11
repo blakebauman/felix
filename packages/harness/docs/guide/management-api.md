@@ -1,3 +1,7 @@
+---
+description: "Tenant-scoped management endpoints — audit, plans, jobs, approvals, manifests, eval — with scope requirements and curl examples."
+---
+
 # Management API
 
 Tenant-scoped management endpoints for the audit log (`/audit` + `/audit/metrics`), plan store, scheduled jobs, human-in-the-loop approvals queue, tenant-managed manifests (`/manifests`), and golden-dataset evals (`/eval`). Authorization is two-layer:
@@ -20,6 +24,10 @@ Tenant-scoped management endpoints for the audit log (`/audit` + `/audit/metrics
 | `/entities` | tenant-scoped | `entities:write` |
 
 All routes return JSON. Rate limited at 100 req/60s per tenant. The commerce management surfaces (`/brands`, `/b2b`, `/entities`, `/geo`, consent/attribution) are covered in [the commerce docs](../../../commerce/docs/index.md).
+
+:::note[Dev gate]
+In `ENVIRONMENT=development` without JWT verifiers configured, scope gates fall open so local probes work without minting tokens. In staging and production the gate is strict — anonymous callers get `401`; authenticated callers missing the scope get `403 {"error":"forbidden","missing_scopes":[...]}`.
+:::
 
 Examples below use `$BASE_URL` — set it to your deployment (e.g. `export BASE_URL=http://localhost:8787` for `pnpm dev`, or `https://make.felix.run` in production).
 
@@ -82,6 +90,9 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 | `approval_request` | `approvals/wrap.ts` first invocation — payload `{ approval_id, tool, transport }` | `pending` |
 | `approval_decision` | `/approvals/:id/decide` and retry-time wrapper — payload `{ approval_id, tool, transport }` | `approved`, `denied`, `pending` |
 | `checkpoint_failure` | Session `appendBatch` failed after retry | `failed` |
+| `queue_dispatch` | `QueueExecutor` — payload `{ job_id, tool, tool_call_id, thread_id, deadline_ms? }` | `enqueued` |
+| `queue_complete` | Queue consumer (external, via `POST /internal/sessions/:thread_id/events`) — payload `{ job_id, tool_call_id, duration_ms? }` | `ok`, `error` |
+| `queue_expired` | Orphan-cleanup cron for unresolved `queue_dispatch` rows — payload `{ job_id, tool_call_id, thread_id, age_ms }` | `expired` |
 | `manifest_created` | `POST /manifests/:name` | (none) |
 | `manifest_activated` | `POST /manifests/:name/activate` (or implicit on create) | (none) |
 | `manifest_deleted` | `DELETE /manifests/:name` or `/versions/:version` | (none) |
@@ -92,6 +103,15 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 | `model_switch` | model client when a fallback or confidence escalation fires — payload `{ from, to, reason }` (`provider_error` or `low_confidence`) | `fallback`, `escalated` |
 | `eval_run` | eval runner on completion (reserved) | (none) |
 | `unhandled_error` | `app.onError` boundary | `error` |
+| `commerce_order` | Stripe webhook on `checkout.session.completed` / ACP completion — payload `{ order_id, thread_id, amount_cents, channel, manifest_id }` | `paid` |
+| `brand_provisioned` | `POST /brands` — payload `{ brand_id, name, domain }` | `ok` |
+| `brand_catalog_import` | `POST /brands/:id/catalog` — payload `{ brand_id, product_count, error? }` | `ok`, `error` |
+| `b2b_purchase_check` | `purchase_authority_check` tool / `POST /b2b/accounts/:id/purchase-check` — payload `{ account_id, buyer_id, amount_cents, reason }` | `allowed`, `requires_approval`, `blocked` |
+| `b2b_quote` | Quote lifecycle tools (`create_quote`, `send_quote`, `accept_quote`, `convert_quote`) — payload `{ quote_id, account_id, amount_cents }` | `draft`, `sent`, `accepted`, `ordered` |
+| `geo_observation` | GEO monitor cron per tracked query replay — payload `{ brand_id, query, engine, mentioned, rank?, competitors[] }` | `ok` |
+| `consent_recorded` | `commerce_record_consent` tool / `POST /commerce/consents` — payload `{ thread_id, channel, terms_version }` | `granted`, `withdrawn` |
+| `order_attributed` | Stripe webhook / ACP completion — payload `{ order_id, thread_id, channel, manifest_id, buyer_subject }` | `ok` |
+| `cart_abandoned` | Abandoned-cart cron — payload `{ thread_id, customer_id?, recovery_webhook_sent }` | `detected` |
 
 #### `audit_truncated` is a status, not an event type
 

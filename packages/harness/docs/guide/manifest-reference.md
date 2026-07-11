@@ -1,3 +1,7 @@
+---
+description: "Every field in the orchestrator/v1 manifest schema with defaults, types, ceilings, and examples."
+---
+
 # Manifest Reference
 
 Every field in the `apiVersion: orchestrator/v1` manifest schema. Source of truth: `src/manifests/schema.ts` plus cross-field rules in `src/manifests/validate.ts`.

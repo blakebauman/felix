@@ -1,3 +1,7 @@
+---
+description: "AI Gateway routing for Anthropic, OpenAI, and Workers AI — streaming, fallback chains, confidence escalation, prompt caching, and thinking mode."
+---
+
 # Model Client
 
 How Felix talks to LLM providers. Source: `src/patterns/model.ts`.

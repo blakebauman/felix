@@ -1,3 +1,7 @@
+---
+description: "Per-brand D2C storefronts at /shop with embeddable /widget, brand provisioning, catalog import, and custom domain wiring."
+---
+
 # D2C storefronts
 
 Per-brand agents provisioned as manifests, served publicly at `/shop`, and embeddable anywhere via `/widget`. Brand management (`/brands`) is operator-side and gated `brands:write`.

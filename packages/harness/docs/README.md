@@ -1,3 +1,7 @@
+---
+description: "Felix is a managed agents harness on Cloudflare Workers — manifests, patterns, sessions, governance, and the commerce layer."
+---
+
 # Felix Documentation
 
 Felix is a **managed agents harness** on Cloudflare Workers, shaped after Anthropic's [Managed Agents](https://www.anthropic.com/engineering/managed-agents) architecture: Session, Pattern/Provider registries, and ToolExecutor are decoupled abstractions, each swappable without touching the others. A YAML or JSON document with `apiVersion: orchestrator/v1` is compiled into a runnable agent and exposed over four protocols:
@@ -21,34 +25,86 @@ Every D1 row is keyed by `(tenant_id, id)` and every thread id is server-prefixe
 
 ## Live reference
 
+:::tip[Running deployment]
 A running deployment exposes:
 
-- `GET /openapi.json` — OpenAPI 3.1.0 specification covering the core routes (OpenAI surface, `/chat`, `/a2a`, `/mcp`, and the `/audit` · `/approvals` · `/plans` · `/jobs` · `/manifests` · `/eval` management surfaces), grouped by tag; internal back-channel routes are excluded, and the commerce routers are documented in [the commerce docs](../../commerce/docs/index.md) rather than the spec. A completion-gate test keeps the covered surfaces exhaustive.
-- `GET /docs` — Scalar API reference UI rendered from the spec above
-- The prose docs (this directory plus `packages/commerce/docs/`) are published as a separate static site at [docs.felix.run](https://docs.felix.run) — built by the `apps/docs` Starlight app (`pnpm docs:build` / `docs:deploy`). The Worker's legacy `/docs/home`, `/docs/guide/*`, `/docs/internals/*` routes 301 there, so old "Read more" links keep resolving.
-- `GET /health` — liveness plus active federation `PolicyBundle` metadata
-- `GET /.well-known/agent-card.json` — A2A discovery document
+- `GET /openapi.json` — OpenAPI 3.1.0 specification covering the core routes (OpenAI surface, `/chat`, `/a2a`, `/mcp`, and the `/audit` · `/approvals` · `/plans` · `/jobs` · `/manifests` · `/eval` management surfaces), grouped by tag.
+- `GET /docs` — Scalar API reference UI rendered from the spec above.
+- `GET /health` — liveness plus active federation `PolicyBundle` metadata.
+- `GET /.well-known/agent-card.json` — A2A discovery document.
 
-## Audience routing
+Prose docs are published at [docs.felix.run](https://docs.felix.run). The Worker's legacy `/docs/home`, `/docs/guide/*`, `/docs/internals/*` routes 301 there.
+:::
 
-| You want to... | Read |
-|---|---|
-| Stand up a local instance and make a first request | [guide/getting-started.md](guide/getting-started.md) |
-| Understand manifests, tenants, threads, patterns | [guide/concepts.md](guide/concepts.md) |
-| Write a manifest | [guide/manifest-reference.md](guide/manifest-reference.md) |
-| Call the runtime from a client | [guide/rest-api.md](guide/rest-api.md) |
-| Run audit, plans, jobs, approvals, manifests, evals | [guide/management-api.md](guide/management-api.md) |
-| Deploy to staging or production | [guide/deploy.md](guide/deploy.md) |
-| Find where a request goes after `fetch` | [internals/architecture.md](internals/architecture.md) |
-| Understand how a manifest becomes an agent | [internals/manifest-pipeline.md](internals/manifest-pipeline.md) |
-| Read the loop semantics of each pattern | [internals/patterns.md](internals/patterns.md) |
-| Trace AI Gateway routing for Anthropic, OpenAI, Workers AI | [internals/model-client.md](internals/model-client.md) |
-| Understand D1 / KV / R2 / Vectorize / Queues / DOs | [internals/persistence.md](internals/persistence.md) |
-| Build on the commerce layer (shopping, ACP, storefronts, B2B, GEO) | [the commerce docs](../../commerce/docs/index.md) |
-| Understand policies, limits, guardrails, approvals | [internals/governance.md](internals/governance.md) |
-| Understand inbound JWT and outbound OAuth | [internals/auth.md](internals/auth.md) |
-| Find counter labels, audit payload shapes, alert thresholds | [internals/observability.md](internals/observability.md) |
-| Add or run tests | [internals/testing.md](internals/testing.md) |
+## Where to start
+
+<CardGrid>
+  <LinkCard
+    title="Getting Started"
+    href="/guide/getting-started/"
+    description="Stand up a local instance and make your first request."
+  />
+  <LinkCard
+    title="Concepts"
+    href="/guide/concepts/"
+    description="Manifests, tenants, threads, patterns, tools, memory."
+  />
+  <LinkCard
+    title="Manifest Reference"
+    href="/guide/manifest-reference/"
+    description="Every Zod field with defaults and examples."
+  />
+  <LinkCard
+    title="REST API"
+    href="/guide/rest-api/"
+    description="All public endpoints with curl examples."
+  />
+  <LinkCard
+    title="Management API"
+    href="/guide/management-api/"
+    description="Audit, plans, jobs, approvals, manifests, evals."
+  />
+  <LinkCard
+    title="Deploy"
+    href="/guide/deploy/"
+    description="Bindings, secrets, MODEL_ROUTES, custom domains."
+  />
+</CardGrid>
+
+## Internals
+
+<CardGrid>
+  <LinkCard
+    title="Architecture"
+    href="/internals/architecture/"
+    description="Entry points, middleware chain, Durable Object topology."
+  />
+  <LinkCard
+    title="Patterns"
+    href="/internals/patterns/"
+    description="react / deep / router / parallel / groupchat / reflect / plan_execute loop semantics."
+  />
+  <LinkCard
+    title="Governance"
+    href="/internals/governance/"
+    description="Policies, limits, guardrails, approvals, federation."
+  />
+  <LinkCard
+    title="Observability"
+    href="/internals/observability/"
+    description="Counter labels, audit payload shapes, alert thresholds."
+  />
+  <LinkCard
+    title="Persistence"
+    href="/internals/persistence/"
+    description="D1 / KV / R2 / Vectorize / Queues / Durable Objects."
+  />
+  <LinkCard
+    title="Commerce"
+    href="/commerce/index/"
+    description="Shopping tools, ACP, storefronts, B2B, GEO — the commerce layer."
+  />
+</CardGrid>
 
 ## Tree
 

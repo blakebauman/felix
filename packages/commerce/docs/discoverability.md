@@ -1,3 +1,7 @@
+---
+description: "Schema.org JSON-LD surfaces, /structured, AI catalog, and GEO brand-visibility monitoring for answer-engine optimization."
+---
+
 # Discoverability (GEO/AEO)
 
 Answer to "how does this brand show up when an AI does the shopping?" — schema.org JSON-LD surfaces for answer engines, plus brand-visibility monitoring against a generative engine.

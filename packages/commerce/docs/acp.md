@@ -1,3 +1,7 @@
+---
+description: "Agentic Commerce Protocol merchant endpoint at /acp — catalog feed, checkout sessions, and ACP_API_KEY authentication."
+---
+
 # ACP merchant endpoint
 
 `packages/commerce/src/acp/` implements the merchant side of the [Agentic Commerce Protocol](https://developers.openai.com/commerce) so external buyer agents (e.g. ChatGPT shopping) can discover the catalog and check out, mounted at `/acp`.

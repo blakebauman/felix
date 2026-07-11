@@ -1,3 +1,7 @@
+---
+description: "B2B accounts, buyers, purchase authority, quote-to-invoice flow, billing providers, and the entity data-source seam."
+---
+
 # B2B quote-to-cash
 
 `packages/commerce/src/b2b/` (+ `packages/commerce/src/billing/`), mounted at `/b2b` (+ `/b2b/billing`). Writes gated `b2b:write`; reads flow through the [entity data-source seam](#entity-data-source-seam) so any of these can be backed by a third-party ERP.

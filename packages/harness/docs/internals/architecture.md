@@ -1,3 +1,7 @@
+---
+description: "End-to-end request flow through the Felix Worker — entry points, middleware chain, Durable Object topology, and per-isolate caches."
+---
+
 # Architecture
 
 How a request flows through Felix end-to-end. This document is for contributors who need to find where a particular concern is handled.
@@ -143,6 +147,10 @@ Two distinct caches live at the module top:
 2. Per-router agent cache, e.g. `src/api/chat.ts` and `src/api/openai-compat.ts`: `Map<manifestName, Promise<Agent>>`. Avoids rebuilding the agent on every request when the same manifest is hit repeatedly. Per isolate, indefinite lifetime.
 
 Per-request state (`RequestContext`, `LimitState`, threadId, manifestId) lives in `AsyncLocalStorage` and dies with the request.
+
+:::note[Cache invalidation]
+The per-isolate agent cache has no TTL. A newly deployed manifest only takes effect in a fresh isolate — Cloudflare Workers evicts isolates frequently in practice, so propagation is typically within seconds to minutes. If you need immediate rollout, use the `/manifests` API with per-tenant D1 versions, which are resolved at request time (bypassing the cache per-manifest-name lookup).
+:::
 
 ## Durable Object inventory
 

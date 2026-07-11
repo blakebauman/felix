@@ -1,3 +1,7 @@
+---
+description: "The buildAgent compile step — validation, tool binding, governance wrapping, pattern dispatch, and durable execution wrapping."
+---
+
 # Manifest Pipeline
 
 How `buildAgent(manifest, deps)` turns a parsed manifest into a runnable `Agent`. Source: `src/manifests/builder.ts`.

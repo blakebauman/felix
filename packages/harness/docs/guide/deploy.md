@@ -1,3 +1,7 @@
+---
+description: "Deploy Felix to staging and production on Cloudflare Workers — bindings, secrets, MODEL_ROUTES, JWT verifiers, and cron triggers."
+---
+
 # Deploy
 
 Felix ships to two Cloudflare Workers environments out of the box (staging and production) and runs locally via Wrangler. Every environment has isolated D1, KV, R2, Vectorize, and Queue resources — the two never share state.
@@ -44,7 +48,9 @@ Set under `vars` in `wrangler.jsonc` (per-env overrides supported).
 
 ## Secrets
 
-Set with `pnpm exec wrangler secret put <NAME> --env <staging|production>` — the command prompts for the value. **Never** commit these to `wrangler.jsonc`. Use [.dev.vars](#local-dev-secrets) for local-only values; `wrangler dev` reads it but deployed envs do not.
+:::caution[Never commit secrets]
+Set secrets with `pnpm exec wrangler secret put <NAME> --env <staging|production>` — the command prompts for the value. **Never** commit these to `wrangler.jsonc`. Use [`.dev.vars`](#local-dev-secrets) for local-only values; `wrangler dev` reads it but deployed envs do not.
+:::
 
 | Secret | Required | Notes |
 |---|---|---|
@@ -61,18 +67,56 @@ Set with `pnpm exec wrangler secret put <NAME> --env <staging|production>` — t
 
 ### First-time setup checklist
 
-When standing up a new env, run these once before `pnpm deploy:<env>`:
+<Steps>
 
-```bash
-pnpm exec wrangler secret put ANTHROPIC_API_KEY --env <staging|production>
-pnpm exec wrangler secret put OAUTH_CACHE_KEY --env <staging|production>     # see openssl recipe below
-pnpm exec wrangler secret put POLICY_BUNDLE_PUBKEY --env <staging|production> # only if federation is on
-pnpm exec wrangler secret put CF_AIG_TOKEN --env <staging|production>        # only if Authenticated Gateway is on
-pnpm exec wrangler secret put CONSUMER_SHARED_SECRET --env <staging|production> # only if any manifest declares spec.queues[]
-# OPENAI_API_KEY only if a manifest routes to provider: openai
-```
+1. **Set required secrets**
 
-Verify with `pnpm exec wrangler secret list --env <staging|production>` — the secret names show up but values do not.
+   ```bash
+   pnpm exec wrangler secret put ANTHROPIC_API_KEY --env <staging|production>
+   pnpm exec wrangler secret put OAUTH_CACHE_KEY --env <staging|production>
+   ```
+
+2. **Set optional secrets** (as needed)
+
+   ```bash
+   pnpm exec wrangler secret put POLICY_BUNDLE_PUBKEY --env <staging|production>  # if federation is on
+   pnpm exec wrangler secret put CF_AIG_TOKEN --env <staging|production>           # if Authenticated Gateway is on
+   pnpm exec wrangler secret put CONSUMER_SHARED_SECRET --env <staging|production> # if any manifest declares spec.queues[]
+   # OPENAI_API_KEY only if a manifest routes to provider: openai
+   ```
+
+3. **Verify secrets are present**
+
+   ```bash
+   pnpm exec wrangler secret list --env <staging|production>
+   ```
+
+   Secret names show up but values do not.
+
+4. **Apply migrations**
+
+   ```bash
+   pnpm migrate:staging    # or migrate:production
+   ```
+
+   :::caution
+   There is intentionally no `migrate:remote` script. Remote migrations are destructive and must name an environment explicitly — use `migrate:staging` or `migrate:production`.
+   :::
+
+5. **Deploy**
+
+   ```bash
+   pnpm build:manifests
+   pnpm deploy:staging     # wrangler deploy --env staging
+   # or:
+   pnpm deploy             # wrangler deploy --env production
+   ```
+
+   :::note
+   Never invoke `wrangler deploy` without `--env` against this config — it targets the top-level placeholder bindings, not a real environment.
+   :::
+
+</Steps>
 
 ### AI Gateway slugs
 
@@ -82,9 +126,11 @@ The `AI_GATEWAY_SLUG` value must be an **already-existing** slug in the [Cloudfl
 - `felix-staging` (env.staging)
 - `felix-prod` (env.production)
 
+:::caution[Ambiguous 2009 error]
 A non-existent slug returns `code 2009 Unauthorized` from the gateway URL — **the same response as Authenticated Gateway rejecting an unauthed call**, so the diagnostic is ambiguous. If you see 2009: confirm the slug exists *and* check whether Authenticated Gateway is on.
+:::
 
-**Authenticated Gateway** (a per-slug toggle in the dashboard — check the slug's settings page; Cloudflare doesn't document a default) requires every gateway call to send a `cf-aig-authorization: Bearer ${token}` header. The model client honors `env.CF_AIG_TOKEN` automatically — set it via `wrangler secret put CF_AIG_TOKEN --env <staging|production>` after generating the token in the slug's settings page. Recommended for staging/prod (defends against a leaked `ANTHROPIC_API_KEY` being usable by anyone who knows the gateway URL); leave OFF for `felix-dev` so local work doesn't need a token.
+**Authenticated Gateway** (a per-slug toggle in the dashboard) requires every gateway call to send a `cf-aig-authorization: Bearer ${token}` header. The model client honors `env.CF_AIG_TOKEN` automatically — set it via `wrangler secret put CF_AIG_TOKEN --env <staging|production>` after generating the token in the slug's settings page. Recommended for staging/prod (defends against a leaked `ANTHROPIC_API_KEY` being usable by anyone who knows the gateway URL); leave OFF for `felix-dev` so local work doesn't need a token.
 
 ### Local dev secrets
 
@@ -110,7 +156,7 @@ A JSON object mapping logical model ids (what a manifest writes) to physical rou
 
 Currently shipped routes (`DEFAULT_MODEL_ROUTES` in `src/env.ts`):
 
-```json
+```json title="Default model routes"
 {
   "claude-sonnet-4":   { "provider": "anthropic",   "model": "claude-sonnet-4-6" },
   "claude-opus-4":     { "provider": "anthropic",   "model": "claude-opus-4-8" },
@@ -135,33 +181,47 @@ Other Workers AI models still answer, but tool_calls will be empty and the react
 
 Inbound JWT verification is configured entirely through this one var (`parseVerifiers` in `src/auth/jwt.ts`) — there are no provider-specific vars. It's a comma-separated list of verifiers; each verifier is whitespace-separated `<scheme> <issuer> [audience]` (whitespace delimits the fields so issuer URLs, which contain colons, parse unambiguously). Two schemes are supported; the scheme only selects how the JWKS URL is derived. Malformed or unknown-scheme entries are skipped.
 
-**Cloudflare Access** — `issuer` is the team host; JWKS is fetched from `https://<issuer>/cdn-cgi/access/certs` and cached for 1 hour:
+<Tabs>
+<TabItem label="Cloudflare Access">
 
-```jsonc
+`issuer` is the team host; JWKS is fetched from `https://<issuer>/cdn-cgi/access/certs` and cached for 1 hour:
+
+```jsonc title="wrangler.jsonc"
 "vars": {
   "JWT_VERIFIERS": "access acme.cloudflareaccess.com 01234abc-aud-claim"
 }
 ```
 
-**Cognito** (or any standard OIDC issuer) — `issuer` is the full issuer URL; JWKS is at `<issuer>/.well-known/jwks.json`:
+</TabItem>
+<TabItem label="Cognito / OIDC">
 
-```jsonc
+`issuer` is the full issuer URL; JWKS is at `<issuer>/.well-known/jwks.json`:
+
+```jsonc title="wrangler.jsonc"
 "vars": {
   "JWT_VERIFIERS": "cognito https://cognito-idp.us-west-2.amazonaws.com/us-west-2_AbCdEfGhI client-id-here"
 }
 ```
 
-**Both at once** — comma-separate the verifiers (the loop tries each in order):
+</TabItem>
+<TabItem label="Both at once">
 
-```jsonc
+Comma-separate the verifiers (the loop tries each in order):
+
+```jsonc title="wrangler.jsonc"
 "vars": {
   "JWT_VERIFIERS": "access acme.cloudflareaccess.com my-aud, cognito https://cognito-idp.us-west-2.amazonaws.com/us-west-2_AbCdEfGhI client-id-here"
 }
 ```
 
+</TabItem>
+</Tabs>
+
 Tenant id is derived from JWT claims in this order: `custom:tenant_id` → `tenant_id` → first label of the issuer hostname → `default`.
 
+:::note[Anonymous and bearer behavior]
 Anonymous traffic (no `Authorization` header) is always accepted by the middleware; the route then decides whether the manifest allows it via `auth.inbound.allow_anonymous`. A bearer with an unrecognized issuer demotes to anonymous in dev (so unit tests pass) and is rejected with 401 in staging/production. An expired or malformed bearer always 401s.
+:::
 
 ## SSRF allow-list
 
@@ -176,7 +236,7 @@ Outbound URLs from `mcp_servers` and `peers` are checked at parse time and again
 
 To override for explicit internal-network targets:
 
-```jsonc
+```jsonc title="wrangler.jsonc"
 "vars": {
   "SSRF_ALLOW_HOSTS": "mcp.internal.example,billing.svc.cluster.local"
 }
@@ -199,9 +259,13 @@ See [manifest-reference.md#speccontainers](manifest-reference.md#speccontainers)
 
 When CF Containers GA, the wiring is:
 
+<Steps>
+
 1. Build the image (Dockerfile in `examples/python-sandbox/runtime/`) and push to a registry accessible from your account.
+
 2. Register the container binding in `wrangler.jsonc`:
-   ```jsonc
+
+   ```jsonc title="wrangler.jsonc"
    "containers": [
      {
        "name": "PYTHON_SANDBOX",
@@ -210,16 +274,20 @@ When CF Containers GA, the wiring is:
      }
    ]
    ```
+
 3. Deploy a thin gateway Worker (or co-host the gateway in this Worker) that translates `POST { image, tool, arguments }` into a `getContainer(env.PYTHON_SANDBOX).fetch(...)` call. The gateway is the trust boundary — it decides what images this caller is allowed to run, attaches any per-image secrets, and shapes the response.
+
 4. Point the manifest's `gateway_url` at the gateway endpoint. Add the gateway host to `SSRF_ALLOW_HOSTS` if it's on a private network.
 
-### Credentials never reach the sandbox
+</Steps>
 
-When `containers[].auth` is set, Felix asks the outbound auth broker for an `Authorization` header on the gateway request — the value never goes into `arguments`. If a manifest author needs a token *inside* the container (e.g., for the container to call a downstream API), that's an explicit "put it in args" decision the author owns. The article's vault-backed-tools pattern: the brain never sees the credential, the harness mints a header for the gateway, the gateway scopes what runs inside.
+:::note[Credentials never reach the sandbox]
+When `containers[].auth` is set, Felix asks the outbound auth broker for an `Authorization` header on the gateway request — the value never goes into `arguments`. If a manifest author needs a token *inside* the container, that's an explicit "put it in args" decision the author owns.
+:::
 
 ## Cron triggers
 
-```jsonc
+```jsonc title="wrangler.jsonc"
 "triggers": { "crons": ["*/10 * * * *"] }
 ```
 
@@ -259,25 +327,34 @@ Not supported: named day/month aliases, `L`, `W`, `#`.
 | staging | `staging-make.felix.run` |
 | production | `make.felix.run` |
 
-These were renamed from `api.*` to `make.*` (see recent commit `Rename custom domains: api.* → make.*`). Cloudflare provisions TLS certs automatically on first deploy.
+Cloudflare provisions TLS certs automatically on first deploy.
 
 ## Federation bundle workflow
 
 The signed bundle distributed via R2 is documented in [internals/governance.md](../internals/governance.md). The minimal flow:
 
+<Steps>
+
 1. Author the bundle JSON: `{ version, issuer, policies: [...], approvals: [...] }`.
 2. Sign deterministically with the Ed25519 private key whose public key is in `POLICY_BUNDLE_PUBKEY`. The signing target is the JSON with `signature` removed, key-sorted (deterministic).
 3. Set `signature` to the base64 Ed25519 signature.
-4. Upload to R2: `pnpm wrangler r2 object put felix-orchestrator-bundles-prod/<POLICY_BUNDLE_KEY> --file=bundle.json --env production`.
+4. Upload to R2:
+   ```bash
+   pnpm wrangler r2 object put felix-orchestrator-bundles-prod/<POLICY_BUNDLE_KEY> \
+     --file=bundle.json --env production
+   ```
 5. The next cron tick refreshes the FederationDO cache; all isolates pick it up within 10 minutes.
 
+</Steps>
+
+:::note
 In staging and production the bundle **must** verify or the previous active bundle is kept. In development the verification logs a warning but proceeds.
+:::
 
 ## Deploy commands
 
-```bash
+```bash title="Reference"
 pnpm build:manifests
-pnpm migrate:local                              # local dev DB (sqlite)
 pnpm migrate:staging                            # apply migrations to orchestrator-staging
 pnpm migrate:production                         # apply migrations to orchestrator-prod
 
@@ -286,5 +363,3 @@ pnpm deploy                                     # wrangler deploy --env producti
 ```
 
 Both `pnpm dev` and `pnpm deploy` rebuild manifests first.
-
-> **Note**: there is intentionally no `migrate:remote` script. Remote migrations are destructive and must name an environment explicitly — use `migrate:staging` or `migrate:production`. The same reasoning applies to `deploy` (`--env production`) vs. `deploy:staging` (`--env staging`); never invoke `wrangler deploy` without `--env` against this config or it'll target the top-level placeholder bindings.
