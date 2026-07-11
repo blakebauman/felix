@@ -14,7 +14,7 @@
 
 import { requireContext } from '../context';
 import type { Env } from '../env';
-import { guardFinalResponse } from '../guardrails/final-response';
+import { guardFinalResponse, guardFinalResponseText } from '../guardrails/final-response';
 import type { Guardrails } from '../guardrails/models';
 import type { Model } from '../manifests/schema';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
@@ -42,9 +42,9 @@ export interface BuildGroupchatOptions {
   sessionStore?: SessionStore | null;
   /** Resolved at build time from `manifest.spec.session.strategy`. */
   sessionStrategy?: SessionStrategy | null;
-  /** Parent guardrails — the final-response guard runs over the returned
-   *  answer (the last speaker's turn). Intermediate transcript turns are an
-   *  internal multi-agent record and are not guarded. */
+  /** Parent guardrails — every speaker turn lands in the returned `messages`
+   *  array and the persisted session log, so each gets the content filters;
+   *  the final turn gets the full final-response guard, before persisting. */
   guardrails?: Guardrails | null;
 }
 
@@ -106,20 +106,26 @@ export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
           ],
         });
         last = { ...reply.final, name: speaker };
+        if (turn === opts.maxTurns - 1) {
+          // Full final-response guard on the answer — BEFORE persisting, so
+          // the session log (and the next thread render) sees the redacted
+          // copy, matching react's guard-then-persist ordering.
+          last = await guardFinalResponse(last, opts.guardrails ?? undefined, opts.manifestId);
+        } else if (typeof last.content === 'string' && last.content.length > 0) {
+          // Intermediate speaker turns are NOT internal: they're returned to
+          // the caller in `messages` and persisted to the session log, so
+          // they get the content filters too (guard-then-persist).
+          const filtered = await guardFinalResponseText(
+            last.content,
+            opts.guardrails ?? undefined,
+            opts.manifestId,
+          );
+          if (filtered !== last.content) last = { ...last, content: filtered };
+        }
         transcript.push(last);
         persist(session, [last]);
       }
-      // Guard the user-facing answer (no-op unless `final_response` is a
-      // target). Replace the transcript tail so the returned messages match.
-      const guardedFinal = await guardFinalResponse(
-        last,
-        opts.guardrails ?? undefined,
-        opts.manifestId,
-      );
-      if (guardedFinal !== last && transcript.length > 0) {
-        transcript[transcript.length - 1] = guardedFinal;
-      }
-      return { messages: transcript, final: guardedFinal };
+      return { messages: transcript, final: last };
     },
 
     async *streamEvents(input: InvokeInput): AsyncGenerator<StreamEvent> {
