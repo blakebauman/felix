@@ -40,7 +40,7 @@ Set under `vars` in `wrangler.jsonc` (per-env overrides supported).
 | `CONTINUOUS_EVAL` | optional | JSON tuning for the continuous-eval cron (`sample_rate` / `max_replays_per_tick` / `window_ms`); bad values degrade to defaults. |
 | `GEO_MONITOR` | optional | JSON tuning for the GEO monitor cron (engine model, `max_queries_per_tick`, window). |
 | `ACP_MERCHANT_TENANT` | optional | Tenant that owns the ACP merchant surface (default `default`). |
-| `COMMERCE_*` / `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` / `STRIPE_AUTOMATIC_TAX` / `BILLING_PROVIDER_DEFAULT` | optional | Commerce configuration (tax bps, shipping/carrier JSON, ship countries, recovery webhook, consent gate + terms/privacy, checkout redirects, billing default). See [the commerce docs](../../../commerce/docs/index.md#data-model--configuration). |
+| `COMMERCE_*` / `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` / `STRIPE_AUTOMATIC_TAX` / `BILLING_PROVIDER_DEFAULT` | optional | Commerce configuration (tax bps, shipping/carrier JSON, ship countries, recovery webhook, consent gate + terms/privacy, checkout redirects, billing default). See [the commerce data model + configuration docs](../../../commerce/docs/data-model.md). |
 
 ## Secrets
 

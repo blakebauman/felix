@@ -18,7 +18,7 @@ The OpenAPI spec is **generated at runtime** by `@hono/zod-openapi`: only routes
 | Audit event type / metric (`packages/harness/src/audit/models.ts`, `packages/harness/src/observability/metrics.ts`) | `packages/harness/docs/internals/observability.md` catalogs (+ the observability skill's tables in `.claude/skills/observability/SKILL.md`). |
 | Migration / table (`apps/api/migrations/*.sql`) | `packages/harness/docs/internals/persistence.md` + the CLAUDE.md persistence-layout paragraph. |
 | Pattern / model client / session / governance behavior | `packages/harness/docs/internals/{patterns,model-client,manifest-pipeline,governance}.md`; architecture facts also live in CLAUDE.md — keep both true. |
-| Commerce surface (`packages/commerce/src/**`) | `packages/commerce/docs/index.md` (the Commerce section of the docs site); commerce routes need the same `createRoute` registration to appear in `/openapi.json`. |
+| Commerce surface (`packages/commerce/src/**`) | The matching page under `packages/commerce/docs/` — `shopping.md` (catalog/cart/checkout tools), `acp.md` (/acp), `storefronts.md` (/brands, /shop, /widget), `discoverability.md` (/structured, GEO), `b2b.md` (B2B + /entities), `personalization.md` (recs, visual search, dynamic pricing), `data-model.md` (migrations, env, consent) — `index.md` for cross-cutting facts and the tool catalog; commerce routes need the same `createRoute` registration to appear in `/openapi.json`. |
 | Auth / scopes | `packages/harness/docs/internals/auth.md` + the scope catalog in the staging-auth skill. |
 
 CLAUDE.md is always-loaded context: if a change falsifies a sentence in it, fixing CLAUDE.md is part of the change.
