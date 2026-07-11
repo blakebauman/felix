@@ -11,6 +11,28 @@ import { ManifestSchema } from '../../src/manifests/schema';
 import { ManifestValidationError, validateManifest } from '../../src/manifests/validate';
 
 describe('manifest schema', () => {
+  it('rejects an unknown guardrail provider (silent no-op fail-open)', () => {
+    // A typo'd/renamed provider would be skipped at runtime, silently
+    // disabling filtering while appearing protected. Reject at validation.
+    expect(() =>
+      ManifestSchema.parse({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'g' },
+        spec: { pattern: 'react', guardrails: { providers: ['piii'] } },
+      }),
+    ).toThrow();
+    // The known provider still parses.
+    expect(() =>
+      ManifestSchema.parse({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'g' },
+        spec: { pattern: 'react', guardrails: { providers: ['pii'] } },
+      }),
+    ).not.toThrow();
+  });
+
   it('parses the canonical quick manifest', () => {
     const raw = {
       apiVersion: 'orchestrator/v1',
