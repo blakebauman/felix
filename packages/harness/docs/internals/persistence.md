@@ -257,6 +257,17 @@ Used by the Vectorize-backed store in `src/memory/store.ts` when `manifest.memor
 
 Every read is tenant-scoped. Every write tags the tenant. There is no cross-tenant recall path.
 
+:::caution[Provision the tenant metadata indexes]
+Vectorize only filters on a metadata field if a **metadata index** exists for it — a `filter` on an unindexed field is silently ignored, degrading a tenant-scoped `recall` into an **unfiltered top-K across all tenants**. Both metadata keys in use must be indexed: `tenant` (semantic store, `src/memory/store.ts`) and `tenant_id` (procedural memory, `src/memory/procedural.ts` + `plan_execute`). Provision them once per index:
+
+```bash
+wrangler vectorize create-metadata-index MEMORY_VEC --property-name tenant    --type string
+wrangler vectorize create-metadata-index MEMORY_VEC --property-name tenant_id --type string
+```
+
+The two keys are a historical split (the semantic store predates procedural memory); isolation holds because each query's filter matches its own writer's key, but a missing index is a fail-open. Unifying the key name is a data migration (existing vectors carry the old key), so it's deliberately not done in place.
+:::
+
 The builder auto-injects two tools (`memory_remember`, `memory_recall`) when this store is enabled, so manifest authors never need to declare them.
 
 ### Three additional Vectorize use cases
