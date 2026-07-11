@@ -83,7 +83,7 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 | `tool_call` | `react.ts` `dispatchToolCall` — one per tool invocation. Payload carries `{ tool, transport, args, output_preview?, error?, error_code?, duration_ms }`. A peer invocation is `tool_call` with `transport: 'a2a'`, not a separate event type. Skipped when a governance wrapper denied (the wrapper emits its own event below). | `ok`, `error` |
 | `policy_decision` | `policy/wrap.ts` — payload `{ policy_id, tool, transport, missing_scopes, outcome }` | `denied` |
 | `limit_exceeded` | `limits/wrap.ts` — payload `{ tool, transport?, limit, cap, observed }` (transport omitted for model-side breaches like preflight/cumulative token caps) | `denied` |
-| `guardrail_block` | `guardrails/wrap.ts` — payload `{ tool, transport, surface, matches }` | `matched`, `clean` |
+| `guardrail_block` | `guardrails/wrap.ts` (tool side, `surface: input`/`output`) and `guardrails/final-response.ts` (`surface: final_response`, no `tool`/`transport`) — payload `{ surface, matches, [tool, transport] }` | `matched`, `clean` |
 | `judge_score` | `guardrails/judge-wrap.ts` + eval runner + reflect pattern. Payload `{ judge?, tool, transport?, score, threshold?, reasoning, source? }`. The `source` field disambiguates: absent for the governance wrapper, `'reflect'` for the reflection pattern's per-iteration scores, set by the eval runner when scoring dataset items. | `pass`, `fail` |
 | `plan_step` | `plans/tools.ts` `plan_update_step` — one per step transition. Payload `{ plan_id, step_id, result_present }`. | `pending`, `in_progress`, `completed`, `skipped`, `failed` |
 | `job_run` | Cron sweep + manual triggers | `scheduled`, `manual`, `error` |

@@ -72,3 +72,22 @@ export const FILTERS: Record<string, (input: string) => Promise<FilterResult>> =
   pii: piiRedactor,
   bedrock: bedrockFilter,
 };
+
+/**
+ * Run a value through a provider chain, redacting in sequence and collecting
+ * all matches. Unknown provider names are skipped (validation rejects them at
+ * manifest-parse time). Shared by the tool-side wrapper (`wrap.ts`) and the
+ * final-response guard (`final-response.ts`).
+ */
+export async function runFilters(providers: string[], value: string): Promise<FilterResult> {
+  let current = value;
+  const matches: FilterResult['matches'] = [];
+  for (const name of providers) {
+    const fn = FILTERS[name];
+    if (!fn) continue;
+    const r = await fn(current);
+    current = r.filtered;
+    matches.push(...r.matches);
+  }
+  return { filtered: current, matches };
+}

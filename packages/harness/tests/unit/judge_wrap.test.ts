@@ -52,6 +52,7 @@ const baseGuardrails: Guardrails = {
   providers: [],
   block_on_match: false,
   targets: ['input', 'output'],
+  final_response: { on_match: 'redact', streaming: 'buffer' },
   judges: [
     {
       name: 'on_topic',

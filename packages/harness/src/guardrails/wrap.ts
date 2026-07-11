@@ -13,20 +13,7 @@ import { recordCounter } from '../observability/metrics';
 import { wrapExecutor } from '../tools/executor';
 import { denyOutput, isWrapperDeny, type Tool, type ToolInput } from '../tools/types';
 import { type Guardrails, guardrailsEnabled } from './models';
-import { FILTERS, type FilterResult } from './pipeline';
-
-async function runFilters(providers: string[], value: string): Promise<FilterResult> {
-  let current = value;
-  const matches: FilterResult['matches'] = [];
-  for (const name of providers) {
-    const fn = FILTERS[name];
-    if (!fn) continue;
-    const r = await fn(current);
-    current = r.filtered;
-    matches.push(...r.matches);
-  }
-  return { filtered: current, matches };
-}
+import { type FilterResult, runFilters } from './pipeline';
 
 function recordBlock(opts: {
   manifestId: string;

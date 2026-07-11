@@ -272,6 +272,7 @@ registerPattern('reflect', (ctx) =>
     limits: ctx.limits,
     toolsRetrieval: ctx.manifest.spec.tools_retrieval,
     artifacts: ctx.manifest.spec.artifacts,
+    guardrails: ctx.manifest.spec.guardrails,
     primaryModel: ctx.modelSpec,
     reflect: ctx.manifest.spec.reflect,
   }),

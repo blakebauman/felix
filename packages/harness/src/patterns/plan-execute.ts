@@ -35,6 +35,7 @@
 import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
 import type { Env } from '../env';
+import { guardFinalResponse } from '../guardrails/final-response';
 import { currentSignal } from '../limits/state';
 import type { Manifest, Model } from '../manifests/schema';
 import { recordCounter } from '../observability/metrics';
@@ -505,7 +506,14 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
         ? 'I could not produce a plan for this request. Could you rephrase or break the task into smaller asks?'
         : await synthesize(userGoal, allOutcomes, synthesizer);
 
-      const final: ChatMessage = { role: 'assistant', content: finalText };
+      // Guard the synthesizer's user-facing answer (no-op unless
+      // `final_response` is a guardrails target). plan_execute's `streamEvents`
+      // delegates to `invoke`, so guarding here covers both paths.
+      const final = await guardFinalResponse(
+        { role: 'assistant', content: finalText },
+        opts.manifest.spec.guardrails,
+        opts.manifestId,
+      );
       const messages: ChatMessage[] = [...input.messages, final];
       recordStep({
         planId,
