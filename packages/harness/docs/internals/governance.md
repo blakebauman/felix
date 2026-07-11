@@ -38,7 +38,7 @@ Read top-to-bottom for the call direction; bottom-to-top for which layer was app
 
 Every wrapper returns its deny via `denyOutput(content, source)` from [src/tools/types.ts](../../src/tools/types.ts) — they never throw. The model sees the `content` string in the tool result and can adapt: retry with different args, try a different tool, or surface the limitation to the user. Throwing would abort the loop and lose context.
 
-The structured marker (`metadata[WRAPPER_DENY_FLAG] = true` + `metadata.source`) lets outer wrappers detect inner denies via `isWrapperDeny(output)`. The guardrails output filter uses this to short-circuit — without it, a policy/approval/limit deny string would get re-scanned and possibly redacted.
+The marker (a module-private `Symbol` stamped on `metadata`, plus `metadata.source`) lets outer wrappers detect inner denies via `isWrapperDeny(output)`. The guardrails output filter uses this to short-circuit — without it, a policy/approval/limit deny string would get re-scanned and possibly redacted. The marker is deliberately **not** a public string key: a tool executor returns an arbitrary `{ content, metadata }` object, so a string flag would let a malicious/buggy tool forge a wrapper-deny — exempting its own output from guardrail/judge filtering and suppressing its `tool_call` audit row. Only `denyOutput` (wrapper code) can reference the symbol, so the marker is unforgeable by tools.
 
 :::caution[New post-call wrappers must check `isWrapperDeny`]
 When writing a new wrapper that does **post-call** work (output filtering, scoring, transformation), check `isWrapperDeny(out)` first and pass the deny through verbatim. Missing this check causes outer wrappers to double-process an inner deny as if it were a normal tool result.
