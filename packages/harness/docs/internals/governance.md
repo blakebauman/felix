@@ -294,6 +294,8 @@ at the loop's terminal assistant turn:
 
 Streaming: `final_response.streaming = buffer` holds deltas back, filters the completed answer, and emits the guarded text as one chunk (correct, costs TTFT). `passthrough` streams deltas raw and only guards the persisted terminal message, emitting `orchestrator_final_guard_skipped { reason: 'streaming_passthrough' }`. Only `content` is touched — `thinking` / `redacted_thinking` blocks are preserved. Judges over the final answer and multi-agent aggregation guarding are not yet wired.
 
+A `fatal: true` tool error is also a terminal answer — the react loop runs the same guard over the fatal message before it's returned, streamed (`on_tool_end` included), or persisted, since upstream error bodies can carry secrets. Intermediate (non-terminal) assistant text in `buffer` mode is still flushed unguarded — only the terminal answer is covered.
+
 ## Approvals
 
 Source: `src/approvals/wrap.ts`, `src/approvals/store.ts`, `src/approvals/approvals-do.ts`, `src/approvals/models.ts`.
