@@ -58,7 +58,7 @@ function parseJudgeReply(raw: string): ParsedJudgeReply | null {
   }
 }
 
-interface JudgeOutcome {
+export interface JudgeOutcome {
   score: number;
   passed: boolean;
   reasoning: string;
@@ -135,6 +135,9 @@ async function judgeOne(
 }
 
 function appliesTo(rule: JudgeRule, toolName: string): boolean {
+  // Judges flagged `final_response` score the model's answer, not tool
+  // results — the final-response guard runs them; skip them here.
+  if (rule.final_response) return false;
   if (rule.target_tools.length === 0) return true;
   return rule.target_tools.includes(toolName);
 }

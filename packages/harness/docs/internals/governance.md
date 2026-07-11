@@ -294,7 +294,9 @@ at the loop's terminal assistant turn:
 
 Streaming: `final_response.streaming = buffer` holds deltas back, filters the completed answer, and emits the guarded text as one chunk (correct, costs TTFT). `passthrough` streams deltas raw and only guards the persisted terminal message, emitting `orchestrator_final_guard_skipped { reason: 'streaming_passthrough' }`. Only `content` is touched — `thinking` / `redacted_thinking` blocks are preserved.
 
-Multi-agent coverage: **parallel** guards the aggregator's synthesized answer and **groupchat** guards the returned (last speaker's) answer, both using the parent manifest's guardrails. **router** is a pass-through — it forwards the chosen sub-agent's response verbatim (post-filtering a forwarded stream would mean buffering the whole child stream), so final-response guarding for a router is delegated to the sub-agent manifests, which run their own guard. Judges over the final answer are not yet wired.
+Multi-agent coverage: **parallel** guards the aggregator's synthesized answer and **groupchat** guards the returned (last speaker's) answer, both using the parent manifest's guardrails. **router** is a pass-through — it forwards the chosen sub-agent's response verbatim (post-filtering a forwarded stream would mean buffering the whole child stream), so final-response guarding for a router is delegated to the sub-agent manifests, which run their own guard.
+
+A judge flagged `final_response: true` scores the answer here too, after the content filter — a below-threshold score blocks (replaces the answer with the notice) and emits `judge_score { source: 'final_response' }`. Judges need the full answer, so they block only on the non-streaming path and streaming `buffer` mode; under `passthrough` the bytes have already streamed. The tool-side `applyJudges` skips `final_response` judges.
 
 ## Approvals
 
