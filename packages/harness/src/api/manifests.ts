@@ -24,7 +24,7 @@ import type { AuthContext } from '../auth/context';
 import { requireScope } from '../auth/middleware';
 import type { Env } from '../env';
 import { invalidateActive, resolveManifest } from '../manifests/resolver';
-import { ManifestSchema } from '../manifests/schema';
+import { MANIFEST_NAME_RE, ManifestSchema } from '../manifests/schema';
 import {
   activateVersion,
   clearCanary,
@@ -49,6 +49,7 @@ const NameParam = z.object({
     .string()
     .min(1)
     .max(128)
+    .regex(MANIFEST_NAME_RE)
     .openapi({ description: 'Manifest name (matches `metadata.name`).', example: 'shopping' }),
 });
 
