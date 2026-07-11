@@ -14,6 +14,8 @@
 
 import { requireContext } from '../context';
 import type { Env } from '../env';
+import { guardFinalResponse } from '../guardrails/final-response';
+import type { Guardrails } from '../guardrails/models';
 import type { Model } from '../manifests/schema';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
 import { fullReplaySessionStrategy } from '../session/strategies';
@@ -40,6 +42,10 @@ export interface BuildGroupchatOptions {
   sessionStore?: SessionStore | null;
   /** Resolved at build time from `manifest.spec.session.strategy`. */
   sessionStrategy?: SessionStrategy | null;
+  /** Parent guardrails — the final-response guard runs over the returned
+   *  answer (the last speaker's turn). Intermediate transcript turns are an
+   *  internal multi-agent record and are not guarded. */
+  guardrails?: Guardrails | null;
 }
 
 export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
@@ -103,7 +109,17 @@ export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
         transcript.push(last);
         persist(session, [last]);
       }
-      return { messages: transcript, final: last };
+      // Guard the user-facing answer (no-op unless `final_response` is a
+      // target). Replace the transcript tail so the returned messages match.
+      const guardedFinal = await guardFinalResponse(
+        last,
+        opts.guardrails ?? undefined,
+        opts.manifestId,
+      );
+      if (guardedFinal !== last && transcript.length > 0) {
+        transcript[transcript.length - 1] = guardedFinal;
+      }
+      return { messages: transcript, final: guardedFinal };
     },
 
     async *streamEvents(input: InvokeInput): AsyncGenerator<StreamEvent> {
@@ -127,6 +143,7 @@ registerPattern(
       manifestVersion: ctx.manifestVersion,
       sessionStore: ctx.sessionStore ?? null,
       sessionStrategy: ctx.sessionStrategy ?? null,
+      guardrails: ctx.manifest.spec.guardrails,
     }),
   { kind: 'multi-agent' },
 );

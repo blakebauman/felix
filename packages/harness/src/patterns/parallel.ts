@@ -6,6 +6,8 @@
 
 import { requireContext } from '../context';
 import type { Env } from '../env';
+import { guardFinalResponse } from '../guardrails/final-response';
+import type { Guardrails } from '../guardrails/models';
 import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
 import { checkPreflightTokenBudget, checkTokenBudget } from '../limits/wrap';
@@ -25,6 +27,9 @@ export interface BuildParallelOptions {
    *  blown token budget short-circuits to a deny message instead of
    *  spending more tokens synthesizing. */
   limits?: Limits;
+  /** Parent guardrails — the final-response guard runs over the aggregator's
+   *  synthesized answer (children run their own guardrails independently). */
+  guardrails?: Guardrails | null;
 }
 
 export function buildParallelAgent(opts: BuildParallelOptions): Agent {
@@ -67,7 +72,10 @@ export function buildParallelAgent(opts: BuildParallelOptions): Agent {
     }
     const result = await model.chat(aggregatorMessages, [], { signal: currentSignal() });
     recordUsage(result, { manifestId: opts.manifestId, modelId: opts.modelSpec.id });
-    return result.message;
+    // Guard the synthesized user-facing answer (no-op unless `final_response`
+    // is a target). The aggregator is a parent-level model call, so children's
+    // own guardrails don't cover it.
+    return guardFinalResponse(result.message, opts.guardrails ?? undefined, opts.manifestId);
   }
 
   return {
@@ -102,6 +110,7 @@ registerPattern(
       manifestId: ctx.manifestId,
       manifestVersion: ctx.manifestVersion,
       limits: ctx.limits,
+      guardrails: ctx.manifest.spec.guardrails,
     }),
   { kind: 'multi-agent' },
 );

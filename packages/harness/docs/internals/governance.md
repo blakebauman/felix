@@ -292,7 +292,9 @@ at the loop's terminal assistant turn:
       on_match == 'block' ? replace whole answer with a notice : replace content with filtered
 ```
 
-Streaming: `final_response.streaming = buffer` holds deltas back, filters the completed answer, and emits the guarded text as one chunk (correct, costs TTFT). `passthrough` streams deltas raw and only guards the persisted terminal message, emitting `orchestrator_final_guard_skipped { reason: 'streaming_passthrough' }`. Only `content` is touched — `thinking` / `redacted_thinking` blocks are preserved. Judges over the final answer and multi-agent aggregation guarding are not yet wired.
+Streaming: `final_response.streaming = buffer` holds deltas back, filters the completed answer, and emits the guarded text as one chunk (correct, costs TTFT). `passthrough` streams deltas raw and only guards the persisted terminal message, emitting `orchestrator_final_guard_skipped { reason: 'streaming_passthrough' }`. Only `content` is touched — `thinking` / `redacted_thinking` blocks are preserved.
+
+Multi-agent coverage: **parallel** guards the aggregator's synthesized answer and **groupchat** guards the returned (last speaker's) answer, both using the parent manifest's guardrails. **router** is a pass-through — it forwards the chosen sub-agent's response verbatim (post-filtering a forwarded stream would mean buffering the whole child stream), so final-response guarding for a router is delegated to the sub-agent manifests, which run their own guard. Judges over the final answer are not yet wired.
 
 ## Approvals
 
