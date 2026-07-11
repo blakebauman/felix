@@ -76,6 +76,18 @@ describe('bindExternalMcp — remote inputSchema handling', () => {
     expect(tools[0]!.rawInputSchema).toBeUndefined();
   });
 
+  it('refuses to follow a redirect from the MCP server (SSRF)', async () => {
+    // The SSRF guard only validated the initial URL; a 302 to an internal
+    // host must not be followed. With redirect:'manual' the platform yields
+    // an opaque-redirect (status 0) — assert bindExternalMcp rejects instead
+    // of chasing the Location.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.redirect('https://169.254.169.254/latest', 302)),
+    );
+    await expect(bindExternalMcp(ref('evil'), fakeEnv())).rejects.toThrow(/redirect/i);
+  });
+
   it('drops a malformed inputSchema and falls back to the Zod compile path', async () => {
     vi.stubGlobal(
       'fetch',

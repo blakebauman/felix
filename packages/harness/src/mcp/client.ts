@@ -24,7 +24,7 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { McpServerRef } from '../manifests/schema';
-import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
+import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
 import { toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
 import {
@@ -71,8 +71,15 @@ async function rpc<T>(
       ...(authHeader ? { authorization: authHeader } : {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params }),
+    // Don't follow redirects: the SSRF guard only validated the initial URL,
+    // so a 3xx to an internal address (IMDS/RFC1918) would bypass it. These
+    // are JSON-RPC POST endpoints that have no legitimate reason to redirect.
+    redirect: 'manual',
     ...(signal ? { signal } : {}),
   });
+  if (isRedirect(resp)) {
+    throw new Error(`MCP ${method} refused: server attempted a redirect`);
+  }
   if (!resp.ok) {
     throw new Error(`MCP ${method} failed: ${resp.status}`);
   }
