@@ -11,6 +11,20 @@ pull request. `main` is the deploy source and moves only by merging PRs on GitHu
 hook (`.claude/hooks/block-main-commit.sh`) denies `git commit` / direct `git push` on main;
 do not bypass it with detached HEADs or `--force` tricks.
 
+**Never stack PRs.** Every PR branches from `main` and targets `main` — full stop. Do NOT branch
+from another branch or open-PR, and do NOT use `gh pr create --base <non-main>`. If work seems to
+"depend" on an unmerged PR, you have two correct options, in order of preference:
+
+1. **Put it in one PR.** If the pieces genuinely can't be reviewed or shipped independently, they
+   belong in the *same* branch/PR — don't split a single cohesive change into a chain.
+2. **Wait for the parent to merge**, then branch the follow-up from fresh `main`. If the user
+   hasn't merged the parent yet, say so and stop — do not work around it by stacking.
+
+Rationale: stacked PRs force a merge order on the human reviewer, make each PR's diff misleading
+(it shows the parent's changes too until the base merges), and turn one review into a fragile
+chain. This repo's review *is* the oversight; keep every PR independently reviewable against `main`.
+See also [.claude/rules/git-workflow.md](../../rules/git-workflow.md).
+
 ## Procedure
 
 1. **Start from fresh main**
@@ -46,7 +60,7 @@ do not bypass it with detached HEADs or `--force` tricks.
 
 - Emergency prod fixes take the same path — a small PR merges in minutes; the hook has no
   bypass by design.
-- Stacked work: branch from the open PR's branch, note the dependency in the PR body, and
-  retarget the base after the parent merges.
+- **No stacked PRs** (see the callout above): branch from `main`, target `main`, always.
+  Dependent work goes in one PR or waits for the parent to merge — never a base-chain.
 - The private-history archive branch (`backup/main-2026-07-11` on `felix-run-old`) is never
   merged or rebased into anything.
