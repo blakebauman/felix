@@ -105,7 +105,7 @@ mcp_servers:
     transport: sse                # default: sse; "http" | "sse" | "stdio"
 ```
 
-URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`.
+URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`. A remote server is a **trust boundary**: its tool `description` and `inputSchema` are injected into the model's tool definitions (a prompt-injection surface), so the description is length-capped, an oversized schema is dropped, and the build-time `tools/list` discovery call is bounded by a timeout.
 
 ## spec.peers
 

@@ -125,17 +125,41 @@ class McpExecutor implements ToolExecutor {
   }
 }
 
+// A remote MCP server's `description` text and `inputSchema` are injected
+// verbatim into the model's tool definitions — the strongest untrusted-input
+// prompt-injection surface in the package (a hostile server can plant
+// instructions there). We can't sanitize natural-language intent, but we can
+// bound the blast radius: cap the description length and reject an oversized
+// schema. Build-time (`tools/list`) is also bounded by a timeout so a slow or
+// hostile server can't stall `buildAgent` indefinitely.
+const MAX_MCP_DESCRIPTION_CHARS = 4096;
+const MAX_MCP_SCHEMA_BYTES = 32 * 1024;
+const MCP_LIST_TIMEOUT_MS = 10_000;
+
+function capDescription(desc: string): string {
+  if (desc.length <= MAX_MCP_DESCRIPTION_CHARS) return desc;
+  return `${desc.slice(0, MAX_MCP_DESCRIPTION_CHARS)}… [truncated]`;
+}
+
 /**
  * Defense-in-depth filter for the remote `inputSchema`. A malicious or buggy
  * MCP server could send arbitrary JSON here; we forward it to the LLM only
- * when it looks like a JSON Schema object (`type: 'object'`). Anything else
- * (string, null, missing, wrong type) falls back to the permissive Zod
- * compile path inside `getToolInputSchema`.
+ * when it looks like a JSON Schema object (`type: 'object'`) AND its serialized
+ * size is within `MAX_MCP_SCHEMA_BYTES`. Anything else (string, null, missing,
+ * wrong type, oversized) falls back to the permissive Zod compile path inside
+ * `getToolInputSchema`.
  */
 function sanitizeRemoteInputSchema(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const obj = raw as Record<string, unknown>;
   if (obj.type !== 'object') return undefined;
+  // Reject an oversized schema rather than forward a huge nested blob into the
+  // model context (injection surface + token blowup).
+  try {
+    if (JSON.stringify(obj).length > MAX_MCP_SCHEMA_BYTES) return undefined;
+  } catch {
+    return undefined; // circular / unserializable
+  }
   return obj;
 }
 
@@ -148,14 +172,22 @@ export async function bindExternalMcp(
   // (e.g. allow-list edited between deploys).
   assertSafeOutboundUrlForEnv(ref.url, env);
   const authHeader = authHeaderProvider ? await authHeaderProvider(ref) : '';
-  const list = await rpc<{ tools: McpTool[] }>(ref.url, 'tools/list', {}, env, authHeader);
+  // Bound the discovery call so a slow/hostile server can't stall the build.
+  const list = await rpc<{ tools: McpTool[] }>(
+    ref.url,
+    'tools/list',
+    {},
+    env,
+    authHeader,
+    AbortSignal.timeout(MCP_LIST_TIMEOUT_MS),
+  );
   const out: Tool[] = [];
   for (const t of list.tools ?? []) {
     const namespaced = `${ref.name}__${t.name}`;
     out.push(
       defineToolWithExecutor({
         name: namespaced,
-        description: t.description ?? `Remote MCP tool ${t.name} on ${ref.name}.`,
+        description: capDescription(t.description ?? `Remote MCP tool ${t.name} on ${ref.name}.`),
         args: z.record(z.string(), z.unknown()),
         rawInputSchema: sanitizeRemoteInputSchema(t.inputSchema),
         source: `mcp:${ref.name}`,
