@@ -183,10 +183,17 @@ export function parseVerifiers(env: Env): VerifierConfig[] {
   const raw = env.JWT_VERIFIERS?.trim();
   if (!raw) return [];
   const out: VerifierConfig[] = [];
+  const dev = env.ENVIRONMENT === 'development';
   for (const entry of raw.split(',')) {
     const [scheme, issuer, audience] = entry.trim().split(/\s+/).filter(Boolean);
     if (!issuer) continue; // need at least scheme + issuer
     if (scheme !== 'access' && scheme !== 'cognito') continue; // unknown scheme — skip
+    // A `cognito` issuer's JWKS URL is derived verbatim from the issuer, so an
+    // `http://` issuer would fetch the key set (and thus establish trust) over
+    // cleartext. Reject non-HTTPS cognito issuers outside development —
+    // fail-closed (skip the verifier) rather than authenticate over http. CF
+    // Access is already https-pinned. A local dev issuer may be http.
+    if (scheme === 'cognito' && !dev && !issuer.startsWith('https://')) continue;
     out.push({ scheme, issuer, audience });
   }
   return out;

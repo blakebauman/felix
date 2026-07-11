@@ -70,4 +70,24 @@ describe('parseVerifiers', () => {
       { scheme: 'access', issuer: 'felix.cloudflareaccess.com', audience: 'aud' },
     ]);
   });
+
+  it('rejects a non-HTTPS cognito issuer outside development (cleartext JWKS)', () => {
+    // An http:// issuer would fetch the JWKS (and establish trust) over
+    // cleartext. Fail closed by dropping the verifier in non-dev.
+    expect(parseVerifiers(env('cognito http://issuer.example/pool aud'))).toEqual([]);
+    // https survives.
+    expect(parseVerifiers(env('cognito https://issuer.example/pool aud'))).toEqual([
+      { scheme: 'cognito', issuer: 'https://issuer.example/pool', audience: 'aud' },
+    ]);
+  });
+
+  it('allows a non-HTTPS cognito issuer in development for local testing', () => {
+    const devEnv = {
+      JWT_VERIFIERS: 'cognito http://localhost:8080/pool',
+      ENVIRONMENT: 'development',
+    } as Env;
+    expect(parseVerifiers(devEnv)).toEqual([
+      { scheme: 'cognito', issuer: 'http://localhost:8080/pool', audience: undefined },
+    ]);
+  });
 });
