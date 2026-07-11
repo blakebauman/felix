@@ -1,5 +1,10 @@
 # Felix Orchestrator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-docs.felix.run-orange)](https://docs.felix.run)
+[![Cloudflare Workers](https://img.shields.io/badge/runs%20on-Cloudflare%20Workers-f38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+
 A **managed agents harness** on Cloudflare Workers, shaped after Anthropic's [Managed Agents](https://www.anthropic.com/engineering/managed-agents) architecture: Session, Pattern/Provider registries, and ToolExecutor are decoupled abstractions that can be swapped without touching the others. TypeScript on Hono, with Durable Objects, D1, R2, KV, Vectorize, Queues, and AI Gateway.
 
 An `apiVersion: orchestrator/v1` manifest compiles into a runnable agent exposing `/v1/*` (OpenAI-compatible), `/chat`, `/a2a`, `/mcp`, `/jobs`, `/plans`, `/audit`, `/approvals`, `/manifests`, `/eval`, and `/.well-known/agent-card.json`. Manifests can be bundled at build time, dropped into R2, or managed per-tenant through the `/manifests` REST surface (append-only versions with active-pointer rollback; reads/writes gated by `manifests:read` / `manifests:write` scopes). Two Felix deployments can act as A2A peers and share a federation `PolicyBundle` via R2.
