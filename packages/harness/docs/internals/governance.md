@@ -126,7 +126,7 @@ limits:
   max_output_tokens: 8000       # ceiling: 100_000
 ```
 
-Absolute ceilings (`ABSOLUTE_LIMITS` in [src/limits/models.ts](../../src/limits/models.ts)) apply even if the schema is bypassed:
+Absolute ceilings (`ABSOLUTE_LIMITS` in [src/limits/models.ts](../../src/limits/models.ts)) apply even if the schema is bypassed — `applyLimits` and `checkTokenBudget` run every declared cap through `clampLimits` before enforcing, so a `Limits` object built without Zod (a test harness or future programmatic builder) can't exceed the ceiling. `null` caps stay `null` (no manifest-level cap):
 
 | Cap | Ceiling |
 |---|---|

@@ -40,6 +40,7 @@ Two `scheme` values are supported; the scheme only selects how the JWKS URL is d
    - JWKS URL: `${issuer}/.well-known/jwks.json`
    - Expected `iss`: `issuer`
    - Audience: the optional third field
+   - Must be `https://` outside `development` — a non-HTTPS issuer would fetch the JWKS (and establish trust) over cleartext, so `parseVerifiers` drops it (fail closed). `http://` is allowed only in dev for local testing.
 
 Both use `jose.createRemoteJWKSet` with a 1-hour cache. The verifier loop walks each config in order; a JWT claim mismatch (`iss`/`aud`) is "not this verifier, try next", a real signature/expiry failure is a hard reject. An empty / all-malformed `JWT_VERIFIERS` yields zero verifiers — fail-closed in production, anonymous in dev (see table above).
 
