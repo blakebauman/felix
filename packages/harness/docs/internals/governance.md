@@ -296,6 +296,8 @@ Streaming: `final_response.streaming = buffer` holds deltas back, filters the co
 
 Multi-agent coverage: **parallel** guards the aggregator's synthesized answer and **groupchat** guards the returned (last speaker's) answer, both using the parent manifest's guardrails. **router** is a pass-through — it forwards the chosen sub-agent's response verbatim (post-filtering a forwarded stream would mean buffering the whole child stream), so final-response guarding for a router is delegated to the sub-agent manifests, which run their own guard. Judges over the final answer are not yet wired.
 
+A `fatal: true` tool error is also a terminal answer — the react loop runs the same guard over the fatal message before it's returned, streamed (`on_tool_end` included), or persisted, since upstream error bodies can carry secrets. Intermediate (non-terminal) assistant text in `buffer` mode is still flushed unguarded — only the terminal answer is covered.
+
 ## Approvals
 
 Source: `src/approvals/wrap.ts`, `src/approvals/store.ts`, `src/approvals/approvals-do.ts`, `src/approvals/models.ts`.
