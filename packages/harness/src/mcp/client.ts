@@ -24,6 +24,7 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { McpServerRef } from '../manifests/schema';
+import { readCappedJson } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
 import { toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
@@ -76,7 +77,8 @@ async function rpc<T>(
   if (!resp.ok) {
     throw new Error(`MCP ${method} failed: ${resp.status}`);
   }
-  const data = (await resp.json()) as JsonRpcResponse<T>;
+  // Byte-cap the read so a hostile server can't OOM the isolate with a huge body.
+  const data = await readCappedJson<JsonRpcResponse<T>>(resp);
   if (data.error) throw new Error(`MCP error: ${data.error.code} ${data.error.message}`);
   return data.result as T;
 }

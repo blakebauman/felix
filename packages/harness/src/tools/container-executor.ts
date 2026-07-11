@@ -34,8 +34,9 @@
 
 import { z } from 'zod';
 import type { Env } from '../env';
+import { readCappedJson } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
-import { codeForStatus, toolErrorOutput } from './errors';
+import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
   defineToolWithExecutor,
@@ -102,7 +103,8 @@ export class ContainerExecutor implements ToolExecutor {
           `[container error] ${this.opts.image}: ${resp.status} ${body.slice(0, 200)}`,
         );
       }
-      const data = (await resp.json()) as ContainerResponse;
+      // Byte-cap the read so a hostile/compromised gateway can't OOM the isolate.
+      const data = await readCappedJson<ContainerResponse>(resp);
       if (data.exit_code != null && data.exit_code !== 0) {
         const detail = (data.stderr || data.content || '').slice(0, 1000);
         return toolErrorOutput(
@@ -117,6 +119,9 @@ export class ContainerExecutor implements ToolExecutor {
           'user_aborted',
           `[container cancelled] ${this.opts.containerToolName}: ${(err as Error).message}`,
         );
+      }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[container error] ${this.opts.image}: ${err.message}`);
       }
       throw err;
     } finally {
