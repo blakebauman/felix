@@ -21,7 +21,7 @@ spec: { ... }                 # defaults to a minimal react agent
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `name` | string (1-128 chars) | required | Used as the manifest id, the OpenAI `model` value, and the audit `manifest_id`. |
+| `name` | string (1-128 chars, `[a-zA-Z0-9._-]`) | required | Used as the manifest id, the OpenAI `model` value, the audit `manifest_id`, and an R2 override object-key segment. Restricted to `[a-zA-Z0-9._-]` (no slashes or whitespace) so it can't escape its key prefix. |
 | `version` | string | `"1.0.0"` | Free-form. |
 | `description` | string | `""` | Surfaced in the A2A agent card. |
 | `tags` | string[] | `[]` | Free-form. |

@@ -17,7 +17,7 @@
 
 import type { Env } from '../env';
 import { BUNDLED_MANIFESTS } from './bundled';
-import { type Manifest, ManifestSchema } from './schema';
+import { assertValidManifestName, type Manifest, ManifestSchema } from './schema';
 import { getActive, getVersion } from './store';
 
 export type ManifestSource = 'tenant_d1' | 'tenant_r2' | 'global_r2' | 'bundled';
@@ -219,6 +219,14 @@ export async function resolveManifest(
   name: string,
   opts: ResolveOptions = {},
 ): Promise<ResolvedManifest> {
+  // Contain manifest-name path confusion: the name becomes an R2 object-key
+  // segment below (`manifests/<tenant>/<name>.json` and the global
+  // `manifests/<name>.json`). A `/` in the name would let a caller reach
+  // another tenant's tenant-scoped override via the global layer. Reject
+  // here so bare-string callers (chat `manifest`, OpenAI `model`) are
+  // contained even though their input schemas don't restrict the charset.
+  assertValidManifestName(name);
+
   const tenantD1 = await readTenantD1(env, tenantId, name, opts);
   if (tenantD1) return tenantD1;
 
