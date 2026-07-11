@@ -109,16 +109,21 @@ export const GuardrailsSchema = z
               'number can trip the credit-card pattern), and that risk lands on the user-facing path.',
           }),
         streaming: z
-          .enum(['buffer', 'passthrough'])
+          .enum(['buffer', 'incremental', 'passthrough'])
           .default('buffer')
           .openapi({
             description:
               'How streamed responses are guarded. `buffer` accumulates the streamed deltas, ' +
-              'filters once the answer is complete, then emits the guarded text (correct, but ' +
-              'trades token-by-token time-to-first-token). `passthrough` streams deltas raw — the ' +
-              'streamed bytes are NOT filtered, only the message persisted to the session is — and ' +
-              'emits `orchestrator_final_guard_skipped` so operators know. `buffer` is the ' +
-              'safe-by-default choice; opt into `passthrough` knowingly.',
+              'filters once the answer is complete, then emits the guarded text as one chunk ' +
+              '(correct, but trades token-by-token time-to-first-token). `incremental` streams ' +
+              'filtered deltas live, holding back a bounded tail window so a match spanning a ' +
+              'chunk boundary is still caught before it is emitted (keeps streaming live AND ' +
+              'filtered; a single contiguous secret longer than the ~320-char window could leak ' +
+              'its prefix). `passthrough` streams deltas raw — the streamed bytes are NOT filtered, ' +
+              'only the message persisted to the session is — and emits ' +
+              '`orchestrator_final_guard_skipped` so operators know. Content filters work under ' +
+              'all three; a `final_response` judge can only BLOCK under `buffer` / non-streaming ' +
+              '(the others have already sent bytes). `buffer` is the safe-by-default choice.',
           }),
       })
       .strict()

@@ -33,7 +33,7 @@
 import { recordEvent } from '../audit/store';
 import { getContext, requireContext } from '../context';
 import type { Env } from '../env';
-import { guardFinalResponse } from '../guardrails/final-response';
+import { guardFinalResponse, makeIncrementalGuard } from '../guardrails/final-response';
 import {
   DEFAULT_GUARDRAILS,
   finalResponseGuardEnabled,
@@ -481,11 +481,18 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
         // dropped tool_calls on Workers AI; this avoids both.
         const stream = model.streamChat(messages, turnTools, { signal: currentSignal() });
         let result: ModelChatResult;
-        // In `buffer` mode we hold text deltas back so a secret can't stream to
-        // the client before the final-response guard runs. We don't know a turn
-        // is terminal until the stream returns, so every turn's deltas buffer;
-        // intermediate (tool-use) turns flush their buffer unguarded afterward.
-        const bufferMode = guardFinal && guardrails.final_response.streaming === 'buffer';
+        // Final-response streaming mode (only meaningful when the guard is on):
+        //   buffer      — hold every delta, emit the guarded answer at the end.
+        //   incremental — stream filtered deltas live, holding back a bounded
+        //                 tail so a boundary-spanning match is caught first.
+        //   passthrough — stream raw; guard only the persisted/returned copy.
+        // We don't know a turn is terminal until the stream returns, so buffer
+        // accumulates every turn and incremental filters every turn (harmless
+        // for intermediate tool-use turns — that text re-enters the loop).
+        const mode = guardFinal ? guardrails.final_response.streaming : 'off';
+        const bufferMode = mode === 'buffer';
+        const inc =
+          mode === 'incremental' ? makeIncrementalGuard(guardrails, opts.manifestId) : null;
         let buffered = '';
         while (true) {
           const next = await stream.next();
@@ -495,7 +502,12 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
           }
           if (next.value) {
             if (bufferMode) buffered += next.value;
-            else yield { event: 'on_chat_model_stream', data: { chunk: { content: next.value } } };
+            else if (inc) {
+              const chunk = await inc.push(next.value);
+              if (chunk)
+                yield { event: 'on_chat_model_stream', data: { chunk: { content: chunk } } };
+            } else
+              yield { event: 'on_chat_model_stream', data: { chunk: { content: next.value } } };
           }
         }
         trackUsage(result);
@@ -505,25 +517,45 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
 
         if (isTerminal) {
           let finalMsg = result.message;
-          if (guardFinal) {
+          if (bufferMode) {
+            // Held every delta — guard the completed answer and emit once.
             finalMsg = await guardFinalResponse(result.message, guardrails, opts.manifestId);
             messages[messages.length - 1] = finalMsg;
-            if (!bufferMode && finalMsg !== result.message) {
-              // passthrough: the raw (unfiltered) deltas already went to the
-              // client; only the persisted/returned copy is guarded. Surface
-              // that the streamed bytes escaped the filter.
+            if (finalMsg.content) {
+              yield {
+                event: 'on_chat_model_stream',
+                data: { chunk: { content: finalMsg.content } },
+              };
+            }
+          } else if (inc) {
+            // Flush the incremental filter's tail, then run judges over the
+            // filtered content (filters re-run as a no-op on redacted text).
+            const { tail, content } = await inc.finish();
+            if (tail) yield { event: 'on_chat_model_stream', data: { chunk: { content: tail } } };
+            finalMsg = await guardFinalResponse(
+              { ...result.message, content },
+              guardrails,
+              opts.manifestId,
+            );
+            messages[messages.length - 1] = finalMsg;
+            if (finalMsg.content !== content) {
+              // A judge blocked after the filtered bytes already streamed — the
+              // returned/persisted copy is blocked, but the stream can't retract.
+              recordCounter('orchestrator_final_guard_skipped', {
+                reason: 'streaming_incremental_judge',
+                manifest_id: opts.manifestId,
+              });
+            }
+          } else if (guardFinal) {
+            // passthrough: raw deltas already streamed; guard only the copy.
+            finalMsg = await guardFinalResponse(result.message, guardrails, opts.manifestId);
+            messages[messages.length - 1] = finalMsg;
+            if (finalMsg !== result.message) {
               recordCounter('orchestrator_final_guard_skipped', {
                 reason: 'streaming_passthrough',
                 manifest_id: opts.manifestId,
               });
             }
-          }
-          // buffer mode held the deltas — emit the guarded answer as one chunk.
-          if (bufferMode && finalMsg.content) {
-            yield {
-              event: 'on_chat_model_stream',
-              data: { chunk: { content: finalMsg.content } },
-            };
           }
           persistAsync(session, [finalMsg]);
           yield {
@@ -533,10 +565,13 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
           return;
         }
 
-        // Non-terminal turn: in buffer mode, flush any intermediate assistant
-        // text now (it re-enters the loop, it's not the final answer).
+        // Non-terminal turn: flush any held intermediate assistant text (it
+        // re-enters the loop, it's not the final answer).
         if (bufferMode && buffered) {
           yield { event: 'on_chat_model_stream', data: { chunk: { content: buffered } } };
+        } else if (inc) {
+          const { tail } = await inc.finish();
+          if (tail) yield { event: 'on_chat_model_stream', data: { chunk: { content: tail } } };
         }
 
         const newMessages: ChatMessage[] = [result.message];
