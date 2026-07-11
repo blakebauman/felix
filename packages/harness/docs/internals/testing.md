@@ -1,3 +1,7 @@
+---
+description: "Vitest unit and workers (miniflare) test projects — topology, patterns, adding tests, and integration test bindings."
+---
+
 # Testing
 
 Vitest with two projects covering separate concerns.

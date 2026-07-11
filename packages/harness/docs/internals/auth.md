@@ -1,3 +1,7 @@
+---
+description: "Inbound JWT verification (Cloudflare Access, Cognito), outbound OAuth with at-rest encryption, and RequestContext tenant isolation."
+---
+
 # Auth
 
 Inbound JWT verification, outbound OAuth, the `RequestContext`, and the structural defenses that keep tenants isolated.

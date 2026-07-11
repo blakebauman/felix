@@ -1,3 +1,7 @@
+---
+description: "All Felix public HTTP endpoints — /chat, /v1, /a2a, /mcp, /health, /.well-known — with curl examples, auth notes, and streaming."
+---
+
 # REST API
 
 The public HTTP surface. Every route runs through `authMiddleware` (verifies JWT, populates `RequestContext`) and `rateLimitMiddleware` (per-tenant sliding window of 100 req/60s). `/health`, `/.well-known/*`, `/docs`, `/openapi.json` are exempt from rate limiting.

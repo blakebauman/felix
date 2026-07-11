@@ -1,3 +1,7 @@
+---
+description: "Loop semantics for all seven Felix patterns — react, deep, router, parallel, groupchat, reflect, plan_execute."
+---
+
 # Patterns
 
 The seven execution patterns. All are implemented from scratch in `src/patterns/*` — no LangGraph.

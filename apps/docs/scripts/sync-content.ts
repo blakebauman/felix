@@ -157,21 +157,48 @@ function humanize(name: string): string {
   return name.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * Extract and strip a YAML frontmatter block from the top of a markdown source file.
+ * Only simple scalar fields are parsed (e.g. `description: "..."`, `template: splash`).
+ * Nested fields (sidebar.*, hero.*) are not parsed — keep it simple.
+ */
+function parseFrontmatter(markdown: string): { description?: string; rest: string } {
+  const m = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!m) return { rest: markdown };
+  let description: string | undefined;
+  for (const line of m[1].split('\n')) {
+    const kv = line.match(/^description:\s*(.+)$/);
+    if (kv) description = kv[1].trim().replace(/^["']|["']$/g, '');
+  }
+  return { description, rest: markdown.slice(m[0].length) };
+}
+
+/** Starlight component import line injected into every output .mdx file. */
+const STARLIGHT_IMPORTS =
+  "import { Aside, Steps, Tabs, TabItem, CardGrid, LinkCard, Badge, Card } from '@astrojs/starlight/components';\n";
+
 const sources = collectSources();
 const routes = new Map(sources.map((s) => [s.repoPath, routeFor(s.slug)]));
 
 rmSync(outDir, { recursive: true, force: true });
 for (const src of sources) {
-  const raw = readFileSync(join(repoRoot, src.repoPath), 'utf8');
+  const rawFile = readFileSync(join(repoRoot, src.repoPath), 'utf8');
   const fallback = humanize(src.slug.split('/').pop() ?? src.slug);
-  const { title, body } = splitTitle(raw, fallback);
+
+  // Strip any source-file frontmatter before title extraction.
+  const { description, rest: rawBody } = parseFrontmatter(rawFile);
+  const { title, body } = splitTitle(rawBody, fallback);
   const rewritten = rewriteLinks(body, posix.dirname(src.repoPath), routes);
 
   const fm = [`title: ${JSON.stringify(title)}`];
+  if (description) fm.push(`description: ${JSON.stringify(description)}`);
   if (src.order !== undefined) fm.push('sidebar:', `  order: ${src.order}`);
-  const outPath = join(outDir, `${src.slug}.md`);
+
+  // Output as .mdx so Starlight components (<Steps>, <Tabs>, <CardGrid>, etc.)
+  // used in source files are processed as MDX by Astro.
+  const outPath = join(outDir, `${src.slug}.mdx`);
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, `---\n${fm.join('\n')}\n---\n\n${rewritten}`);
+  writeFileSync(outPath, `---\n${fm.join('\n')}\n---\n\n${STARLIGHT_IMPORTS}\n${rewritten}`);
 }
 
 // Shared design system: render the @felix/design palette (the same module

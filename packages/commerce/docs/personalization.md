@@ -1,3 +1,7 @@
+---
+description: "Behavior-driven recommendations, image search, abandoned-cart recovery, and rule-based dynamic pricing."
+---
+
 # Personalization, visual search, dynamic pricing
 
 **Personalization** (`packages/commerce/src/personalization/`, D1 `customers`, `customer_sessions`, `behavior_events`, `abandoned_carts`): behavior telemetry (`view`, `add_to_cart`, `checkout_start`, `purchase`) is captured fire-and-forget from the catalog/cart tools. `recommend_products` runs Vectorize similarity seeded from a product id or the thread's recent behavior; `identify_customer` upserts a customer by email, links the session, and back-attaches the thread's behavior events for cross-session continuity.

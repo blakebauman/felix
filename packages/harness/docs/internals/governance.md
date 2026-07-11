@@ -1,3 +1,7 @@
+---
+description: "Five governance layers — policies, limits, guardrails, LLM judges, approvals — compose at build time and run on every tool invocation."
+---
+
 # Governance
 
 Felix applies five governance layers to every tool call: policies, limits, guardrails, llm_judge, approvals. They compose at build time and run on every invocation. A federated `PolicyBundle` overlays manifest-declared policies and approvals.
@@ -36,20 +40,28 @@ Every wrapper returns its deny via `denyOutput(content, source)` from [src/tools
 
 The structured marker (`metadata[WRAPPER_DENY_FLAG] = true` + `metadata.source`) lets outer wrappers detect inner denies via `isWrapperDeny(output)`. The guardrails output filter uses this to short-circuit — without it, a policy/approval/limit deny string would get re-scanned and possibly redacted.
 
-When writing a new wrapper that does **post-call** work (output filtering, scoring, transformation), check `isWrapperDeny(out)` first and pass the deny through verbatim.
+:::caution[New post-call wrappers must check `isWrapperDeny`]
+When writing a new wrapper that does **post-call** work (output filtering, scoring, transformation), check `isWrapperDeny(out)` first and pass the deny through verbatim. Missing this check causes outer wrappers to double-process an inner deny as if it were a normal tool result.
+:::
 
 ## Fatal tool errors
 
 Tools may declare `fatal: true` when constructing via `defineTool({ ..., fatal: true })` or `defineToolWithExecutor({ ..., fatal: true })`. By default, an exception thrown from `tool.executor.execute(...)` is stringified as `[tool error] <msg>` and fed back to the model so it can recover. With `fatal: true`, the react loop terminates immediately with the tool error message as `final` — the model never sees the failure.
 
-Use sparingly. Reasonable cases:
+:::caution[Use `fatal: true` sparingly]
+Reasonable cases:
 - Hard quota exhaustion that won't recover within the run.
 - Security violations the model should not be allowed to retry around.
 - Configuration errors that mean the tool is unusable for the entire request.
 
-Recoverable conditions (a flaky API call, a transient lookup miss, malformed args) should stay non-fatal so the model can adapt.
+Recoverable conditions (a flaky API call, a transient lookup miss, malformed args) should stay non-fatal so the model can adapt. Overusing `fatal: true` prevents the model from recovering from transient failures.
+:::
 
 ## Cancellation via ctx.signal
+
+:::tip[Always thread `ctx.signal` through outbound work]
+Without `signal`, the wall-clock check only blocks the *next* tool call — a long-running fetch already in-flight runs to completion and holds an isolate slot. Pass the signal through to honour wall-clock caps correctly.
+:::
 
 The per-request `LimitState.abortController` fires when the wall-clock cap elapses or the request is torn down. Patterns inject `signal` into `ToolInvocationCtx`; the executor receives it and tool authors should pass it through to outbound work:
 

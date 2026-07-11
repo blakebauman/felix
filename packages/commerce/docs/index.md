@@ -1,3 +1,7 @@
+---
+description: "Felix Commerce — conversational shopping, ACP, D2C storefronts, B2B quote-to-cash, GEO discoverability, and personalization built on the Felix harness."
+---
+
 # Agentic commerce
 
 Felix Commerce is the conversational-commerce layer built on the harness. It adds no new harness abstractions — it is a vertical assembled from the existing seams: commerce capabilities are ordinary `Tool`s, the cart lives in the append-only session log, checkout rides the human-in-the-loop approvals pipeline, brand storefronts are per-tenant manifests resolved through the standard 4-layer resolver, and B2B data flows through a pluggable entity data-source seam. All money is integer cents. Everything is tenant-scoped.
@@ -6,17 +10,43 @@ The whole layer is the **`@felix/commerce`** workspace package (`packages/commer
 
 ## Layer map
 
-The surfaces, roughly buyer-side → merchant-side, each detailed on its own page:
-
-| Page | Mount | What it is |
-|---|---|---|
-| [Conversational shopping](./shopping.md) | agent tools (`catalog_*`, `cart_*`, `commerce_checkout`, …) | catalog → cart → approval-gated Stripe checkout inside any chat surface |
-| [ACP merchant endpoint](./acp.md) | `/acp` | [Agentic Commerce Protocol](https://developers.openai.com/commerce) feed + checkout sessions for external buyer agents |
-| [D2C storefronts](./storefronts.md) | `/shop`, `/widget`, `/brands` | per-brand provisioned agents, embeddable chat widget, catalog import |
-| [Discoverability (GEO/AEO)](./discoverability.md) | `/structured`, root `robots.txt` / `sitemap.xml` / `.well-known/ai-catalog.json`, `/geo` | schema.org JSON-LD surfaces for answer engines + brand-visibility monitoring |
-| [B2B quote-to-cash](./b2b.md) | `/b2b`, `/b2b/billing`, `/entities`, procurement manifests | accounts, buyers, purchase authority, quotes → invoices, billing providers, and the entity data-source seam |
-| [Personalization, visual search, dynamic pricing](./personalization.md) | agent tools (`recommend_products`, `search_by_image`, …), abandoned-cart cron | behavior-driven recommendations, image search, and rule-based repricing |
-| [Data model + configuration](./data-model.md) | `/commerce/consents`, `/commerce/attribution/*` | D1 schema + migrations, env vars, consent log, per-order attribution |
+<CardGrid>
+  <LinkCard
+    title="Conversational Shopping"
+    href="/commerce/shopping/"
+    description="catalog_* → cart_* → approval-gated Stripe checkout inside any chat surface."
+  />
+  <LinkCard
+    title="ACP Merchant Endpoint"
+    href="/commerce/acp/"
+    description="/acp — Agentic Commerce Protocol feed + checkout sessions for external buyer agents."
+  />
+  <LinkCard
+    title="D2C Storefronts"
+    href="/commerce/storefronts/"
+    description="/shop, /widget, /brands — per-brand provisioned agents, embeddable chat widget, catalog import."
+  />
+  <LinkCard
+    title="Discoverability (GEO/AEO)"
+    href="/commerce/discoverability/"
+    description="/structured, robots.txt, sitemap.xml, .well-known/ai-catalog.json, /geo — schema.org + brand-visibility monitoring."
+  />
+  <LinkCard
+    title="B2B Quote-to-Cash"
+    href="/commerce/b2b/"
+    description="/b2b, /b2b/billing, /entities — accounts, buyers, quotes → invoices, billing providers, entity data-source seam."
+  />
+  <LinkCard
+    title="Personalization, Visual Search, Dynamic Pricing"
+    href="/commerce/personalization/"
+    description="recommend_products, search_by_image, abandoned-cart cron, rule-based repricing."
+  />
+  <LinkCard
+    title="Data Model + Configuration"
+    href="/commerce/data-model/"
+    description="/commerce/consents, /commerce/attribution/* — D1 schema, migrations, env vars, consent log, per-order attribution."
+  />
+</CardGrid>
 
 ## Tool catalog
 
@@ -29,5 +59,9 @@ All registered by `commercePlugin.registerTools` (`packages/commerce/src/plugin.
 | Personalization | `recommend_products`, `identify_customer` |
 | Visual | `search_by_image` |
 | B2B | `account_get`, `buyer_get`, `purchase_authority_check`, `price_lookup`, `create_quote`, `quote_get`, `send_quote`, `accept_quote`, `convert_quote`, `invoice_get`, `pay_invoice` |
+
+:::note[Tool availability]
+Commerce tools are registered only when `commercePlugin` is wired into `installedPlugins()` in `apps/api/src/composition.ts`. A manifest that names a commerce tool but runs against a harness-only deployment will receive a `transport_unavailable` tool error at invocation time.
+:::
 
 Bundled commerce manifests: `orderloop` (D2C buyer agent — react, anonymous-allowed, `checkout-confirm` approval, `windowed:24` session), `shopping` (standalone shopping agent), `procurement` + `procurement-catalog` / `procurement-quoting` / `procurement-billing` (B2B multi-agent).

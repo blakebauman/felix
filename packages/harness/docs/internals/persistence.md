@@ -1,3 +1,7 @@
+---
+description: "D1, KV, R2, Vectorize, Queues, and Durable Objects — what lives in each store and the tenant-scoping conventions."
+---
+
 # Persistence
 
 The data stores Felix uses, what lives in each, and the tenant-scoping conventions.

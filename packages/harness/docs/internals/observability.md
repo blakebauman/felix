@@ -1,6 +1,14 @@
+---
+description: "Counter labels, audit event payload shapes, and alert thresholds for Felix operators."
+---
+
 # Observability — counters, audit events, alerts
 
 This is the operator's reference for what Felix emits, what it means, and what to alert on. It complements [governance.md](governance.md) (which covers *why* a wrapper fires) by focusing on the *signals* the wrapper leaves behind.
+
+:::tip[Counters first, audit log second]
+**Counters are the signal you alert on.** Audit events are the trail you read once an alert fires. Set up Analytics Engine dashboards over the counter reference below; drop into `/audit` to pivot on the specific tool or tenant after a threshold trips.
+:::
 
 ## Where signals land
 
@@ -33,7 +41,7 @@ Counters are the signal you alert on. Audit events are the trail you read once a
 | `orchestrator_durable_started` | `manifest_id` | [`manifests/builder.ts`](../../src/manifests/builder.ts) | A `DurableAgent` kicked off an `AGENT_WORKFLOW` run. |
 | `orchestrator_durable_complete` | `manifest_id`, `status` | [`manifests/builder.ts`](../../src/manifests/builder.ts) | A durable workflow run finished. `status` is `complete` or the terminal workflow status. |
 | `orchestrator_durable_fallback` | `manifest_id` | [`manifests/builder.ts`](../../src/manifests/builder.ts) | `execution.mode: durable` declared but `env.AGENT_WORKFLOW` binding absent. Fell back to transient. **Should be zero in prod.** |
-| `orchestrator_model_switches` | `from`, `to`, `reason?` | [`patterns/model.ts`](../../src/patterns/model.ts) | Fallback chain or confidence-routed escalation fired. `reason ∈ {fallback, escalation}` (omitted on the escalation path). |
+| `orchestrator_model_switches` | `from`, `to`, `reason` | [`patterns/model.ts`](../../src/patterns/model.ts) | Fallback chain or confidence-routed escalation fired. `reason ∈ {provider_error, low_confidence}` — `provider_error` for fallback-chain switches, `low_confidence` for confidence-escalation switches. |
 | `orchestrator_unhandled_error` | `path`, `method`, `tenant_id` | [`src/app.ts`](../../src/app.ts) | The Hono `onError` boundary caught a non-`HTTPException`. **Should be zero.** |
 | `orchestrator_audit_dropped` | `manifest_id`, `event_type` | [`audit/store.ts`](../../src/audit/store.ts) | Events dropped after the per-request audit cap (200) was hit. Pairs with the `audit_truncated` status marker. |
 | `orchestrator_artifact_spill_failed` | `manifest_id` | [`tools/artifacts.ts`](../../src/tools/artifacts.ts) | An R2 artifact spill failed; the tool result was returned inline instead of as a stub. |
@@ -45,7 +53,11 @@ Counters are the signal you alert on. Audit events are the trail you read once a
 
 ### The `transport` label
 
-Every governance counter carries the inner tool's `transport`. This is the load-bearing observability claim from the executor refactor: a tool wrapped in `applyPolicies(applyLimits(applyGuardrails(applyJudges(applyApprovals(tool)))))` still reports `transport: 'mcp'` (or `a2a` / `container` / `local` / `queue` / `sandbox` / `browser`) on every counter — the wrapper composition preserves it through `wrapExecutor(inner.executor, ...)`. If you ever see `transport: 'unknown'` on `orchestrator_tool_calls`, the model called a name not in the tool registry (typo, hallucinated tool, or a stale manifest).
+Every governance counter carries the inner tool's `transport`. This is the load-bearing observability claim from the executor refactor: a tool wrapped in `applyPolicies(applyLimits(applyGuardrails(applyJudges(applyApprovals(tool)))))` still reports `transport: 'mcp'` (or `a2a` / `container` / `local` / `queue` / `sandbox` / `browser`) on every counter — the wrapper composition preserves it through `wrapExecutor(inner.executor, ...)`.
+
+:::note[`transport: 'unknown'` is a signal]
+If you see `transport: 'unknown'` on `orchestrator_tool_calls`, the model called a name that isn't in the tool registry — a typo in tool arguments, a hallucinated tool name, or a stale manifest cached from a previous deploy.
+:::
 
 The labels in this table are the **emitted** set — they're what you'll see on the wire. The tool name itself isn't a counter label (cardinality concerns); it lives on every `audit_event` row via `payload.tool` instead. Filter counters by `transport` + `manifest_id` to scope a query; drop into the audit log to pivot on the specific tool.
 
@@ -72,9 +84,18 @@ Audit events are persisted to D1 and queryable through `GET /audit?tenant=…&ev
 | `manifest_canary_set` / `manifest_canary_cleared` | `/manifests/:name/canary` | `ok` | `manifest_id`, `stable_version`, `canary_version`, `canary_weight` |
 | `auto_rollback` | `jobs/anomaly-detector.ts` | `ok` | `manifest_id`, `canary_version`, `error_rate`, `baseline`, `breakdown` |
 | `anomaly_detected` | `jobs/anomaly-detector.ts` | `flagged` | `manifest_id`, `tool`, `error_code`, `rate`, `baseline`, `window_minutes` |
-| `model_switch` | `patterns/model.ts` | `fallback`, `escalated` | `from`, `to`, `reason ∈ {fallback, escalation}` |
+| `model_switch` | `patterns/model.ts` | `fallback`, `escalated` | `from`, `to`, `reason ∈ {provider_error, low_confidence}`. Status `fallback` + reason `provider_error` = fallback chain switch. Status `escalated` + reason `low_confidence` = confidence-escalation switch. |
 | `eval_run` | (reserved) | — | Defined in the `AuditEventType` enum but not yet emitted; eval runs currently record their per-item verdicts as `judge_score` events (`src/eval/runner.ts`). |
 | `unhandled_error` | `src/app.ts` `app.onError` | `error` | `path`, `method`, `error_message`, `stack_preview` |
+| `commerce_order` | Stripe webhook on `checkout.session.completed` / ACP completion | `paid` | `order_id`, `tenant_id`, `thread_id`, `amount_cents`, `channel`, `manifest_id`. Emitted after inventory decrement, cart clear, and attribution write. |
+| `brand_provisioned` | `POST /brands` | `ok` | `brand_id`, `name`, `domain`. |
+| `brand_catalog_import` | `POST /brands/:id/catalog` | `ok`, `error` | `brand_id`, `product_count`, `error?`. |
+| `b2b_purchase_check` | `purchase_authority_check` tool / `POST /b2b/accounts/:id/purchase-check` | `allowed`, `requires_approval`, `blocked` | `account_id`, `buyer_id`, `amount_cents`, `reason`. |
+| `b2b_quote` | quote lifecycle tools (`create_quote`, `send_quote`, `accept_quote`, `convert_quote`) | `draft`, `sent`, `accepted`, `ordered` | `quote_id`, `account_id`, `amount_cents`. |
+| `geo_observation` | GEO monitor cron per tracked query replay | `ok` | `brand_id`, `query`, `engine`, `mentioned`, `rank?`, `competitors[]`. |
+| `consent_recorded` | `commerce_record_consent` tool / `POST /commerce/consents` | `granted`, `withdrawn` | `thread_id`, `channel`, `terms_version`, `privacy_url`. |
+| `order_attributed` | Stripe webhook / ACP completion | `ok` | `order_id`, `thread_id`, `channel`, `manifest_id`, `buyer_subject`. |
+| `cart_abandoned` | abandoned-cart cron | `detected` | `tenant_id`, `thread_id`, `customer_id?`, `email?`, `recovery_webhook_sent`. |
 
 ### `status: 'audit_truncated'`
 

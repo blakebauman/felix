@@ -1,3 +1,7 @@
+---
+description: "Commerce D1 migrations 0006–0018, environment variables, consent log, per-order attribution, and Stripe configuration."
+---
+
 # Data model + configuration
 
 **Migrations** `0006`–`0018`: `products` / `orders` / `order_items` (0006), `acp_checkout_sessions` (0007), `brands` (0008), `brand_domains` (0009), `data_sources` (0010), `accounts` / `buyers` (0011), `quotes` / `quote_items` / `invoices` (0012), `contract_prices` (0013), `billing_settings` (0014), `geo_queries` / `geo_observations` (0015), `consents` / `order_attribution` (0016), `customers` / `customer_sessions` / `behavior_events` / `abandoned_carts` (0017), `pricing_rules` / `competitor_prices` (0018). All follow the composite tenant-key convention except `brand_domains` (host-keyed by design). See [persistence.md](../../harness/docs/internals/persistence.md). Harness core (`0001`–`0005`) and commerce share one D1 database and one migrations dir (`apps/api/migrations/`); name new commerce-owned migrations `NNNN_commerce_*` so ownership stays legible.
