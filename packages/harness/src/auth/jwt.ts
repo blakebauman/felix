@@ -45,21 +45,39 @@ function jwksUrlForCognito(issuer: string): string {
   return `${issuer.replace(/\/$/, '')}/.well-known/jwks.json`;
 }
 
-async function getJwks(env: Env, url: string) {
+// Memoize JWKS resolvers at module (per-isolate) scope. `createRemoteJWKSet`
+// owns its own fetch cache keyed by the resolver INSTANCE — so a fresh
+// instance per request means `cacheMaxAge` never takes effect and every
+// inbound JWT triggers a new JWKS fetch (latency + fetch amplification against
+// the IdP). Keying the instance by URL fixes that; the local self-issued set
+// is memoized by its raw JSON so a rotation still re-parses.
+const remoteJwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+let localJwksCache: { raw: string; set: ReturnType<typeof createLocalJWKSet> } | undefined;
+
+function getJwks(env: Env, url: string) {
   // Self-issued issuer: when this deployment serves its own JWKS (JWKS_PUBLIC),
   // verify against it locally rather than fetching — a Worker can't reliably
   // fetch its own custom-domain `/.well-known/jwks.json` over HTTP. Only used
   // for self-issuing (JWKS_PUBLIC is unset alongside a real external IdP).
   if (env.JWKS_PUBLIC && url.endsWith('/.well-known/jwks.json')) {
     try {
-      return createLocalJWKSet(JSON.parse(env.JWKS_PUBLIC));
+      if (localJwksCache?.raw !== env.JWKS_PUBLIC) {
+        localJwksCache = {
+          raw: env.JWKS_PUBLIC,
+          set: createLocalJWKSet(JSON.parse(env.JWKS_PUBLIC)),
+        };
+      }
+      return localJwksCache.set;
     } catch {
       /* malformed JWKS_PUBLIC — fall through to remote */
     }
   }
-  // jose's createRemoteJWKSet handles its own caching; we pin the URL and
-  // let it manage fetches. KV caching is a future refinement.
-  return createRemoteJWKSet(new URL(url), { cacheMaxAge: JWKS_TTL_SECONDS * 1000 });
+  let set = remoteJwksCache.get(url);
+  if (!set) {
+    set = createRemoteJWKSet(new URL(url), { cacheMaxAge: JWKS_TTL_SECONDS * 1000 });
+    remoteJwksCache.set(url, set);
+  }
+  return set;
 }
 
 export interface VerifierConfig {
