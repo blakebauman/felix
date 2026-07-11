@@ -34,7 +34,7 @@
 
 import { z } from 'zod';
 import type { Env } from '../env';
-import { readCappedJson } from '../security/response-limit';
+import { readCappedJson, readCappedText } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
 import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
@@ -97,7 +97,9 @@ export class ContainerExecutor implements ToolExecutor {
         ...(composed.signal ? { signal: composed.signal } : {}),
       });
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
+        // Error bodies get the same byte cap — only 200 chars are surfaced,
+        // so a hostile gateway can't OOM the isolate via a huge non-2xx body.
+        const body = await readCappedText(resp, 4096).catch(() => '');
         return toolErrorOutput(
           codeForStatus(resp.status),
           `[container error] ${this.opts.image}: ${resp.status} ${body.slice(0, 200)}`,
