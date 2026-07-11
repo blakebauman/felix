@@ -4,7 +4,7 @@
  * query is scoped by tenant_id — composite (tenant_id, id) primary keys.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { type Order, OrderSchema, type OrderStatus } from './models';
 
 interface OrderRow {

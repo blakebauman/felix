@@ -7,7 +7,7 @@
  *                upsert them. Trusted via the consumer shared secret.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { getDataSourceConfig } from './config-store';
 import { getEntityConnector } from './connectors';
 import { getEntityType } from './registry';

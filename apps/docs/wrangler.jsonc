@@ -1,0 +1,14 @@
+// Static-assets Worker for the Felix docs site. No runtime code — Astro's
+// dist/ is served directly. Unlike packages/harness, this config holds no
+// account or resource ids, so it is tracked in git.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-docs",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "docs.felix.run", "custom_domain": true }]
+}

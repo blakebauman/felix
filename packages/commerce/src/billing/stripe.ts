@@ -12,7 +12,7 @@
  * without calling Stripe.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import type Stripe from 'stripe';
 import type { Account } from '../b2b/models';
 import type { Invoice } from '../b2b/quote-models';

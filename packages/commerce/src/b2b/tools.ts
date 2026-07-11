@@ -6,8 +6,8 @@
  * tools); registered in `composition.ts`.
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import { defineTool, type Tool, type ToolOutput } from '@felix/orchestrator/tools/types';
+import { getContext } from '@felix/harness/context';
+import { defineTool, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import { z } from 'zod';
 import { getProduct } from '../catalog-store';
 import { resolveEntitySource } from '../entities/resolver';
@@ -28,7 +28,7 @@ import {
 /** Demand window for velocity-based dynamic pricing. */
 const DEMAND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-function ctx(): { env: import('@felix/orchestrator/env').Env; tenant: string } | string {
+function ctx(): { env: import('@felix/harness/env').Env; tenant: string } | string {
   const rc = getContext();
   if (!rc) return '[b2b error] no request context';
   return { env: rc.env, tenant: rc.auth.principal.tenantId };

@@ -1,0 +1,10 @@
+{
+  "name": "@felix/design",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Felix design tokens — the shared neutral palette and theme CSS builders consumed by core (Scalar API reference), docs (Starlight site), and commerce (storefront widget chrome)",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  }
+}

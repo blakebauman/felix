@@ -16,8 +16,8 @@
  * static `COMMERCE_SHIPPING` fallback.
  */
 
-import type { Env } from '@felix/orchestrator/env';
-import { assertSafeOutboundUrlForEnv } from '@felix/orchestrator/security/ssrf';
+import type { Env } from '@felix/harness/env';
+import { assertSafeOutboundUrlForEnv } from '@felix/harness/security/ssrf';
 import type { ShippingOption } from './shipping';
 
 interface CarrierService {

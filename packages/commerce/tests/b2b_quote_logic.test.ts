@@ -3,7 +3,7 @@
  * stub via a fake env.DB).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { describe, expect, it } from 'vitest';
 import { dueAt, netDays, priceQuote } from '../src/b2b/quote-logic';
 

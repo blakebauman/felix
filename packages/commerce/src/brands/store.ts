@@ -4,7 +4,7 @@
  * points at the brand's data tenant (catalog/orders/manifest).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { type Brand, BrandIdentity } from './models';
 
 interface BrandRow {

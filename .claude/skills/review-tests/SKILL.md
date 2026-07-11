@@ -16,22 +16,22 @@ Every changed seam should show a delta in (or new tests alongside) its guard:
 
 | Changed seam | Guard tests |
 |---|---|
-| Tool / provider | `packages/core/tests/unit/tool_provider.test.ts`, `packages/core/tests/unit/tools/executor.test.ts` (+ per-transport `tools/*_executor.test.ts`) |
-| Pattern | `packages/core/tests/unit/patterns/registry.test.ts` + a behavior test (`reflect_pattern`, `plan_execute_pattern`, `react_*`) |
-| Model provider/client | `packages/core/tests/unit/patterns/model_registry.test.ts`, `*_streaming/_caching.test.ts`, `model_fallbacks` |
-| Manifest schema | `packages/core/tests/unit/manifest_schema.test.ts` (+ `manifests_resolver`, `builder`) |
-| Governance wrapper | `packages/core/tests/unit/governance_wrappers.test.ts` + `audit_emission.test.ts` (deny-skip contract) |
-| Migration / new table | `packages/core/tests/integration/cross_tenant.test.ts` + an integration test exercising the table |
-| Session | `packages/core/tests/unit/session/*`, `checkpointer*`, `session_{anchor,semantic}` |
+| Tool / provider | `packages/harness/tests/unit/tool_provider.test.ts`, `packages/harness/tests/unit/tools/executor.test.ts` (+ per-transport `tools/*_executor.test.ts`) |
+| Pattern | `packages/harness/tests/unit/patterns/registry.test.ts` + a behavior test (`reflect_pattern`, `plan_execute_pattern`, `react_*`) |
+| Model provider/client | `packages/harness/tests/unit/patterns/model_registry.test.ts`, `*_streaming/_caching.test.ts`, `model_fallbacks` |
+| Manifest schema | `packages/harness/tests/unit/manifest_schema.test.ts` (+ `manifests_resolver`, `builder`) |
+| Governance wrapper | `packages/harness/tests/unit/governance_wrappers.test.ts` + `audit_emission.test.ts` (deny-skip contract) |
+| Migration / new table | `apps/api/tests/integration/cross_tenant.test.ts` + an integration test exercising the table |
+| Session | `packages/harness/tests/unit/session/*`, `checkpointer*`, `session_{anchor,semantic}` |
 | Auth / security | `auth_{jwt,middleware}`, `security_*` |
-| Routes / plugin surface | `packages/core/tests/integration/*` for that mount |
+| Routes / plugin surface | `apps/api/tests/integration/*` for that mount |
 
 A changed source file with **no corresponding test delta** is a finding unless the change is genuinely untestable plumbing.
 
 ## Placement rules
 
-- Pure logic / schema / wrappers with fakes → `packages/core/tests/unit/**` (node pool).
-- Anything needing real bindings (D1, KV, R2, queues, DOs) → `packages/core/tests/integration/**` (miniflare) — and any NEW binding must be added to the `miniflare.bindings` block in `vitest.config.ts`, or the whole workers project fails.
+- Pure logic / schema / wrappers with fakes → `packages/harness/tests/unit/**` (node pool); app-wiring guards (plugin boundary etc.) → `apps/api/tests/unit/**`.
+- Anything needing real bindings (D1, KV, R2, queues, DOs) → `apps/api/tests/integration/**` (miniflare) — and any NEW binding must be added to the `miniflare.bindings` block in `vitest.config.ts`, or the whole workers project fails.
 
 ## Quality checks
 

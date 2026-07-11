@@ -5,7 +5,7 @@
  * optional KV read cache so a hot entity isn't fetched on every request.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { getEntityConnector } from './connectors';
 import type {
   ConnectorConfig,

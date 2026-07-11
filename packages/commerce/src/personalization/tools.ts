@@ -6,9 +6,9 @@
  * `ctx.threadId`, exactly like the cart tools.
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import type { Tool, ToolOutput } from '@felix/orchestrator/tools/types';
-import { defineTool } from '@felix/orchestrator/tools/types';
+import { getContext } from '@felix/harness/context';
+import type { Tool, ToolOutput } from '@felix/harness/tools/types';
+import { defineTool } from '@felix/harness/tools/types';
 import { z } from 'zod';
 import { readCart } from '../cart-session';
 import { getProduct } from '../catalog-store';
@@ -25,7 +25,7 @@ import { rankRecommendations } from './recommend';
 const SEED_LIMIT = 5;
 const PER_SEED_K = 10;
 
-function requireCtx(): { env: import('@felix/orchestrator/env').Env; tenantId: string } | string {
+function requireCtx(): { env: import('@felix/harness/env').Env; tenantId: string } | string {
   const rc = getContext();
   if (!rc) return '[commerce error] no request context';
   return { env: rc.env, tenantId: rc.auth.principal.tenantId };

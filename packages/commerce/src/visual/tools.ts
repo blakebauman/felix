@@ -5,14 +5,14 @@
  * Tenant comes from `getContext()`, like the other commerce tools.
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import type { Tool, ToolOutput } from '@felix/orchestrator/tools/types';
-import { defineTool } from '@felix/orchestrator/tools/types';
+import { getContext } from '@felix/harness/context';
+import type { Tool, ToolOutput } from '@felix/harness/tools/types';
+import { defineTool } from '@felix/harness/tools/types';
 import { z } from 'zod';
 import { getProduct } from '../catalog-store';
 import { queryByImage } from './embeddings';
 
-function requireCtx(): { env: import('@felix/orchestrator/env').Env; tenantId: string } | string {
+function requireCtx(): { env: import('@felix/harness/env').Env; tenantId: string } | string {
   const rc = getContext();
   if (!rc) return '[commerce error] no request context';
   return { env: rc.env, tenantId: rc.auth.principal.tenantId };
@@ -32,7 +32,7 @@ function decodeBase64(b64: string): Uint8Array | null {
 
 /** Resolve, hydrate, and shape similar products into catalog-card JSON. */
 export async function hydrateMatches(
-  env: import('@felix/orchestrator/env').Env,
+  env: import('@felix/harness/env').Env,
   tenantId: string,
   matches: Array<{ product_id: string }>,
   max: number,

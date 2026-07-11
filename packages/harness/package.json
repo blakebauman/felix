@@ -1,0 +1,30 @@
+{
+  "name": "@felix/harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Felix harness library \u2014 manifest-driven agent runtime (patterns, sessions, governance, protocol routers) consumed by the @felix/api Worker and feature plugins",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "build:manifests": "tsx scripts/bundle-manifests.ts",
+    "build": "pnpm build:manifests"
+  },
+  "dependencies": {
+    "@felix/design": "workspace:*",
+    "@hono/zod-openapi": "^1.4.0",
+    "@scalar/hono-api-reference": "^0.10.14",
+    "hono": "^4.12.18",
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260511.1",
+    "tsx": "^4.21.0",
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

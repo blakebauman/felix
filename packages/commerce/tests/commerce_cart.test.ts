@@ -4,7 +4,7 @@
  * highest-seq snapshot wins. Totals are always computed server-side.
  */
 
-import type { Session, SessionEvent } from '@felix/orchestrator/session/types';
+import type { Session, SessionEvent } from '@felix/harness/session/types';
 import { describe, expect, it } from 'vitest';
 import { addItem, readCart, removeItem, setQty, writeCart } from '../src/cart-session';
 import { type Cart, cartTotalCents } from '../src/models';

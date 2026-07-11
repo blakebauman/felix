@@ -4,7 +4,7 @@
  * falls back to the account discount / catalog rather than failing a quote.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { ContractPrice, type PriceTier } from './pricing-models';
 
 interface Row {

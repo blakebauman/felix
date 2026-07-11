@@ -12,10 +12,10 @@
  * shared secret (no JWT), like `/internal`; the tenant is taken from the body.
  */
 
-import type { AuthContext } from '@felix/orchestrator/auth/context';
-import { requireScope } from '@felix/orchestrator/auth/middleware';
-import type { Env } from '@felix/orchestrator/env';
-import { constantTimeEqual } from '@felix/orchestrator/security/constant-time';
+import type { AuthContext } from '@felix/harness/auth/context';
+import { requireScope } from '@felix/harness/auth/middleware';
+import type { Env } from '@felix/harness/env';
+import { constantTimeEqual } from '@felix/harness/security/constant-time';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getDataSourceConfig, setDataSourceConfig } from './config-store';

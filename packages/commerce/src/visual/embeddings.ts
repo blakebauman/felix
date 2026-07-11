@@ -13,8 +13,8 @@
  * degrade to no-op / empty on any failure — never failing a catalog write.
  */
 
-import type { Env } from '@felix/orchestrator/env';
-import { assertSafeOutboundUrlForEnv } from '@felix/orchestrator/security/ssrf';
+import type { Env } from '@felix/harness/env';
+import { assertSafeOutboundUrlForEnv } from '@felix/harness/security/ssrf';
 import type { Product } from '../models';
 import { embedText, type SimilarProduct } from '../personalization/embeddings';
 

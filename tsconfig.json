@@ -19,6 +19,15 @@
     "forceConsistentCasingInFileNames": true,
     "ignoreDeprecations": "6.0"
   },
-  "include": ["packages/*/src/**/*", "packages/*/tests/**/*", "packages/*/scripts/**/*"],
-  "exclude": ["node_modules", "dist", ".wrangler"]
+  "include": [
+    "packages/*/src/**/*",
+    "packages/*/tests/**/*",
+    "packages/*/scripts/**/*",
+    "apps/*/src/**/*",
+    "apps/*/tests/**/*",
+    "apps/*/scripts/**/*"
+  ],
+  // apps/docs (Astro) and apps/chat-ui (React/Vite) have their own tsconfigs —
+  // their virtual modules / JSX setup don't resolve under the workspace options.
+  "exclude": ["node_modules", "dist", ".wrangler", "apps/docs", "apps/chat-ui"]
 }

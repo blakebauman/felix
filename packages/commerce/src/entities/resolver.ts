@@ -10,7 +10,7 @@
  * without a connector config falls back to native (fail-safe).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { getDataSourceConfig } from './config-store';
 import { getEntityType } from './registry';
 import { federatedSource, nativeSource } from './source';

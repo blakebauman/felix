@@ -24,7 +24,7 @@
  * Mounted at `/structured` (+ `/`) in `app.ts`.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { type Context, Hono } from 'hono';
 import type { Brand } from '../brands/models';
 import { getBrandByDomain, getBrandByTenant } from '../brands/store';

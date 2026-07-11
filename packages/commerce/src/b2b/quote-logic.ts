@@ -5,7 +5,7 @@
  * from the account's payment terms.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { getProduct } from '../catalog-store';
 import { resolveEntitySource } from '../entities/resolver';
 import { countRecentPurchases } from '../personalization/customer-store';

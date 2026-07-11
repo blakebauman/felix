@@ -15,9 +15,9 @@
  * Operator-scoped via `b2b:write`; reads need no scope (dev falls open).
  */
 
-import type { AuthContext } from '@felix/orchestrator/auth/context';
-import { requireScope } from '@felix/orchestrator/auth/middleware';
-import type { Env } from '@felix/orchestrator/env';
+import type { AuthContext } from '@felix/harness/auth/context';
+import { requireScope } from '@felix/harness/auth/middleware';
+import type { Env } from '@felix/harness/env';
 import { Hono } from 'hono';
 import { resolveEntitySource } from '../entities/resolver';
 import {

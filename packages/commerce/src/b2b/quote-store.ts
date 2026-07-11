@@ -5,7 +5,7 @@
  * CPQ/billing system can back them federated/synced.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { registerEntityType } from '../entities/registry';
 import type { ListOpts, NativeStore, Page, RawRecord } from '../entities/types';
 import { Invoice, Quote, type QuoteItem } from './quote-models';

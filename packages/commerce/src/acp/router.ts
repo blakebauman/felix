@@ -16,9 +16,9 @@
  * Mounted at `/acp` in `app.ts`.
  */
 
-import { recordEventDetached } from '@felix/orchestrator/audit/store';
-import type { Env } from '@felix/orchestrator/env';
-import { constantTimeEqual } from '@felix/orchestrator/security/constant-time';
+import { recordEventDetached } from '@felix/harness/audit/store';
+import type { Env } from '@felix/harness/env';
+import { constantTimeEqual } from '@felix/harness/security/constant-time';
 import { Hono } from 'hono';
 import { putAttribution } from '../consent/store';
 import { buildSession, finalizeOrder, sessionTotal } from './checkout';

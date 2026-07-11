@@ -8,7 +8,7 @@
  * register via `registerBillingProvider`.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import type { Account } from '../b2b/models';
 import type { Invoice } from '../b2b/quote-models';
 

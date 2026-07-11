@@ -8,7 +8,7 @@ when_to_use: 'Requests like "canary this manifest", "rollback the manifest", "up
 
 ## Resolution (who wins)
 
-`resolveManifest(env, tenantId, name)` walks: **tenant D1 → tenant R2 (`manifests/<tenant>/<name>.json`) → global R2 (`manifests/<name>.json`) → bundled**. The chain runs for every tenant including `default`. Bundled = code-reviewed defaults shipped with the Worker (`packages/core/manifests/*.yaml` → `pnpm build:manifests` → deploy); D1/R2 = runtime overrides, no deploy needed.
+`resolveManifest(env, tenantId, name)` walks: **tenant D1 → tenant R2 (`manifests/<tenant>/<name>.json`) → global R2 (`manifests/<name>.json`) → bundled**. The chain runs for every tenant including `default`. Bundled = code-reviewed defaults shipped with the Worker (`packages/harness/manifests/*.yaml` → `pnpm build:manifests` → deploy); D1/R2 = runtime overrides, no deploy needed.
 
 ## REST lifecycle (`/manifests`, scopes `manifests:read` / `manifests:write` — token via staging-auth skill)
 
@@ -26,7 +26,7 @@ Watch both through `/audit` (observability skill).
 ## Eval gate (spends model tokens — confirm before running against production)
 
 ```bash
-EVAL_TOKEN=$(pnpm tsx packages/core/scripts/mint-jwt.ts --scope "eval:read eval:write" | jq -r .token) \
+EVAL_TOKEN=$(pnpm tsx apps/api/scripts/mint-jwt.ts --scope "eval:read eval:write" | jq -r .token) \
   pnpm eval -- --base-url $BASE --dataset <dataset> \
   [--min-pass-rate 0.9] [--cost-tolerance 1.5] [--include-adversarial]
 ```
@@ -34,4 +34,4 @@ Enforces a pass-rate floor (baseline − tolerance or explicit `--min-pass-rate`
 
 ## Bundled-manifest changes (the deploy path)
 
-Edit `packages/core/manifests/<name>.yaml` → `pnpm build:manifests` → tests → deploy. Remember tenant D1/R2 overrides still shadow the new bundled version for tenants that have them.
+Edit `packages/harness/manifests/<name>.yaml` → `pnpm build:manifests` → tests → deploy. Remember tenant D1/R2 overrides still shadow the new bundled version for tenants that have them.

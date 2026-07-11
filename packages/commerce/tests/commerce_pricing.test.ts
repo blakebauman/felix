@@ -2,7 +2,7 @@
  * Tax + shipping seams (pure given env config).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { describe, expect, it } from 'vitest';
 import { parseShippingConfig, shippingOptions } from '../src/shipping';
 import { computeTax, parseTaxBps } from '../src/tax';

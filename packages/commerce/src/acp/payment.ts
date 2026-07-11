@@ -11,7 +11,7 @@
  * checkout can't bounce the buyer through a redirect.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { stripeClient } from '../stripe-client';
 
 export type ChargeResult =

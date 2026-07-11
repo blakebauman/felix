@@ -4,8 +4,8 @@
  * primary key, matching the rest of the schema.
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import type { Env } from '@felix/orchestrator/env';
+import { getContext } from '@felix/harness/context';
+import type { Env } from '@felix/harness/env';
 import { type Product, ProductSchema } from './models';
 import { upsertProductEmbedding } from './personalization/embeddings';
 import { upsertProductImageEmbedding } from './visual/embeddings';

@@ -3,7 +3,7 @@
  * resolves to an empty config rather than failing price resolution.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { PricingRule, PricingRuleConfig } from './models';
 
 interface Row {

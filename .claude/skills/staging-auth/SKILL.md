@@ -1,6 +1,6 @@
 ---
 name: staging-auth
-description: Authenticate against Felix staging/production management APIs — mint a self-issued RS256 JWT with packages/core/scripts/mint-jwt.ts and pick the right scopes.
+description: Authenticate against Felix staging/production management APIs — mint a self-issued RS256 JWT with apps/api/scripts/mint-jwt.ts and pick the right scopes.
 when_to_use: 401 or 403 from staging or production, "mint a JWT", "call /manifests on staging", scoped write failing, requireScope, JWKS_PUBLIC, manifests:write, audit:read, bearer token.
 ---
 
@@ -11,11 +11,11 @@ Management surfaces (`/manifests`, `/audit`, `/approvals`, `/jobs`, `/eval`, ...
 ## Mint a token
 
 ```bash
-pnpm tsx packages/core/scripts/mint-jwt.ts --scope "manifests:read manifests:write" --tenant default
+pnpm tsx apps/api/scripts/mint-jwt.ts --scope "manifests:read manifests:write" --tenant default
 ```
 
 - First run generates a keypair at `.secrets/jwt-signing-key.json` (gitignored). **Never cat the private key** — run the script; the Read tool is denied on `.secrets/` anyway.
-- Output is `{jwks, token}`. The deployed `JWKS_PUBLIC` secret must equal the printed `jwks` or verification fails with 401 (`wrangler secret put JWKS_PUBLIC --env staging`, run from `packages/core/`).
+- Output is `{jwks, token}`. The deployed `JWKS_PUBLIC` secret must equal the printed `jwks` or verification fails with 401 (`wrangler secret put JWKS_PUBLIC --env staging`, run from `apps/api/`).
 - Other flags: `--iss --sub --aud --ttl`.
 - Use: `curl -H "Authorization: Bearer <token>" https://staging-make.felix.run/manifests`
 

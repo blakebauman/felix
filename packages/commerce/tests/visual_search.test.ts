@@ -2,7 +2,7 @@
  * Visual search caption→embed→query orchestration (pure-ish, fakes injected).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Product } from '../src/models';
 import {

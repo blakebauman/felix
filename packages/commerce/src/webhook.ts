@@ -13,8 +13,8 @@
  * Mounted under `/commerce` in `app.ts`.
  */
 
-import { recordEventDetached } from '@felix/orchestrator/audit/store';
-import type { Env } from '@felix/orchestrator/env';
+import { recordEventDetached } from '@felix/harness/audit/store';
+import type { Env } from '@felix/harness/env';
 import { Hono } from 'hono';
 import Stripe from 'stripe';
 import { readCart, writeCart } from './cart-session';

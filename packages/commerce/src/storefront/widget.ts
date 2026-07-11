@@ -22,7 +22,8 @@
  * Mounted at `/widget` in `app.ts`. Public — no auth.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import { NEUTRAL } from '@felix/design/tokens';
+import type { Env } from '@felix/harness/env';
 import { Hono } from 'hono';
 import { getBrandByDomain, getBrandByTenant, listDomains } from '../brands/store';
 
@@ -36,7 +37,7 @@ function esc(s: string): string {
 /** Only allow a safe hex colour from brand theme; else a neutral default. */
 function accent(theme: Record<string, string>): string {
   const c = theme.accent || theme.primary || '';
-  return /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : '#111827';
+  return /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : NEUTRAL[900];
 }
 
 const LOADER_JS = `(function(){
@@ -45,7 +46,7 @@ const LOADER_JS = `(function(){
   var storefront = s.getAttribute('data-storefront');
   if(!storefront){ console.error('[orderloop] data-storefront is required'); return; }
   var origin = new URL(s.src).origin;
-  var color = s.getAttribute('data-color') || '#111827';
+  var color = s.getAttribute('data-color') || '${NEUTRAL[900]}';
   var side = s.getAttribute('data-position') === 'left' ? 'left' : 'right';
   var Z = 2147483000;
   var frame = document.createElement('iframe');
@@ -69,27 +70,29 @@ const LOADER_JS = `(function(){
   if(document.body){ mount(); } else { document.addEventListener('DOMContentLoaded', mount); }
 })();`;
 
+// Neutral chrome comes from the shared @felix/design scale so the widget's
+// grays match every other Felix surface; the accent stays per-brand.
 const FRAME_STYLE = `
   :root{--accent:%COLOR%}
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111827;background:#fff}
+  html,body{margin:0;height:100%;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:${NEUTRAL[900]};background:#fff}
   .wrap{display:flex;flex-direction:column;height:100%}
   header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--accent);color:#fff;font-weight:600}
   header button{background:transparent;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1}
   #msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
   .m{max-width:85%;padding:8px 12px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
   .u{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
-  .a{align-self:flex-start;background:#f3f4f6;border-bottom-left-radius:4px}
+  .a{align-self:flex-start;background:${NEUTRAL[100]};border-bottom-left-radius:4px}
   .a a{color:var(--accent);font-weight:600}
   .cards{align-self:stretch;display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .card{border:1px solid #e5e7eb;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px}
+  .card{border:1px solid ${NEUTRAL[200]};border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px}
   .ct{font-weight:600;font-size:13px}
-  .cp{color:#6b7280;font-size:12px}
+  .cp{color:${NEUTRAL[500]};font-size:12px}
   .addbtn{margin-top:auto;border:0;border-radius:8px;background:var(--accent);color:#fff;padding:6px 8px;cursor:pointer;font-size:12px;font-weight:600}
   .addbtn:disabled{opacity:.5;cursor:default}
   .paybtn{align-self:flex-start;text-decoration:none;background:#16a34a;color:#fff;padding:10px 16px;border-radius:10px;font-weight:700}
-  form{display:flex;gap:8px;padding:12px;border-top:1px solid #e5e7eb}
-  input{flex:1;padding:10px 12px;border:1px solid #d1d5db;border-radius:10px;font:inherit;outline:none}
+  form{display:flex;gap:8px;padding:12px;border-top:1px solid ${NEUTRAL[200]}}
+  input{flex:1;padding:10px 12px;border:1px solid ${NEUTRAL[300]};border-radius:10px;font:inherit;outline:none}
   input:focus{border-color:var(--accent)}
   button.send{padding:0 16px;border:0;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
   button.send:disabled{opacity:.5;cursor:default}`;
@@ -190,7 +193,7 @@ function frameHtml(opts: {
 function unavailableHtml(name: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(name)}</title>
-<style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif;color:#6b7280;background:#fff;text-align:center;padding:24px}</style>
+<style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif;color:${NEUTRAL[500]};background:#fff;text-align:center;padding:24px}</style>
 </head><body><div><strong>${esc(name)}</strong><br>The shop is temporarily unavailable. Please check back soon.</div></body></html>`;
 }
 

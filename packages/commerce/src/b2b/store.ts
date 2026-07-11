@@ -7,7 +7,7 @@
  * `registerEntityType` calls at the bottom wire both into the resolver + sync.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { registerEntityType } from '../entities/registry';
 import type { ListOpts, NativeStore, Page, RawRecord } from '../entities/types';
 import { Account, Buyer } from './models';

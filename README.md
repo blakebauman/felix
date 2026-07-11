@@ -6,22 +6,22 @@ An `apiVersion: orchestrator/v1` manifest compiles into a runnable agent exposin
 
 On top of the harness sits **Felix Commerce**, an agentic-commerce layer: conversational catalog → cart → approval-gated Stripe checkout as ordinary agent tools, an [Agentic Commerce Protocol](https://developers.openai.com/commerce) merchant endpoint (`/acp`), per-brand D2C storefronts with an embeddable widget (`/shop`, `/widget`, `/brands`), schema.org / AI-discoverability surfaces (`/structured`, `/geo`), B2B quote-to-cash (`/b2b`), a pluggable entity data-source seam (`/entities`), and consent + attribution. See [Agentic commerce](#agentic-commerce) below.
 
-> Full OpenAPI 3.1 spec at `/openapi.json` · interactive Scalar reference at `/docs`. The core routes are documented with Zod-derived schemas, examples, and the bearer security scheme; the commerce routers are documented in [packages/core/docs/internals/commerce.md](packages/core/docs/internals/commerce.md).
+> Full OpenAPI 3.1 spec at `/openapi.json` · interactive Scalar reference at `/docs`. The core routes are documented with Zod-derived schemas, examples, and the bearer security scheme; the commerce routers are documented in [packages/commerce/docs/index.md](packages/commerce/docs/index.md).
 
 ## Three seams
 
 | Seam | What it is | Where to find it |
 |---|---|---|
-| **Session** | Append-only event log per thread (`seq`, `kind`, message payload, optional metadata — including `pinned: true` anchor messages). The harness asks a `SessionStrategy` (`full_replay` / `windowed:N` / `summarizing:N` / `semantic:N`) to render the working-set messages instead of mutating an in-memory history. | `packages/core/src/session/` |
-| **Pattern / model registries** | `react`, `deep`, `router`, `parallel`, `groupchat`, `reflect`, `plan_execute` and the Anthropic / OpenAI / Workers AI providers self-register at module load; `getPattern(name)` and `getModelProvider(name)` resolve them at build time. New loops / providers register with one line in `composition.ts` or a sibling module. | `packages/core/src/patterns/registry.ts`, `packages/core/src/patterns/model-registry.ts` |
-| **ToolExecutor** | Every `Tool` carries a `transport`-labelled executor (`local` / `mcp` / `a2a` / `container` / `queue` / `sandbox` / `browser`). The model loop dispatches by name; the harness routes to whichever transport the tool was built with. Failures use a stable `ToolErrorCode` taxonomy (`invalid_arguments`, `provider_error`, `timeout`, `rate_limited`, …). Governance wrappers preserve the inner transport label. | `packages/core/src/tools/executor.ts`, `packages/core/src/tools/{container,sandbox,browser,queue}-executor.ts`, `packages/core/src/mcp/client.ts`, `packages/core/src/a2a/client.ts` |
+| **Session** | Append-only event log per thread (`seq`, `kind`, message payload, optional metadata — including `pinned: true` anchor messages). The harness asks a `SessionStrategy` (`full_replay` / `windowed:N` / `summarizing:N` / `semantic:N`) to render the working-set messages instead of mutating an in-memory history. | `packages/harness/src/session/` |
+| **Pattern / model registries** | `react`, `deep`, `router`, `parallel`, `groupchat`, `reflect`, `plan_execute` and the Anthropic / OpenAI / Workers AI providers self-register at module load; `getPattern(name)` and `getModelProvider(name)` resolve them at build time. New loops / providers register with one line in `composition.ts` or a sibling module. | `packages/harness/src/patterns/registry.ts`, `packages/harness/src/patterns/model-registry.ts` |
+| **ToolExecutor** | Every `Tool` carries a `transport`-labelled executor (`local` / `mcp` / `a2a` / `container` / `queue` / `sandbox` / `browser`). The model loop dispatches by name; the harness routes to whichever transport the tool was built with. Failures use a stable `ToolErrorCode` taxonomy (`invalid_arguments`, `provider_error`, `timeout`, `rate_limited`, …). Governance wrappers preserve the inner transport label. | `packages/harness/src/tools/executor.ts`, `packages/harness/src/tools/{container,sandbox,browser,queue}-executor.ts`, `packages/harness/src/mcp/client.ts`, `packages/harness/src/a2a/client.ts` |
 
-Full documentation lives in [`packages/core/docs/`](packages/core/docs/README.md) — user guide under [`packages/core/docs/guide/`](packages/core/docs/guide/), contributor reference under [`packages/core/docs/internals/`](packages/core/docs/internals/).
+Full documentation lives in [`packages/harness/docs/`](packages/harness/docs/README.md) — user guide under [`packages/harness/docs/guide/`](packages/harness/docs/guide/), contributor reference under [`packages/harness/docs/internals/`](packages/harness/docs/internals/).
 
 ## Layout
 
 ```
-packages/core/src/
+packages/harness/src/
   manifests/    schema (Zod) · loader (bundled JSON) · validate · builder · resolver (4-layer chain + canary hash routing)
   tools/        ToolProvider · ToolExecutor seam (local / container / sandbox / browser / queue) · errors taxonomy · artifacts · retrieval (JIT tool filter)
   patterns/     react · deep · router · parallel · groupchat · reflect · plan_execute + AI Gateway model client (fallbacks + confidence escalation) + pattern/model registries
@@ -51,7 +51,7 @@ packages/commerce/src/
   catalog/cart/orders · Stripe checkout + webhook · ACP merchant endpoint · brands/storefront/widget · structured-data (schema.org) · B2B quote-to-cash + billing seam · personalization · visual search · dynamic pricing · consent
   entities/     entity data-source seam (native / federated / synced; http + mcp connectors, webhook push)
   geo/          GEO/AEO brand-visibility models + store (answer-engine monitoring)
-packages/core/migrations/
+apps/api/migrations/
   0001_init.sql       D1 schema (audit, plans, jobs, approvals, skill_activation, oauth_token_cache)
   0002_harden.sql     jobs PK → (tenant_id, name); idx_jobs_next_run partial index
   0003_manifests.sql  manifests + manifest_active (append-only tenant manifest store)
@@ -60,12 +60,16 @@ packages/core/migrations/
   0006–0018           commerce layer: products/orders (0006), ACP sessions (0007), brands (0008-0009),
                       data_sources (0010), B2B accounts/quotes/pricing/billing (0011-0014), GEO (0015),
                       consent + attribution (0016), personalization (0017), dynamic pricing (0018)
-packages/core/scripts/
-  bundle-manifests.ts   YAML → JSON build step (reads packages/core/manifests/*.yaml + packages/core/skills/*/SKILL.md)
+packages/harness/scripts/
+  bundle-manifests.ts   YAML → JSON build step (reads packages/harness/manifests/*.yaml + packages/harness/skills/*/SKILL.md)
+apps/api/scripts/
   eval.ts               CI gate — runs an eval dataset, compares pass_rate / mean_tokens to a baseline file, exits non-zero on regression
+  mint-jwt.ts           self-issued JWT minter for the scoped management APIs
   deploy.md             deploy runbook
-examples/
+apps/
   chat-ui/          React + Vite chat UI; proxy Worker streaming /chat/stream over a service binding
+  docs/             Starlight docs site (docs.felix.run), aggregates packages/*/docs
+examples/
   queue-consumer/   reference consumer for the queue transport
   python-sandbox/   container-transport demo (mock gateway + manifest)
   sandbox-worker/   adapter Worker bridging the sandbox transport to @cloudflare/sandbox
@@ -98,9 +102,9 @@ examples/
 
 ```bash
 pnpm install
-cp packages/core/wrangler.example.jsonc packages/core/wrangler.jsonc   # wrangler.jsonc is gitignored; fill in your ids
+cp apps/api/wrangler.example.jsonc apps/api/wrangler.jsonc   # wrangler.jsonc is gitignored; fill in your ids
 
-cd packages/core                               # bare wrangler commands run from the core package
+cd apps/api                                       # bare wrangler commands run from the API app
 pnpm wrangler d1 create orchestrator           # paste the id into wrangler.jsonc
 pnpm wrangler kv namespace create CACHE        # paste the id into wrangler.jsonc
 pnpm wrangler r2 bucket create felix-orchestrator-bundles
@@ -108,30 +112,30 @@ pnpm wrangler vectorize create felix-memory --dimensions=768 --metric=cosine  # 
 pnpm wrangler queues create felix-audit
 cd ../..
 
-pnpm build:manifests                           # produces packages/core/src/manifests/bundled.ts + packages/core/src/skills/bundled.ts
+pnpm build:manifests                           # produces packages/harness/src/manifests/bundled.ts + packages/harness/src/skills/bundled.ts
 pnpm migrate:local
-cp packages/core/.dev.vars.example packages/core/.dev.vars && $EDITOR packages/core/.dev.vars   # local secrets for `wrangler dev`
-pnpm dev                                       # root scripts delegate to @felix/orchestrator
+cp apps/api/.dev.vars.example apps/api/.dev.vars && $EDITOR apps/api/.dev.vars   # local secrets for `wrangler dev`
+pnpm dev                                       # root scripts delegate to @felix/harness
 ```
 
-For deployed envs, set secrets via `pnpm exec wrangler secret put <NAME> --env staging|production` (run from `packages/core/`, where `wrangler.jsonc` lives). The worker reads:
+For deployed envs, set secrets via `pnpm exec wrangler secret put <NAME> --env staging|production` (run from `apps/api/`, where `wrangler.jsonc` lives). The worker reads:
 - `ANTHROPIC_API_KEY` — required for any `provider: anthropic` route
 - `OPENAI_API_KEY` — required for any `provider: openai` route
 - `CF_AIG_TOKEN` — Authenticated Gateway bearer; required when the AI Gateway slug enables Authenticated Gateway
 - `OAUTH_CACHE_KEY` — base64 32-byte AES-256 key for encrypting `oauth_token_cache.access_token`; required in staging/production
 - `POLICY_BUNDLE_PUBKEY` — base64 Ed25519 raw public key for verifying the federation `PolicyBundle` signature; required in staging/production
 
-`AI_GATEWAY_SLUG` and `AI_GATEWAY_ACCOUNT_ID` are vars in `packages/core/wrangler.jsonc`, one per env.
+`AI_GATEWAY_SLUG` and `AI_GATEWAY_ACCOUNT_ID` are vars in `apps/api/wrangler.jsonc`, one per env.
 
 ### Open-source / hybrid model routing
 
 Anthropic/OpenAI keys are **optional** — both providers are read lazily at call time, so an agent that only routes to `provider: workers-ai` needs neither (and skips the AI Gateway entirely; Workers AI uses the native `env.AI` binding, so no `CF_AIG_TOKEN`/`AI_GATEWAY_*` either). Embeddings (BGE), the eval/guardrail judges, and procedural/semantic memory already run on Workers AI regardless of the chat model.
 
-Three bundled manifests demonstrate the spectrum (`packages/core/manifests/oss-only.yaml`, `oss-fast.yaml`, `hybrid-router.yaml`):
+Three bundled manifests demonstrate the spectrum (`packages/harness/manifests/oss-only.yaml`, `oss-fast.yaml`, `hybrid-router.yaml`):
 - **Fully OSS** — `oss-only` runs react on `llama-3-pro` (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, one of the tool-capable Workers AI models). Set `DEFAULT_MODEL_ID` to an OSS route and leave the proprietary keys unset to run key-free.
 - **Hybrid** — `hybrid-router` puts intent classification on `claude-haiku-4` and dispatches to OSS Llama sub-agents (`oss-only` / `oss-fast`), so the strong model only pays for the short routing turn. The same shape applies to `plan_execute.planner_model`, `reflect.verifier_model`, and `spec.model.confidence_escalation.escalate_to` (OSS primary → flagship only on low-confidence turns).
 
-The OSS + Claude routes used here already ship in `DEFAULT_MODEL_ROUTES` (`packages/core/src/env.ts`) — no `MODEL_ROUTES` override needed. Tool-using OSS agents must pick a model in `WORKERS_AI_TOOL_CAPABLE` (`packages/core/src/patterns/model.ts`); going OSS forgoes Anthropic-only extras (free preflight token counting, prompt caching, native extended thinking), which degrade to no-ops/fallbacks.
+The OSS + Claude routes used here already ship in `DEFAULT_MODEL_ROUTES` (`packages/harness/src/env.ts`) — no `MODEL_ROUTES` override needed. Tool-using OSS agents must pick a model in `WORKERS_AI_TOOL_CAPABLE` (`packages/harness/src/patterns/model.ts`); going OSS forgoes Anthropic-only extras (free preflight token counting, prompt caching, native extended thinking), which degrade to no-ops/fallbacks.
 
 ## Agentic commerce
 
@@ -146,7 +150,7 @@ The commerce layer is a vertical built entirely from the harness seams — no ne
 - **Personalization + search** — behavior-event stream, `recommend_products` (Vectorize similarity), `identify_customer` (cross-session identity), visual search (caption-then-embed), abandoned-cart detection cron with a webhook recovery seam.
 - **Consent + attribution** — append-only consent log captured in-conversation (`commerce_record_consent`, optional hard gate on checkout) and per-order channel attribution (`chat` / `acp` / `b2b` / `widget`) queryable at `/commerce/attribution/summary`.
 
-Full detail: [packages/core/docs/internals/commerce.md](packages/core/docs/internals/commerce.md). Bundled manifests: `orderloop`, `shopping`, `procurement*`. Stripe secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) and `ACP_API_KEY` are optional — without them the commerce surfaces degrade to 503/not-configured and the rest of the harness is unaffected.
+Full detail: [packages/commerce/docs/index.md](packages/commerce/docs/index.md). Bundled manifests: `orderloop`, `shopping`, `procurement*`. Stripe secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) and `ACP_API_KEY` are optional — without them the commerce surfaces degrade to 503/not-configured and the rest of the harness is unaffected.
 
 ## Test
 
@@ -256,7 +260,7 @@ Implemented:
   them through each in-flight canary, judging the result
   (`payload.source: 'continuous'`).
 - Agentic commerce layer — see
-  [packages/core/docs/internals/commerce.md](packages/core/docs/internals/commerce.md).
+  [packages/commerce/docs/index.md](packages/commerce/docs/index.md).
 
 Open follow-ups:
 
@@ -266,7 +270,7 @@ Open follow-ups:
 ### Session persistence
 
 `ConversationDO` is the session event log; `Session` / `SessionStrategy`
-(`packages/core/src/session/`) are the abstraction the patterns consume. When an
+(`packages/harness/src/session/`) are the abstraction the patterns consume. When an
 `InvokeInput.threadId` is set and the manifest's `memory.checkpointer` is
 `do` (default), `agentcore`, or `sqlite`, the loop:
 

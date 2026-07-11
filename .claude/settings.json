@@ -1,4 +1,8 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/statusline.sh\""
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -6,6 +10,15 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/compact-reminder.sh\""
           }
         ]
       }
@@ -39,6 +52,29 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/test-failure-hint.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent-log.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -56,7 +92,7 @@
       "Bash(pnpm install)",
       "Bash(pnpm build)",
       "Bash(pnpm build:manifests)",
-      "Bash(pnpm build:docs)",
+      "Bash(pnpm docs:build)",
       "Bash(pnpm test)",
       "Bash(pnpm test:*)",
       "Bash(pnpm test *)",
@@ -65,7 +101,7 @@
       "Bash(pnpm lint:fix)",
       "Bash(pnpm format)",
       "Bash(pnpm migrate:local)",
-      "Bash(pnpm tsx scripts/mint-jwt.ts *)",
+      "Bash(pnpm tsx apps/api/scripts/mint-jwt.ts *)",
       "Bash(wrangler d1 migrations list *)",
       "Bash(wrangler d1 execute * --local *)"
     ],
@@ -77,6 +113,9 @@
       "Bash(pnpm run deploy*)",
       "Bash(pnpm run migrate:staging)",
       "Bash(pnpm run migrate:production)",
+      "Bash(pnpm --filter * deploy*)",
+      "Bash(pnpm --filter * migrate:staging)",
+      "Bash(pnpm --filter * migrate:production)",
       "Bash(wrangler deploy *)",
       "Bash(wrangler d1 migrations apply * --remote*)",
       "Bash(wrangler secret *)",
@@ -84,9 +123,11 @@
       "Bash(pnpm eval*)"
     ],
     "deny": [
+      "Read(./packages/harness/.secrets/**)",
+      "Read(./apps/api/.dev.vars)",
+      "Read(./apps/api/.dev.vars.*)",
       "Read(./.secrets/**)",
-      "Read(./.dev.vars)",
-      "Read(./.dev.vars.*)"
+      "Read(./.dev.vars)"
     ]
   }
 }

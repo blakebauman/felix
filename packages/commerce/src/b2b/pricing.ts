@@ -10,7 +10,7 @@
  * demand/competitor signals, preserving the documented precedence.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { resolveEntitySource } from '../entities/resolver';
 import { applyDynamicAdjustments, type DynamicSignals } from '../pricing/dynamic';
 import type { Account } from './models';

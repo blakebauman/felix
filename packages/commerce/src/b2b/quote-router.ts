@@ -9,9 +9,9 @@
  * Writes gated by `b2b:write`; reads go through the entity seam.
  */
 
-import type { AuthContext } from '@felix/orchestrator/auth/context';
-import { requireScope } from '@felix/orchestrator/auth/middleware';
-import type { Env } from '@felix/orchestrator/env';
+import type { AuthContext } from '@felix/harness/auth/context';
+import { requireScope } from '@felix/harness/auth/middleware';
+import type { Env } from '@felix/harness/env';
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { resolveEntitySource } from '../entities/resolver';

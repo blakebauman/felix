@@ -10,7 +10,7 @@
  * catalog write never fails because Vectorize is unprovisioned.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import type { Product } from '../models';
 
 const EMBED_MODEL = '@cf/baai/bge-base-en-v1.5';

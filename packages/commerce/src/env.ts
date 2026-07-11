@@ -6,7 +6,7 @@
  * this file only owns the *types* (and their documentation).
  */
 
-declare module '@felix/orchestrator/env' {
+declare module '@felix/harness/env' {
   interface Env {
     // ---- Commerce (Stripe direct) ----
     /**

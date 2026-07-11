@@ -10,8 +10,8 @@
  * cron degrades to "audit only" rather than failing.
  */
 
-import type { Env } from '@felix/orchestrator/env';
-import { assertSafeOutboundUrlForEnv } from '@felix/orchestrator/security/ssrf';
+import type { Env } from '@felix/harness/env';
+import { assertSafeOutboundUrlForEnv } from '@felix/harness/security/ssrf';
 
 export interface RecoveryPayload {
   tenant_id: string;

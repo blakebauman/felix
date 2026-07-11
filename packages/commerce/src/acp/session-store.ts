@@ -4,7 +4,7 @@
  * merchant tenant — composite (tenant_id, id) primary key.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import type { AcpCheckoutSession } from './models';
 
 interface SessionRow {

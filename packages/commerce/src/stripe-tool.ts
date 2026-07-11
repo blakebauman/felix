@@ -12,10 +12,10 @@
  * the secret key and create sessions.
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import type { Env } from '@felix/orchestrator/env';
-import { toolErrorOutput } from '@felix/orchestrator/tools/errors';
-import { defineTool, type Tool, type ToolOutput } from '@felix/orchestrator/tools/types';
+import { getContext } from '@felix/harness/context';
+import type { Env } from '@felix/harness/env';
+import { toolErrorOutput } from '@felix/harness/tools/errors';
+import { defineTool, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import type Stripe from 'stripe';
 import { z } from 'zod';
 import { readCart } from './cart-session';

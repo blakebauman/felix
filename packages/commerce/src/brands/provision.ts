@@ -5,12 +5,12 @@
  * resolveManifest(brand_tenant, 'orderloop') returns the branded agent.
  */
 
-import type { Env } from '@felix/orchestrator/env';
-import { loadManifest } from '@felix/orchestrator/manifests/loader';
-import { invalidateActive } from '@felix/orchestrator/manifests/resolver';
-import type { Manifest } from '@felix/orchestrator/manifests/schema';
-import { ManifestSchema } from '@felix/orchestrator/manifests/schema';
-import { createVersion } from '@felix/orchestrator/manifests/store';
+import type { Env } from '@felix/harness/env';
+import { loadManifest } from '@felix/harness/manifests/loader';
+import { invalidateActive } from '@felix/harness/manifests/resolver';
+import type { Manifest } from '@felix/harness/manifests/schema';
+import { ManifestSchema } from '@felix/harness/manifests/schema';
+import { createVersion } from '@felix/harness/manifests/store';
 import type { Brand } from './models';
 
 const BASE_MANIFEST = 'orderloop';

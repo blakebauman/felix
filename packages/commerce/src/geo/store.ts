@@ -4,7 +4,7 @@
  * has no single tenant), mirroring `listActiveCanaries`.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import {
   type GeoObservation,
   GeoObservation as GeoObservationSchema,

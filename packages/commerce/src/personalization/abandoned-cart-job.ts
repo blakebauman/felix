@@ -14,9 +14,9 @@
  * so `recordEvent` enqueues audit rows normally.
  */
 
-import { recordEvent } from '@felix/orchestrator/audit/store';
-import type { Env } from '@felix/orchestrator/env';
-import { recordCounter } from '@felix/orchestrator/observability/metrics';
+import { recordEvent } from '@felix/harness/audit/store';
+import type { Env } from '@felix/harness/env';
+import { recordCounter } from '@felix/harness/observability/metrics';
 import {
   type AbandonedCandidate,
   findAbandonedCandidates,

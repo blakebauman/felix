@@ -3,7 +3,7 @@
  * providers so they're registered before resolution.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { getBillingSettings } from './config-store';
 import { getBillingProvider } from './registry';
 import type { BillingProvider } from './types';

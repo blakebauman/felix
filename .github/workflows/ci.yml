@@ -22,7 +22,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # bundled.ts files (manifests/skills/docs) are gitignored; typecheck and
+      # bundled.ts files (manifests/skills) are gitignored; typecheck and
       # tests import them, so they must be generated first
       - run: pnpm build
       - run: pnpm typecheck
@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: examples/chat-ui
+        working-directory: apps/chat-ui
     steps:
       - uses: actions/checkout@v7
       # version comes from the root package.json `packageManager` field
@@ -42,10 +42,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      # this example package has no lockfile, so no --frozen-lockfile.
-      # --ignore-workspace keeps the install local to this dir — the repo root
-      # is a pnpm workspace, and without the flag pnpm installs the workspace
-      # instead of this project's deps (the .npmrc form of the setting is not
-      # honored for workspace detection in pnpm 10).
-      - run: pnpm install --ignore-workspace
+      # chat-ui is a workspace app (@felix/chat-ui) — install from the repo
+      # root so workspace links resolve, then build just this app.
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
       - run: pnpm build

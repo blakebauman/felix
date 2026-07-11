@@ -9,7 +9,7 @@
  * RFC-3339 delivery windows so this module needs no clock.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { rateShop } from './shipping-carriers';
 
 export interface ShippingOption {

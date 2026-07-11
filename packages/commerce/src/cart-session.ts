@@ -12,9 +12,9 @@
  * same ConversationDO the react loop persists conversation turns to.
  */
 
-import type { Env } from '@felix/orchestrator/env';
-import { getSessionStore } from '@felix/orchestrator/session/do-session';
-import type { Session } from '@felix/orchestrator/session/types';
+import type { Env } from '@felix/harness/env';
+import { getSessionStore } from '@felix/harness/session/do-session';
+import type { Session } from '@felix/harness/session/types';
 import { type Cart, type CartItem, CartSchema } from './models';
 
 const CART_META_TYPE = 'cart';

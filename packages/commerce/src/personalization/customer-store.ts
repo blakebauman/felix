@@ -7,7 +7,7 @@
  * abandoned-cart detection both read back through this store.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import {
   type BehaviorEvent,
   BehaviorEventSchema,

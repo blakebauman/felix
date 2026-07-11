@@ -8,10 +8,10 @@
  * thread is authoritative, so a later `granted: false` records a withdrawal.
  */
 
-import { recordEventDetached } from '@felix/orchestrator/audit/store';
-import { getContext } from '@felix/orchestrator/context';
-import { toolErrorOutput } from '@felix/orchestrator/tools/errors';
-import { defineTool, type Tool, type ToolOutput } from '@felix/orchestrator/tools/types';
+import { recordEventDetached } from '@felix/harness/audit/store';
+import { getContext } from '@felix/harness/context';
+import { toolErrorOutput } from '@felix/harness/tools/errors';
+import { defineTool, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import { z } from 'zod';
 import type { Consent } from './models';
 import { recordConsent } from './store';

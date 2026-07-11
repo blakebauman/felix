@@ -5,7 +5,7 @@
  * call — the client is cheap and holds no durable state.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import Stripe from 'stripe';
 
 export function stripeClient(env: Env): Stripe {

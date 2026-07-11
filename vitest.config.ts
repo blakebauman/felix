@@ -4,13 +4,13 @@ import { configDefaults, defineConfig, defineProject } from 'vitest/config';
 /**
  * Two test projects:
  *
- *   - `unit`     plain node pool. Covers packages/core/tests/unit/** and each
- *                package's tests/ dir (feature plugins) — pure logic,
- *                governance wrappers, manifest schema, fake DO stubs.
- *   - `workers`  miniflare/workerd pool. Covers packages/core/tests/integration/**.
- *                Bindings are configured explicitly so the bundled
- *                workerd doesn't choke on the wrapped AI binding from
- *                wrangler.jsonc.
+ *   - `unit`     plain node pool. Covers every package's and app's tests/
+ *                dir (pure logic, governance wrappers, manifest schema,
+ *                fake DO stubs, the plugin-boundary guard in apps/api).
+ *   - `workers`  miniflare/workerd pool. Covers apps/api/tests/integration/**
+ *                booted through the apps/api Worker entry. Bindings are
+ *                configured explicitly so the bundled workerd doesn't
+ *                choke on the wrapped AI binding from wrangler.jsonc.
  */
 export default defineConfig({
   test: {
@@ -18,8 +18,8 @@ export default defineConfig({
       defineProject({
         test: {
           name: 'unit',
-          include: ['packages/*/tests/**/*.test.ts'],
-          exclude: [...configDefaults.exclude, 'packages/core/tests/integration/**'],
+          include: ['packages/*/tests/**/*.test.ts', 'apps/*/tests/**/*.test.ts'],
+          exclude: [...configDefaults.exclude, 'apps/api/tests/integration/**'],
           environment: 'node',
         },
       }),
@@ -27,8 +27,9 @@ export default defineConfig({
         plugins: [
           cloudflareTest({
             // `main` is required for `SELF.fetch` — the runner needs to know
-            // where the worker entrypoint lives.
-            main: './packages/core/src/index.ts',
+            // where the worker entrypoint lives (the apps/api shell, which
+            // wires the harness + plugins exactly like production).
+            main: './apps/api/src/index.ts',
             // We don't point at wrangler.jsonc here: the bundled workerd
             // doesn't support the wrapped AI binding our production config
             // declares. Tests bind D1 / KV / R2 / DOs explicitly and stub
@@ -66,7 +67,7 @@ export default defineConfig({
         ],
         test: {
           name: 'workers',
-          include: ['packages/core/tests/integration/**/*.test.ts'],
+          include: ['apps/api/tests/integration/**/*.test.ts'],
         },
       }),
     ],

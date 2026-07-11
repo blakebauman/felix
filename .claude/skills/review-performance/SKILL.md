@@ -12,7 +12,7 @@ Default: current diff (`git diff` + `git diff --cached`, or `git diff main...HEA
 
 ## Checklist
 
-- **Off the critical path**: fire-and-forget work (audit writes, session persistence, metrics) goes through `execCtx.waitUntil` — pattern: `persistFireAndForget` in `packages/core/src/session/do-session.ts`. Flag new awaited writes that block the LLM/request loop.
+- **Off the critical path**: fire-and-forget work (audit writes, session persistence, metrics) goes through `execCtx.waitUntil` — pattern: `persistFireAndForget` in `packages/harness/src/session/do-session.ts`. Flag new awaited writes that block the LLM/request loop.
 - **D1**: no N+1 query loops — batch with `DB.batch()` (the audit consumer is the exemplar); new query shapes have index coverage (`(tenant_id, ts DESC)` for time-ordered, `(tenant_id, <filter>)` otherwise); no `SELECT *` on wide tables in hot paths.
 - **Parallelism**: independent awaits use `Promise.all`. EXCEPTION — do NOT "fix" the react loop's sequential tool dispatch: it is deliberate for deterministic audit ordering.
 - **Cancellation**: `ctx.signal` threaded into fetches and `ModelChatOptions.signal` into model calls — without it a wall-clock breach only blocks the *next* call, so in-flight work burns CPU-ms against the 60s cap.
@@ -23,7 +23,7 @@ Default: current diff (`git diff` + `git diff --cached`, or `git diff main...HEA
 
 ## Verify claims
 
-For any "this is faster" assertion, point at the mechanism (fewer round-trips, index hit, off-path write) — don't accept vibes. Benchmark precedent: `packages/core/tests/unit/session/strategies_benchmark.test.ts`.
+For any "this is faster" assertion, point at the mechanism (fewer round-trips, index hit, off-path write) — don't accept vibes. Benchmark precedent: `packages/harness/tests/unit/session/strategies_benchmark.test.ts`.
 
 ## Output
 

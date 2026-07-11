@@ -4,7 +4,7 @@
  * tenant. Idempotent per id via `upsertProduct`.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { upsertProduct } from '../catalog-store';
 import type { Product } from '../models';
 import type { ImportRequest } from './models';

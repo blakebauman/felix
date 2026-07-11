@@ -2,7 +2,7 @@
  * Brand manifest overlay + catalog import mapping (pure logic).
  */
 
-import { loadManifest } from '@felix/orchestrator/manifests/loader';
+import { loadManifest } from '@felix/harness/manifests/loader';
 import { describe, expect, it } from 'vitest';
 import { parsePrice } from '../src/brands/import';
 import type { Brand } from '../src/brands/models';

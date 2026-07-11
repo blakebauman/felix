@@ -1,0 +1,26 @@
+{
+  "name": "@felix/docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Felix public docs site — Starlight static build aggregating packages/*/docs markdown, deployed as a Workers static-assets site",
+  "type": "module",
+  "scripts": {
+    "sync": "tsx scripts/sync-content.ts",
+    "dev": "pnpm sync && astro dev",
+    "build": "pnpm sync && astro build",
+    "preview": "pnpm sync && astro preview",
+    "deploy": "pnpm build && wrangler deploy"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.3",
+    "astro": "^7.0.7"
+  },
+  "devDependencies": {
+    "@felix/design": "workspace:*",
+    "tsx": "^4.21.0",
+    "wrangler": "^4.90.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

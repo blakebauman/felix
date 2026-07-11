@@ -19,12 +19,12 @@
  * Mounted at `/shop` in `app.ts`. Public — no JWT, no operator scope.
  */
 
-import { ChatMessageSchema, MAX_MESSAGES } from '@felix/orchestrator/api/openapi-shared';
-import type { Env } from '@felix/orchestrator/env';
-import { buildAgent } from '@felix/orchestrator/manifests/builder';
-import { type ResolvedManifest, resolveManifest } from '@felix/orchestrator/manifests/resolver';
-import type { Agent } from '@felix/orchestrator/patterns/types';
-import type { ToolProvider } from '@felix/orchestrator/tools/provider';
+import { ChatMessageSchema, MAX_MESSAGES } from '@felix/harness/api/openapi-shared';
+import type { Env } from '@felix/harness/env';
+import { buildAgent } from '@felix/harness/manifests/builder';
+import { type ResolvedManifest, resolveManifest } from '@felix/harness/manifests/resolver';
+import type { Agent } from '@felix/harness/patterns/types';
+import type { ToolProvider } from '@felix/harness/tools/provider';
 import { type Context, Hono } from 'hono';
 import { z } from 'zod';
 import type { Brand } from '../brands/models';

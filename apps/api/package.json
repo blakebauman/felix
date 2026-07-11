@@ -1,0 +1,37 @@
+{
+  "name": "@felix/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Felix API Worker — the deployable shell: Worker entry, plugin wiring root (installedPlugins), wrangler config, D1 migrations, and ops scripts. The harness itself is @felix/harness.",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "pnpm --filter @felix/harness build:manifests",
+    "dev": "pnpm build && wrangler dev",
+    "dev:remote": "pnpm build && wrangler dev --remote",
+    "deploy": "pnpm build && wrangler deploy --env production",
+    "deploy:staging": "pnpm build && wrangler deploy --env staging",
+    "migrate:local": "wrangler d1 migrations apply orchestrator --local",
+    "migrate:staging": "wrangler d1 migrations apply orchestrator-staging --remote --env staging",
+    "migrate:production": "wrangler d1 migrations apply orchestrator-prod --remote --env production",
+    "setup:vectorize:staging": "bash scripts/setup-vectorize.sh felix-memory-staging",
+    "setup:vectorize:production": "bash scripts/setup-vectorize.sh felix-memory-prod",
+    "eval": "tsx scripts/eval.ts"
+  },
+  "dependencies": {
+    "@felix/commerce": "workspace:*",
+    "@felix/harness": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260511.1",
+    "jose": "^6.2.3",
+    "tsx": "^4.21.0",
+    "wrangler": "^4.90.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

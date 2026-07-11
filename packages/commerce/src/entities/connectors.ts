@@ -12,7 +12,7 @@
  * caller's concern; here we forward whatever string was configured).
  */
 
-import { assertSafeOutboundUrlForEnv } from '@felix/orchestrator/security/ssrf';
+import { assertSafeOutboundUrlForEnv } from '@felix/harness/security/ssrf';
 import type { ConnectorConfig, ConnectorCtx, EntityConnector, ListOpts, RawRecord } from './types';
 
 type ConnectorFactory = (cfg: ConnectorConfig) => EntityConnector;

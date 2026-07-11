@@ -2,7 +2,7 @@
  * Carrier rate-shopping seam (pure; env is just a config string).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseCarrierConfig, rateShop } from '../src/shipping-carriers';
 

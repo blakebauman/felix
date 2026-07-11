@@ -7,9 +7,9 @@
  * `commerce_checkout` lives in `stripe-tool.ts` (it owns the Stripe call).
  */
 
-import { getContext } from '@felix/orchestrator/context';
-import { toolErrorOutput } from '@felix/orchestrator/tools/errors';
-import { defineTool, type Tool, type ToolOutput } from '@felix/orchestrator/tools/types';
+import { getContext } from '@felix/harness/context';
+import { toolErrorOutput } from '@felix/harness/tools/errors';
+import { defineTool, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import { z } from 'zod';
 import { addItem, readCart, removeItem, setQty, writeCart } from './cart-session';
 import { getProduct, listCategories, searchProducts } from './catalog-store';
@@ -26,7 +26,7 @@ import { applyDynamicAdjustments, applyDynamicToCatalog } from './pricing/dynami
 /** Demand window for velocity-based dynamic pricing. */
 const DEMAND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-function requireCtx(): { env: import('@felix/orchestrator/env').Env; tenantId: string } | string {
+function requireCtx(): { env: import('@felix/harness/env').Env; tenantId: string } | string {
   const rc = getContext();
   if (!rc) return '[commerce error] no request context';
   return { env: rc.env, tenantId: rc.auth.principal.tenantId };
@@ -38,7 +38,7 @@ function requireCtx(): { env: import('@felix/orchestrator/env').Env; tenantId: s
  * into the tool.
  */
 function captureBehavior(
-  env: import('@felix/orchestrator/env').Env,
+  env: import('@felix/harness/env').Env,
   tenantId: string,
   threadId: string,
   type: BehaviorType,
@@ -66,7 +66,7 @@ function dollars(cents: number): string {
 
 /** Effective display/snapshot price for a single product after dynamic rules. */
 async function dynamicPriceCents(
-  env: import('@felix/orchestrator/env').Env,
+  env: import('@felix/harness/env').Env,
   tenantId: string,
   product: { id: string; category: string; price_cents: number },
 ): Promise<number> {

@@ -13,7 +13,7 @@
  *               a connector. Reads look identical to native.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 
 export type EntityMode = 'native' | 'federated' | 'synced';
 

@@ -3,7 +3,7 @@
  * → the env default (`BILLING_PROVIDER_DEFAULT`) or `internal`.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 
 export interface BillingSettings {
   provider: string;

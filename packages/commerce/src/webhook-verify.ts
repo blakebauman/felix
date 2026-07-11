@@ -4,7 +4,7 @@
  * buyer-side checkout webhook and the B2B billing webhook.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import Stripe from 'stripe';
 import { stripeClient } from './stripe-client';
 

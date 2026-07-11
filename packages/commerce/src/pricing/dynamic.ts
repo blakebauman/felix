@@ -17,7 +17,7 @@
  *     actually matches, keeping the catalog hot path cheap.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { minCompetitorPriceCents } from './competitor-store';
 import type { PricingRule } from './models';
 import { listActiveRules } from './rules-store';

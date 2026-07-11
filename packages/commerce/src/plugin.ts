@@ -7,7 +7,7 @@
  * `composition.ts:installedPlugins()` and never names commerce elsewhere.
  */
 
-import type { FelixPlugin, FelixRequestContext } from '@felix/orchestrator/plugins/types';
+import type { FelixPlugin, FelixRequestContext } from '@felix/harness/plugins/types';
 // Type-only side effect: merges the commerce env vars into the core `Env`
 // interface while the plugin is installed.
 import './env';

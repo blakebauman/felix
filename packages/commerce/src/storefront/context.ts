@@ -9,14 +9,14 @@
  * (default/anonymous) context the auth middleware installed.
  */
 
-import type { AuthContext } from '@felix/orchestrator/auth/context';
+import type { AuthContext } from '@felix/harness/auth/context';
 import {
   getContext,
   newLimitState,
   type RequestContext,
   runWithContext,
-} from '@felix/orchestrator/context';
-import type { Env } from '@felix/orchestrator/env';
+} from '@felix/harness/context';
+import type { Env } from '@felix/harness/env';
 
 const BRAND_MANIFEST = 'orderloop';
 

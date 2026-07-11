@@ -19,9 +19,9 @@
  * never silently dropped.
  */
 
-import { recordEventDetached } from '@felix/orchestrator/audit/store';
-import type { Env } from '@felix/orchestrator/env';
-import { recordCounter, recordHistogram } from '@felix/orchestrator/observability/metrics';
+import { recordEventDetached } from '@felix/harness/audit/store';
+import type { Env } from '@felix/harness/env';
+import { recordCounter, recordHistogram } from '@felix/harness/observability/metrics';
 import { getBrand } from '../brands/store';
 import { listProductsPage } from '../catalog-store';
 import type { GeoObservation, GeoQuery } from './models';

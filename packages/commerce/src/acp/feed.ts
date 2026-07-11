@@ -8,7 +8,7 @@
  * agent can ingest the whole catalog for one merchant tenant.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { listProductsPage } from '../catalog-store';
 import type { Product } from '../models';
 

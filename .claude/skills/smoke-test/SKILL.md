@@ -6,7 +6,7 @@ when_to_use: 'Requests like "smoke test staging", "is production healthy", "veri
 
 # Smoke test a live environment
 
-Target: `staging` → `https://staging-make.felix.run`, `production` → `https://make.felix.run`. Default staging. Bare `wrangler` commands run from `packages/core/` (where `wrangler.jsonc` lives).
+Target: `staging` → `https://staging-make.felix.run`, `production` → `https://make.felix.run`. Default staging. Bare `wrangler` commands run from `apps/api/` (where `wrangler.jsonc` lives).
 
 ## 1. Unauthenticated probes (expect 200)
 
@@ -21,7 +21,7 @@ curl -s -o /dev/null -w "%{http_code}" $BASE/docs
 ## 2. Scoped probes (mint token per the staging-auth skill)
 
 ```bash
-TOKEN=$(pnpm tsx packages/core/scripts/mint-jwt.ts --scope "manifests:read audit:read" | jq -r .token)
+TOKEN=$(pnpm tsx apps/api/scripts/mint-jwt.ts --scope "manifests:read audit:read" | jq -r .token)
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/manifests | jq 'length'   # expect manifest list
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/audit?limit=1" | jq .    # expect 200, possibly empty
 ```

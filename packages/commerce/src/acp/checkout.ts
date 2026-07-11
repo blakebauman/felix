@@ -12,7 +12,7 @@
  * real providers without changing this builder.
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import { decrementInventory, getProduct } from '../catalog-store';
 import type { Order } from '../models';
 import { createOrder, getOrder } from '../order-store';

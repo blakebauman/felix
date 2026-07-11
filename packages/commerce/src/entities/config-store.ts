@@ -3,7 +3,7 @@
  * mode + connector config. Absent row → native (the default).
  */
 
-import type { Env } from '@felix/orchestrator/env';
+import type { Env } from '@felix/harness/env';
 import type { ConnectorConfig, DataSourceConfig, EntityMode } from './types';
 
 interface Row {

@@ -8,9 +8,9 @@
  * order.
  */
 
-import { createOrFetchRequest, getRequest } from '@felix/orchestrator/approvals/store';
-import { recordEvent } from '@felix/orchestrator/audit/store';
-import type { Env } from '@felix/orchestrator/env';
+import { createOrFetchRequest, getRequest } from '@felix/harness/approvals/store';
+import { recordEvent } from '@felix/harness/audit/store';
+import type { Env } from '@felix/harness/env';
 import { resolveBillingProvider } from '../billing/resolve';
 import { resolveEntitySource } from '../entities/resolver';
 import type { Order } from '../models';

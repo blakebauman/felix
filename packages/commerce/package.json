@@ -2,14 +2,15 @@
   "name": "@felix/commerce",
   "version": "0.1.0",
   "private": true,
-  "description": "Felix Commerce — the agentic-commerce FelixPlugin (catalog/cart/checkout tools, ACP, D2C storefronts, GEO, B2B, entities seam)",
+  "description": "Felix Commerce \u2014 the agentic-commerce FelixPlugin (catalog/cart/checkout tools, ACP, D2C storefronts, GEO, B2B, entities seam)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@felix/orchestrator": "workspace:*",
+    "@felix/design": "workspace:*",
+    "@felix/harness": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
     "hono": "^4.12.18",
     "stripe": "^22.2.3",
