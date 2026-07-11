@@ -20,7 +20,7 @@ import type { Context, Next } from 'hono';
 import { disposeLimitState, newLimitState, type RequestContext, runWithContext } from '../context';
 import type { Env } from '../env';
 import type { Manifest } from '../manifests/schema';
-import { recordCounter } from '../observability/metrics';
+import { recordCounterDetached } from '../observability/metrics';
 import { ANONYMOUS, type AuthContext } from './context';
 import { parseVerifiers, verifyJwt } from './jwt';
 import { outboundAuthHeader } from './providers';
@@ -65,7 +65,11 @@ function assertVerifiersConfigured(env: Env): void {
   if (env.ENVIRONMENT === 'development') return;
   if (parseVerifiers(env).length > 0) return;
   warnedNoVerifiers = true;
-  recordCounter('orchestrator_auth_misconfigured', { environment: env.ENVIRONMENT ?? 'unknown' });
+  // Detached variant: this runs before runWithContext is entered, so the
+  // context-reading recordCounter would silently miss the METRICS binding.
+  recordCounterDetached(env, 'orchestrator_auth_misconfigured', {
+    environment: env.ENVIRONMENT ?? 'unknown',
+  });
   console.error(
     JSON.stringify({
       level: 'error',
