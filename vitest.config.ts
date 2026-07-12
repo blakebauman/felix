@@ -54,6 +54,11 @@ export default defineConfig({
                 HYPERDRIVE:
                   process.env.TEST_DATABASE_URL ??
                   'postgresql://postgres:postgres@localhost:5432/felix_test',
+                // Cached-reads binding: same database in tests (no cache layer
+                // in miniflare's emulation — it proxies straight through).
+                HYPERDRIVE_CACHED:
+                  process.env.TEST_DATABASE_URL ??
+                  'postgresql://postgres:postgres@localhost:5432/felix_test',
               },
               kvNamespaces: ['CACHE'],
               r2Buckets: ['BUNDLES'],

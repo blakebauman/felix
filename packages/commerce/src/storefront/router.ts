@@ -20,6 +20,7 @@
  */
 
 import { ChatMessageSchema, MAX_MESSAGES } from '@felix/harness/api/openapi-shared';
+import { withCachedDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { buildAgent } from '@felix/harness/manifests/builder';
 import { type ResolvedManifest, resolveManifest } from '@felix/harness/manifests/resolver';
@@ -195,7 +196,10 @@ export function buildStorefrontRouter(deps: { tools: ToolProvider }) {
   }
 
   // ---- Host-resolved routes (custom domain / <slug>.shop.felix.run) ----
-  app.get('/config', async (c) => configResponse(c, await resolveByHost(c, c.env)));
+  // Config renders are read-only brand/catalog lookups — cached reads OK.
+  app.get('/config', async (c) =>
+    withCachedDb(c.env, async () => configResponse(c, await resolveByHost(c, c.env))),
+  );
   app.post('/chat', async (c) => {
     const brand = await resolveByHost(c, c.env);
     if (!brand) return c.json({ error: 'storefront_not_found' }, 404);
@@ -214,7 +218,9 @@ export function buildStorefrontRouter(deps: { tools: ToolProvider }) {
 
   // ---- Path-resolved routes (:storefront = brand_tenant) ----
   app.get('/:storefront/config', async (c) =>
-    configResponse(c, await getBrandByTenant(c.env, c.req.param('storefront'))),
+    withCachedDb(c.env, async () =>
+      configResponse(c, await getBrandByTenant(c.env, c.req.param('storefront'))),
+    ),
   );
   app.post('/:storefront/chat', async (c) => {
     const brand = await getBrandByTenant(c.env, c.req.param('storefront'));

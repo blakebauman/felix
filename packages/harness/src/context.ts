@@ -72,6 +72,12 @@ export interface RequestContext {
    * closed explicitly — Hyperdrive owns connection lifecycle.
    */
   db?: Db;
+  /**
+   * Per-request client over the OPTIONAL caching-enabled Hyperdrive binding
+   * (`HYPERDRIVE_CACHED`), lazily created by `getCachedDb` for public
+   * read-only surfaces. Closed alongside `db` at teardown.
+   */
+  dbCached?: Db;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -134,12 +140,14 @@ export function disposeLimitState(state: LimitState): void {
  * Fakes without an `end` (unit-test doubles) are also skipped.
  */
 export function disposeContextDb(ctx: RequestContext): void {
-  const db = ctx.db;
-  if (!db || typeof db.end !== 'function') return;
   const environment = (ctx.env as { ENVIRONMENT?: string }).ENVIRONMENT;
   if (environment === 'staging' || environment === 'production') return;
-  ctx.db = undefined;
-  void db.end({ timeout: 5 }).catch(() => {});
+  for (const key of ['db', 'dbCached'] as const) {
+    const db = ctx[key];
+    if (!db || typeof db.end !== 'function') continue;
+    ctx[key] = undefined;
+    void db.end({ timeout: 5 }).catch(() => {});
+  }
 }
 
 export function buildAnonymousContext(env: Env, execCtx?: ExecutionContext): RequestContext {

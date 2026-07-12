@@ -93,6 +93,16 @@ export interface Env {
    * Postgres); vitest through `miniflare.hyperdrives`.
    */
   HYPERDRIVE: Hyperdrive;
+  /**
+   * OPTIONAL second Hyperdrive config with query caching ENABLED (60s
+   * default max_age) for public read-only surfaces (storefront pages,
+   * structured-data feeds, sitemaps) via `getCachedDb`/`withCachedDb`.
+   * Absent → those surfaces fall back to the cache-disabled client. Both
+   * configs share the branch compute's max_connections — size
+   * `--origin-connection-limit` on BOTH so the sum stays under it
+   * (~112 at Neon's 0.25 CU floor).
+   */
+  HYPERDRIVE_CACHED?: Hyperdrive;
   CACHE: KVNamespace;
   BUNDLES: R2Bucket;
   AUDIT_QUEUE: Queue;

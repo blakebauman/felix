@@ -42,3 +42,12 @@ describe('postgres via hyperdrive', () => {
     expect(rows[0]?.ts).toBe(now);
   });
 });
+
+describe('cached-reads binding (HYPERDRIVE_CACHED)', () => {
+  it('round-trips through the second hyperdrive binding', async () => {
+    const { getCachedDb } = await import('@felix/harness/db/client');
+    const sql = getCachedDb(env as unknown as Env);
+    const rows = await sql`SELECT 2 + 2 AS four`;
+    expect(rows[0]?.four).toBe(4);
+  });
+});

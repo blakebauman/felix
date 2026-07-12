@@ -26,3 +26,4 @@ apps/docs/.astro/
 
 # Turborepo local cache
 .turbo/
+.neon

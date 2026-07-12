@@ -17,7 +17,14 @@
  */
 
 import postgres from 'postgres';
-import { getContext } from '../context';
+import {
+  buildAnonymousContext,
+  disposeContextDb,
+  disposeLimitState,
+  getContext,
+  type RequestContext,
+  runWithContext,
+} from '../context';
 import type { Env } from '../env';
 
 /**
@@ -55,4 +62,56 @@ export function getDb(env: Env): Db {
   }) as unknown as Db;
   if (ctx) ctx.db = db;
   return db;
+}
+
+/**
+ * Client over the OPTIONAL `HYPERDRIVE_CACHED` binding — a second Hyperdrive
+ * config with query caching ENABLED (default 60s max_age). Only for public
+ * read-only surfaces where staleness is acceptable (storefront pages,
+ * structured-data feeds, sitemaps); everything with read-after-write needs
+ * stays on the cache-disabled default client. Falls back to `getDb` when the
+ * binding isn't configured, so single-binding deployments and local dev/test
+ * (one Docker pg) behave identically.
+ */
+export function getCachedDb(env: Env): Db {
+  const ctx = getContext();
+  if (ctx?.dbCached) return ctx.dbCached;
+  const binding = env.HYPERDRIVE_CACHED;
+  if (!binding) return getDb(env);
+  const db = postgres(binding.connectionString, {
+    max: 5,
+    fetch_types: false,
+    prepare: true,
+    types: {
+      bigint: { to: 20, from: [20], serialize: String, parse: Number },
+    },
+  }) as unknown as Db;
+  if (ctx) ctx.dbCached = db;
+  return db;
+}
+
+/**
+ * Run `fn` with the CACHED client as the context's default — every store
+ * call inside (they all resolve through `getDb`) transparently reads through
+ * the caching config. Writes still work (Hyperdrive only caches non-mutating
+ * queries) but read-after-write inside `fn` may see up to `max_age` staleness,
+ * so wrap ONLY handlers that are genuinely read-only. The child context
+ * shares auth/limits/execCtx with the parent; the cached client itself is
+ * closed at request teardown via `disposeContextDb` (parent-cached) or here
+ * (contextless callers).
+ */
+export async function withCachedDb<T>(env: Env, fn: () => Promise<T>): Promise<T> {
+  const parent = getContext();
+  const cached = getCachedDb(env);
+  const base = parent ?? buildAnonymousContext(env);
+  const child: RequestContext = { ...base, db: cached };
+  try {
+    return await runWithContext(child, fn);
+  } finally {
+    if (!parent) {
+      disposeLimitState(base.limitState);
+      base.dbCached = cached;
+      disposeContextDb(base);
+    }
+  }
 }
