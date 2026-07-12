@@ -24,6 +24,7 @@
  * Mounted at `/structured` (+ `/`) in `app.ts`.
  */
 
+import { withCachedDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { type Context, Hono } from 'hono';
 import type { Brand } from '../brands/models';
@@ -162,6 +163,10 @@ function serveRobots(c: Ctx, brand: Brand, sitemapUrl: string): Promise<Response
 export function buildStructuredRouter(): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
 
+  // Every route here is a read-only crawler surface — serve them through the
+  // caching-enabled Hyperdrive config (≤60s staleness is fine for feeds).
+  app.use('*', async (c, next) => withCachedDb(c.env, next));
+
   // ---- Path-resolved (:storefront = brand_tenant) ----
   app.get('/:storefront/feed.jsonld', async (c) => {
     const brand = await resolveBrand(c, c.req.param('storefront'));
@@ -218,6 +223,9 @@ export function buildStructuredRouter(): Hono<{ Bindings: Env }> {
  */
 export function buildStructuredRootRouter(): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
+
+  // Read-only crawler aliases — same cached-reads policy as /structured.
+  app.use('*', async (c, next) => withCachedDb(c.env, next));
 
   app.get('/robots.txt', async (c) => {
     const brand = await resolveBrand(c);

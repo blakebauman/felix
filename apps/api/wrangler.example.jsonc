@@ -69,6 +69,16 @@
       "binding": "HYPERDRIVE",
       "id": "REPLACE_AFTER_wrangler_hyperdrive_create",
       "localConnectionString": "postgresql://postgres:postgres@localhost:5432/felix"
+    },
+    // OPTIONAL caching-enabled config for public read-only surfaces
+    // (structured feeds, storefront config). Create WITHOUT
+    // --caching-disabled. Both configs share the Neon branch compute's
+    // max_connections (~112 at the 0.25 CU floor) — set
+    // --origin-connection-limit=50 on BOTH so the sum stays under it.
+    {
+      "binding": "HYPERDRIVE_CACHED",
+      "id": "REPLACE_AFTER_wrangler_hyperdrive_create",
+      "localConnectionString": "postgresql://postgres:postgres@localhost:5432/felix"
     }
   ],
 
@@ -201,10 +211,8 @@
       "placement": { "mode": "smart" },
       "routes": [{ "pattern": "staging-make.felix.run", "custom_domain": true }],
       "hyperdrive": [
-        {
-          "binding": "HYPERDRIVE",
-          "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
-        }
+        { "binding": "HYPERDRIVE", "id": "REPLACE_AFTER_wrangler_hyperdrive_create" },
+        { "binding": "HYPERDRIVE_CACHED", "id": "REPLACE_AFTER_wrangler_hyperdrive_create" }
       ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
       "r2_buckets": [{ "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-staging" }],
@@ -279,10 +287,8 @@
       },
       "routes": [{ "pattern": "make.felix.run", "custom_domain": true }],
       "hyperdrive": [
-        {
-          "binding": "HYPERDRIVE",
-          "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
-        }
+        { "binding": "HYPERDRIVE", "id": "REPLACE_AFTER_wrangler_hyperdrive_create" },
+        { "binding": "HYPERDRIVE_CACHED", "id": "REPLACE_AFTER_wrangler_hyperdrive_create" }
       ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
       "r2_buckets": [{ "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-prod" }],
