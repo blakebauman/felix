@@ -20,6 +20,7 @@ import {
 } from '@felix/harness/jobs/continuous-eval';
 import { runScheduledJobs } from '@felix/harness/jobs/cron';
 import { sweepOrphanQueueDispatches } from '@felix/harness/jobs/queue-orphan-cleanup';
+import { runRetentionSweep } from '@felix/harness/jobs/retention';
 import type { FelixPlugin } from '@felix/harness/plugins/types';
 import { federationStub } from '@felix/harness/policy/federation-do';
 import { compose, installedPlugins } from './composition';
@@ -88,6 +89,13 @@ export default {
             await runAnomalyScan(env);
           } catch (err) {
             console.error('anomaly scan failed', err);
+          }
+          try {
+            // Retention / GC: prune audit_events past the retention window
+            // and expired plans, bounded per tick.
+            await runRetentionSweep(env, Date.now(), ctx);
+          } catch (err) {
+            console.error('retention sweep failed', err);
           }
           try {
             // Online benchmarking: replay sampled production inputs
