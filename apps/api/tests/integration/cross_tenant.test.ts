@@ -238,6 +238,48 @@ describe('approval decision finality', () => {
   });
 });
 
+describe('manifest-name path confusion', () => {
+  it("can't reach another tenant's R2 override via a slash in the manifest name", async () => {
+    // Seed what would be tenant `victim`'s tenant-scoped R2 override. Its
+    // object key (`manifests/victim/secret.json`) is a subset of the global
+    // layer's keyspace (`manifests/<name>.json`), so before the fix a caller
+    // in tenant `default` requesting name `victim/secret` would resolve it
+    // via the global R2 layer and be able to invoke an agent built from it.
+    await testEnv.BUNDLES.put(
+      'manifests/victim/secret.json',
+      JSON.stringify({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'secret' },
+        spec: {
+          pattern: 'react',
+          model: { provider: 'workers-ai', name: '@cf/meta/llama-3.1-8b-instruct' },
+          system_prompt: { inline: 'victim private prompt' },
+        },
+      }),
+    );
+
+    // /chat body carries `manifest` as a bare string; the resolver rejects
+    // the slash-containing name before any R2 read, so it 404s instead of
+    // resolving the seeded victim object.
+    const chat = await SELF.fetch('https://orchestrator.test/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        manifest: 'victim/secret',
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+    expect(chat.status).toBe(404);
+    const chatBody = (await chat.json()) as { error: string };
+    expect(chatBody.error).toBe('unknown_manifest');
+
+    // The /manifests param surface rejects the slash at param validation.
+    const resolve = await SELF.fetch('https://orchestrator.test/manifests/victim%2Fsecret');
+    expect([400, 404]).toContain(resolve.status);
+  });
+});
+
 describe('/audit cross-tenant scoping', () => {
   it('only returns audit events for the caller tenant', async () => {
     const tenants = ['default', 'other-tenant'] as const;
