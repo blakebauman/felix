@@ -19,6 +19,7 @@ import { currentLimitState } from '../limits/state';
 import type { Model } from '../manifests/schema';
 import { recordCounter } from '../observability/metrics';
 import type { Tool } from '../tools/types';
+import { repairToolPairing } from './message-repair';
 import { getModelProvider, listModelProviders, registerModelProvider } from './model-registry';
 import type { ChatMessage, ImageAttachment, ThinkingBlock, ToolCall } from './types';
 import { getToolInputSchema } from './zod-to-json-schema';
@@ -421,9 +422,12 @@ class AnthropicGatewayClient implements ModelClient {
     return `https://gateway.ai.cloudflare.com/v1/${account}/${slug}/anthropic/v1/messages/count_tokens`;
   }
 
-  private body(messages: ChatMessage[], tools: Tool[], opts?: ModelChatOptions): unknown {
+  private body(rawMessages: ChatMessage[], tools: Tool[], opts?: ModelChatOptions): unknown {
     const cache = this.spec.cache === true;
     const thinkingBudget = this.spec.thinking_budget ?? null;
+    // Repair tool_use / tool_result pairing so a window-cut, crashed cycle, or
+    // duplicate queue result can't 400 and poison the thread. In-memory only.
+    const messages = repairToolPairing(rawMessages);
     const sys = messages
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
@@ -928,7 +932,7 @@ class OpenAIGatewayClient implements ModelClient {
       },
       body: JSON.stringify({
         model: this.route.model,
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         tools: tools.length
           ? tools.map((t) => ({
               type: 'function',
@@ -1003,7 +1007,7 @@ class OpenAIGatewayClient implements ModelClient {
       },
       body: JSON.stringify({
         model: this.route.model,
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         tools: tools.length
           ? tools.map((t) => ({
               type: 'function',
@@ -1306,7 +1310,7 @@ class WorkersAiClient implements ModelClient {
     const resp = (await this.env.AI.run(
       this.route.model as keyof AiModels,
       {
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         temperature: opts?.temperature ?? this.spec.temperature ?? 0,
         max_tokens: opts?.maxTokens ?? this.spec.max_tokens ?? 1024,
         ...(toolArr ? { tools: toolArr } : {}),
@@ -1379,7 +1383,7 @@ class WorkersAiClient implements ModelClient {
     const stream = (await this.env.AI.run(
       this.route.model as keyof AiModels,
       {
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         stream: true,
       } as never,
     )) as ReadableStream;
