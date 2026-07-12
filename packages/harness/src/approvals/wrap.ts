@@ -16,8 +16,20 @@ import { recordCounter } from '../observability/metrics';
 import { wrapExecutor } from '../tools/executor';
 import { matchesAnyToolPattern } from '../tools/tool-match';
 import { denyOutput, type Tool, type ToolInput } from '../tools/types';
+import { supersedeViaDO } from './approvals-do';
 import type { ApprovalRule } from './models';
 import { createOrFetchRequest, findBySignature } from './store';
+
+/**
+ * Effective config for a gated tool, distilled from the FIRST matching rule
+ * (see `applyApprovals`). Defaults keep pre-existing behavior: no expiry,
+ * replayable grant, tenant-wide (subject-agnostic) signature.
+ */
+interface GateConfig {
+  ttlSeconds: number | null;
+  oneShot: boolean;
+  bindPrincipal: boolean;
+}
 
 function canonicalize(args: ToolInput): string {
   const keys = Object.keys(args).sort();
@@ -30,7 +42,8 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function wrapOne(inner: Tool, manifestId: string): Tool {
+function wrapOne(inner: Tool, manifestId: string, config: GateConfig): Tool {
+  const { ttlSeconds, oneShot, bindPrincipal } = config;
   return {
     ...inner,
     executor: wrapExecutor(inner.executor, async (args, ctx) => {
@@ -59,32 +72,98 @@ function wrapOne(inner: Tool, manifestId: string): Tool {
       // approval idempotency by varying extra-keys the tool doesn't declare.
       const parsed = inner.args.safeParse(args);
       const sigArgs = (parsed.success ? (parsed.data as ToolInput) : args) ?? {};
-      const callSignature = await sha256Hex(`${manifestId}|${inner.name}|${canonicalize(sigArgs)}`);
+      // `bind_principal` mixes the requesting subject into the signature so a
+      // grant approved for one subject yields a DIFFERENT signature for another
+      // — a different user must re-request. Default (off) keeps the tenant-wide
+      // subject-agnostic signature so existing manifests behave unchanged.
+      const sigInput = bindPrincipal
+        ? `${manifestId}|${subject}|${inner.name}|${canonicalize(sigArgs)}`
+        : `${manifestId}|${inner.name}|${canonicalize(sigArgs)}`;
+      const callSignature = await sha256Hex(sigInput);
+
+      const emitApproved = (approvalId: string) => {
+        recordEvent({
+          tenantId,
+          eventType: 'approval_decision',
+          principalSubject: subject,
+          manifestId,
+          status: 'approved',
+          payload: {
+            approval_id: approvalId,
+            tool: inner.name,
+            transport: inner.executor.transport,
+          },
+        });
+        recordCounter('orchestrator_approval_decisions', {
+          outcome: 'approved',
+          manifest_id: manifestId,
+          transport: inner.executor.transport,
+        });
+      };
 
       const existing = await findBySignature(env, tenantId, manifestId, inner.name, callSignature);
       if (existing) {
         if (existing.status === 'approved') {
-          recordEvent({
-            tenantId,
-            eventType: 'approval_decision',
-            principalSubject: subject,
-            manifestId,
-            status: 'approved',
-            payload: {
-              approval_id: existing.id,
-              tool: inner.name,
+          const now = Date.now();
+          const isExpired = existing.expires_at != null && existing.expires_at <= now;
+          if (isExpired) {
+            // TTL elapsed — supersede the stale grant (approved → expired) so it
+            // no longer authorizes and a fresh request can reuse the signature,
+            // then fall through to re-request. Serialized through the DO so an
+            // expiry can't race a concurrent decision.
+            await supersedeViaDO(env, tenantId, existing.id, 'expired');
+            recordEvent({
+              tenantId,
+              eventType: 'approval_expired',
+              principalSubject: subject,
+              manifestId,
+              status: 'expired',
+              payload: {
+                approval_id: existing.id,
+                tool: inner.name,
+                transport: inner.executor.transport,
+              },
+            });
+            recordCounter('orchestrator_approval_grants_expired', {
+              manifest_id: manifestId,
               transport: inner.executor.transport,
-            },
-          });
-          recordCounter('orchestrator_approval_decisions', {
-            outcome: 'approved',
-            manifest_id: manifestId,
-            transport: inner.executor.transport,
-          });
-          const effective = existing.edited_args ?? args;
-          return inner.executor.execute(effective, ctx);
-        }
-        if (existing.status === 'denied') {
+            });
+            // fall through to create-fresh-request below
+          } else if (oneShot) {
+            // Claim the grant (approved → consumed) BEFORE running the tool, so
+            // two concurrent retries can never both execute — the DO serializes
+            // and only the winner (changed === true) proceeds. The loser
+            // re-requests. This spends the grant on the attempt by design.
+            const claimed = await supersedeViaDO(env, tenantId, existing.id, 'consumed');
+            if (claimed) {
+              recordEvent({
+                tenantId,
+                eventType: 'approval_consumed',
+                principalSubject: subject,
+                manifestId,
+                status: 'consumed',
+                payload: {
+                  approval_id: existing.id,
+                  tool: inner.name,
+                  transport: inner.executor.transport,
+                },
+              });
+              recordCounter('orchestrator_approval_grants_consumed', {
+                manifest_id: manifestId,
+                transport: inner.executor.transport,
+              });
+              emitApproved(existing.id);
+              const effective = existing.edited_args ?? args;
+              return inner.executor.execute(effective, ctx);
+            }
+            // lost the claim — fall through to re-request below
+          } else {
+            // Reusable (non-expiring, multi-use) grant — the pre-existing path.
+            emitApproved(existing.id);
+            const effective = existing.edited_args ?? args;
+            return inner.executor.execute(effective, ctx);
+          }
+        } else if (existing.status === 'denied') {
           recordEvent({
             tenantId,
             eventType: 'approval_decision',
@@ -117,6 +196,7 @@ function wrapOne(inner: Tool, manifestId: string): Tool {
         callSignature,
         args,
         principalSubject: subject,
+        ttlSeconds,
       });
       recordEvent({
         tenantId,
@@ -142,11 +222,31 @@ function wrapOne(inner: Tool, manifestId: string): Tool {
   };
 }
 
+/**
+ * The gate config for a tool comes from the FIRST rule whose `tools` pattern
+ * matches (manifest declaration order). When several rules could match one
+ * tool, first-match wins — deterministic and predictable for an author reading
+ * the manifest top-to-bottom. Returns null when no rule matches (tool not
+ * gated).
+ */
+function matchRuleConfig(toolName: string, rules: ApprovalRule[]): GateConfig | null {
+  const rule = rules.find((r) => matchesAnyToolPattern(toolName, r.tools));
+  if (!rule) return null;
+  return {
+    ttlSeconds: rule.ttl_seconds ?? null,
+    oneShot: rule.one_shot ?? false,
+    bindPrincipal: rule.bind_principal ?? false,
+  };
+}
+
 export function applyApprovals(tools: Tool[], rules: ApprovalRule[], manifestId: string): Tool[] {
   if (rules.length === 0) return [...tools];
-  const patterns = rules.flatMap((r) => r.tools);
   // A tool is gated when any rule's `tools` pattern matches — exact name or a
   // trailing-`*` prefix (`stripe__*` gates a whole MCP server regardless of the
-  // server-chosen tool-name suffix).
-  return tools.map((t) => (matchesAnyToolPattern(t.name, patterns) ? wrapOne(t, manifestId) : t));
+  // server-chosen tool-name suffix). The first matching rule supplies the
+  // TTL / one-shot / principal-binding config.
+  return tools.map((t) => {
+    const config = matchRuleConfig(t.name, rules);
+    return config ? wrapOne(t, manifestId, config) : t;
+  });
 }

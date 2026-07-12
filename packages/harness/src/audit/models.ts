@@ -28,6 +28,8 @@ export const AuditEventType = z
     'job_run',
     'approval_request',
     'approval_decision',
+    'approval_consumed',
+    'approval_expired',
     'checkpoint_failure',
     'queue_dispatch',
     'queue_complete',

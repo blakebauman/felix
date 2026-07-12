@@ -8,7 +8,7 @@ The data stores Felix uses, what lives in each, and the tenant-scoping conventio
 
 ## D1
 
-Schema lives in `apps/api/migrations/` — `0001_init.sql` through `0018_dynamic_pricing.sql` (the migrations ship with the deployable app, not this package). The harness core is `0001`–`0005` (audit/plans/jobs/approvals/skills/oauth, manifests, eval, canary); `0006`–`0018` add the commerce layer (products/orders, ACP sessions, brands + domains, data sources, B2B accounts/quotes/pricing/billing, GEO, consent + attribution, personalization, dynamic pricing — documented in [the commerce data model + configuration docs](../../../commerce/docs/data-model.md)).
+Schema lives in `apps/api/migrations/` — `0001_init.sql` through `0019_approvals_ttl.sql` (the migrations ship with the deployable app, not this package). The harness core is `0001`–`0005` (audit/plans/jobs/approvals/skills/oauth, manifests, eval, canary) plus `0019` (approvals TTL / one-shot / principal binding); `0006`–`0018` add the commerce layer (products/orders, ACP sessions, brands + domains, data sources, B2B accounts/quotes/pricing/billing, GEO, consent + attribution, personalization, dynamic pricing — documented in [the commerce data model + configuration docs](../../../commerce/docs/data-model.md)).
 
 Every table that holds tenant-owned data leads its primary key with `tenant_id` — `(tenant_id, id)` in the common case, with natural composites where the entity demands it (`(tenant_id, name)` for jobs, `(tenant_id, name, version)` for manifests, `(tenant_id, account_id, product_id)` for contract prices, `(tenant_id, thread_id)` for customer sessions / abandoned carts) — so cross-tenant reads/writes require an explicit `WHERE tenant_id = ?` clause. The one deliberate exception is `brand_domains`, keyed by `(host)` alone: it routes anonymous public storefront traffic to a brand before any tenant is known.
 
@@ -96,17 +96,23 @@ CREATE TABLE approvals (
   decided_by       TEXT NOT NULL DEFAULT '',
   decision_note    TEXT NOT NULL DEFAULT '',
   edited_args_json TEXT,
+  ttl_seconds      INTEGER,   -- 0019: matching rule's ttl, stamped at request time
+  expires_at       INTEGER,   -- 0019: decided_at + ttl_seconds*1000; null = no expiry
   PRIMARY KEY (tenant_id, id)
 );
+-- 0019 rewrites this as a PARTIAL index over only live decisions.
 CREATE UNIQUE INDEX uq_approval_signature
-  ON approvals (tenant_id, manifest_id, tool_name, call_signature);
+  ON approvals (tenant_id, manifest_id, tool_name, call_signature)
+  WHERE status IN ('pending', 'approved', 'denied');
 CREATE INDEX idx_approvals_tenant_status
   ON approvals (tenant_id, status, created_at DESC);
 ```
 
 The unique index on `(tenant_id, manifest_id, tool_name, call_signature)` is what makes approval retry idempotent: a second invocation with the same arguments deterministically hashes to the same signature and finds the existing row.
 
-`call_signature = SHA-256(${manifestId}|${toolName}|${canonicalize(args)})`, where `canonicalize` sorts keys before serializing. `args_json` is the post-redaction copy of arguments — secrets are stripped before storage.
+`call_signature = SHA-256(${manifestId}|${toolName}|${canonicalize(args)})`, where `canonicalize` sorts keys before serializing. When the matching rule sets `bind_principal`, the requesting subject is mixed in: `SHA-256(${manifestId}|${subject}|${toolName}|${canonicalize(args)})`. `args_json` is the post-redaction copy of arguments — secrets are stripped before storage.
+
+**`0019_approvals_ttl.sql`** hardens grants against permanent, tenant-wide replay ([spec.approvals](../guide/manifest-reference.md#specapprovals)): it adds `ttl_seconds` (the matching rule's TTL, stamped on the pending row so the decide transition can compute expiry) and `expires_at` (`decided_at + ttl_seconds*1000`, set on approval). Two new terminal `status` values — `consumed` (a one-shot grant spent on execution, claimed `approved → consumed` through ApprovalsDO before the tool runs) and `expired` (TTL elapsed) — need no DDL (`status` is free TEXT). They are **archived** states: the signature index is rewritten as a partial index over only the live decisions (`pending` / `approved` / `denied`), so a superseded grant no longer authorizes and a fresh request can reuse the signature, while live decisions stay unique (idempotency + sticky-denied preserved).
 
 ### skill_activation
 

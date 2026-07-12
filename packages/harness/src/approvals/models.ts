@@ -18,13 +18,53 @@ export const ApprovalRuleSchema = z
           'retry with the same arguments goes through.',
         example: ['notion__create_page', 'notion__update_page'],
       }),
+    ttl_seconds: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .openapi({
+        description:
+          'Opt-in grant expiry. When set, an approved grant expires this many seconds after ' +
+          'it was DECIDED (`expires_at = decided_at + ttl_seconds`). A call that lands after ' +
+          'expiry re-requests approval with a fresh id instead of replaying the stale grant. ' +
+          'Omit (default) for a non-expiring grant — the pre-existing behavior.',
+        example: 3600,
+      }),
+    one_shot: z
+      .boolean()
+      .default(false)
+      .openapi({
+        description:
+          'When true, an approved grant is consumed on first execution and cannot be reused — ' +
+          'the next call with the same signature re-requests approval. The grant is claimed ' +
+          '(transitioned `approved → consumed`) through ApprovalsDO BEFORE the tool runs so ' +
+          'two concurrent retries can never both execute. Default false replays the grant.',
+      }),
+    bind_principal: z
+      .boolean()
+      .default(false)
+      .openapi({
+        description:
+          'When true, the grant is bound to the requesting principal subject: the subject is ' +
+          'mixed into the call signature so a different subject on the same tenant / manifest / ' +
+          'tool / args gets a distinct signature and must re-request. Default false keeps the ' +
+          'tenant-wide (subject-agnostic) signature, the pre-existing behavior.',
+      }),
   })
   .strict()
   .openapi('ApprovalRule');
 
 export type ApprovalRule = z.infer<typeof ApprovalRuleSchema>;
 
-export const ApprovalStatus = z.enum(['pending', 'approved', 'denied']).openapi('ApprovalStatus');
+// `consumed` (one-shot grant spent) and `expired` (TTL elapsed) are terminal,
+// archived states — excluded from the active partial unique index on the call
+// signature so a superseded grant no longer authorizes and a fresh request can
+// be minted with the same signature. Only `pending` / `approved` / `denied`
+// are "live" decisions.
+export const ApprovalStatus = z
+  .enum(['pending', 'approved', 'denied', 'consumed', 'expired'])
+  .openapi('ApprovalStatus');
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 
 export const ApprovalRequestSchema = z
@@ -61,6 +101,17 @@ export const ApprovalRequestSchema = z
     }),
     decision_note: z.string().default(''),
     edited_args: z.record(z.string(), z.unknown()).nullable().optional(),
+    expires_at: z
+      .number()
+      .int()
+      .nullable()
+      .optional()
+      .openapi({
+        readOnly: true,
+        description:
+          'Grant expiry (ms since epoch), set at decide time when the matching rule declares ' +
+          '`ttl_seconds`. Null means the grant never expires.',
+      }),
   })
   .strict()
   .openapi('ApprovalRequest');
