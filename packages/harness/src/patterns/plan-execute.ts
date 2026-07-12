@@ -41,6 +41,15 @@ import { currentSignal } from '../limits/state';
 import { checkTokenBudget } from '../limits/wrap';
 import type { Manifest, Model } from '../manifests/schema';
 import { recordCounter } from '../observability/metrics';
+import { noopSessionStore, persistFireAndForget } from '../session/do-session';
+import { fullReplaySessionStrategy } from '../session/strategies';
+import {
+  type AppendableEvent,
+  chatMessageToEvent,
+  type Session,
+  type SessionStore,
+  type SessionStrategy,
+} from '../session/types';
 import { buildModel, type ModelClient, recordUsage } from './model';
 import { buildReactAgent } from './react';
 import { registerPattern } from './registry';
@@ -232,9 +241,21 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
   const synthesizer = planner;
   const limits: Limits = opts.limits ?? DEFAULT_LIMITS;
 
+  // Parent-level persistence. plan_execute has a single parent thread —
+  // like react/reflect, the planner input + final synthesized answer are
+  // checkpointed against `input.threadId` so multi-turn conversations keep
+  // their history. The executor sub-loops stay stateless (they run without
+  // a threadId → NoopSession), so their transient tool chatter never
+  // pollutes the parent transcript.
+  const sessionStore: SessionStore = opts.sessionStore ?? noopSessionStore;
+  const strategy: SessionStrategy = opts.sessionStrategy ?? fullReplaySessionStrategy;
+
   // The executor is a full react agent — it shares everything from the
   // outer build except the model id and the recursion cap, both of which
-  // are scoped down to the per-subtask budget.
+  // are scoped down to the per-subtask budget. It is deliberately built
+  // WITHOUT a session store: the parent owns persistence, and the executor
+  // is always invoked without a threadId (a shared thread would let every
+  // subtask race-write the parent's ConversationDO).
   const executor: Agent = buildReactAgent({
     env: opts.env,
     modelSpec: executorSpec,
@@ -243,12 +264,20 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
     manifestId: opts.manifestId,
     manifestVersion: opts.manifestVersion,
     recursionLimit: planExecute.executor_recursion_limit,
-    sessionStore: opts.sessionStore ?? null,
-    sessionStrategy: opts.sessionStrategy ?? null,
+    sessionStore: null,
+    sessionStrategy: null,
     limits: opts.limits,
     toolsRetrieval: opts.toolsRetrieval ?? null,
     artifacts: opts.artifacts ?? null,
   });
+
+  function persistParent(session: Session, messages: readonly ChatMessage[]): void {
+    if (messages.length === 0) return;
+    const events: AppendableEvent[] = messages
+      .filter((m) => m.role !== 'system')
+      .map(chatMessageToEvent);
+    persistFireAndForget(session, events, { manifestId: opts.manifestId });
+  }
 
   function toolCatalogDescription(): string {
     if (opts.tools.length === 0) return '(no tools)';
@@ -259,9 +288,13 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
     userGoal: string,
     fewShotsPreamble: string,
     priorAttempt: { plan: PlannerSubtask[]; critique: string } | null,
+    conversationContext = '',
   ): Promise<PlannerReply | null> {
     const sections = [
       fewShotsPreamble || null,
+      conversationContext
+        ? `Conversation so far (for context — the user goal below is the current ask):\n${conversationContext}`
+        : null,
       `Available tools (advisory):\n${toolCatalogDescription()}`,
       `Constraint: produce at most ${planExecute.max_subtasks} subtasks.`,
       priorAttempt
@@ -419,7 +452,30 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
     async invoke(input: InvokeInput): Promise<InvokeResult> {
       const ctx = getContext();
       const tenantId = ctx?.auth.principal.tenantId ?? 'default';
-      const userGoal = input.messages.find((m) => m.role === 'user')?.content ?? '';
+      // Open the parent session and hydrate prior turns for this thread so a
+      // continuation carries context into the planner. `render` reads before
+      // we persist the new caller turn, matching react's ordering.
+      const session = sessionStore.open(input.threadId ?? '');
+      const rendered = await strategy.render(session, input.messages, {
+        systemPrompt: opts.systemPrompt,
+        model: planner,
+      });
+      // Persist the new caller-supplied turns up front (system dropped) so a
+      // mid-run eviction still leaves the user's turn on disk.
+      persistParent(session, input.messages);
+
+      const priorTurns = rendered.filter((m) => m.role !== 'system');
+      const incomingCount = input.messages.filter((m) => m.role !== 'system').length;
+      // Everything before the current caller turn(s) is prior conversation.
+      const historyTurns = priorTurns.slice(0, Math.max(0, priorTurns.length - incomingCount));
+      const conversationContext = historyTurns
+        .map((m) => `${m.role}: ${(m.content ?? '').slice(0, 800)}`)
+        .join('\n');
+      // The latest user turn is the concrete goal; earlier turns are context.
+      const userGoal =
+        [...priorTurns].reverse().find((m) => m.role === 'user')?.content ??
+        input.messages.find((m) => m.role === 'user')?.content ??
+        '';
       const planId = `plan_${crypto.randomUUID().slice(0, 8)}`;
       const fewShotsPreamble =
         opts.manifest.spec.procedural_memory.enabled && planExecute.planner_few_shots > 0
@@ -434,7 +490,7 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
           : '';
 
       const allOutcomes: SubtaskOutcome[] = [];
-      let plan = await callPlanner(userGoal, fewShotsPreamble, null);
+      let plan = await callPlanner(userGoal, fewShotsPreamble, null, conversationContext);
       let replansUsed = 0;
       let plannerFailed = false;
       if (!plan) {
@@ -485,10 +541,12 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
         const critique =
           `Subtask ${failedSubtask.subtask.id} failed: ${failedSubtask.error ?? 'no assistant turn'}\n` +
           `Remaining work after this point should be re-planned given the partial results above.`;
-        const revised = await callPlanner(userGoal, fewShotsPreamble, {
-          plan: plan.plan,
-          critique,
-        });
+        const revised = await callPlanner(
+          userGoal,
+          fewShotsPreamble,
+          { plan: plan.plan, critique },
+          conversationContext,
+        );
         if (!revised) {
           recordStep({
             planId,
@@ -526,7 +584,10 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
         opts.manifest.spec.guardrails,
         opts.manifestId,
       );
-      const messages: ChatMessage[] = [...input.messages, final];
+      // Persist the synthesized answer to the parent thread (guard-then-persist,
+      // matching react) so the next invocation on this threadId sees it.
+      persistParent(session, [final]);
+      const messages: ChatMessage[] = [...priorTurns, final];
       recordStep({
         planId,
         stepId: 'synthesis',
