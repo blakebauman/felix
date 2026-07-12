@@ -1,6 +1,6 @@
 ---
 name: deploy-runbook
-description: Deploy Felix to staging or production following the apps/api/scripts/deploy.md runbook — migrations before deploy, secrets, vectorize indexes, smoke tests.
+description: Deploy Felix to staging or production following the apps/api/scripts/deploy.md runbook — Postgres migrations before deploy, secrets, Hyperdrive config, smoke tests.
 disable-model-invocation: true
 argument-hint: "[staging|production]"
 ---
@@ -15,9 +15,9 @@ Target env: `$ARGUMENTS` (default: **staging**). Read `apps/api/scripts/deploy.m
 2. **Migrations to the TARGET env BEFORE deploying code**:
    - staging: `pnpm migrate:staging`
    - production: `pnpm migrate:production`
-   An unapplied prod migration makes the manifest resolver 404 every manifest — the whole API looks down. Check pending with `wrangler d1 migrations list orchestrator-prod --remote --env production` (or `-staging`/`staging`).
+   An unapplied prod migration makes the manifest resolver 404 every manifest — the whole API looks down. Check pending with `DATABASE_URL=<env's Neon DIRECT url> pnpm migrate:<env> -- --dry-run` (node-pg-migrate; also visible in the `pgmigrations` table).
 3. **Secrets present** on the target env (only when new/rotated — `wrangler secret put <NAME> --env <env>`): `OAUTH_CACHE_KEY` (encrypt throws without it), `POLICY_BUNDLE_PUBKEY` (federation refresh no-ops / rejects unsigned bundles), `JWKS_PUBLIC` (self-issued auth; must match `apps/api/scripts/mint-jwt.ts` keypair — see the staging-auth skill), plus provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CF_AIG_TOKEN`) and Stripe/ACP secrets if commerce is exercised.
-4. **Vectorize** (only if memory/embedding schema changed or first deploy): `pnpm setup:vectorize:staging|production`, then re-import/reindex — metadata indexes only apply to vectors inserted afterward.
+4. **Hyperdrive** (first deploy or credential rotation only): config must exist per env (`wrangler hyperdrive create felix-hyperdrive-<env> --connection-string='<Neon DIRECT url>' --caching-disabled`) with its id in `wrangler.jsonc`; rotate credentials with `wrangler hyperdrive update`.
 5. **Deploy**: `pnpm deploy:staging` or `pnpm deploy` (production). Both run the bundle builds first.
 6. **Smoke test**: run the smoke-test skill against the target (`/smoke-test staging` or `/smoke-test production`) — at minimum `/health`, `/manifests` (with token), `/openapi.json` on `staging-make.felix.run` / `make.felix.run`.
 

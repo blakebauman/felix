@@ -321,7 +321,7 @@ approvals:
    callSignature = SHA-256(`${manifestId}|${toolName}|${canonicalize(args)}`)
    ```
    `canonicalize` sorts keys before stringifying so semantically-equivalent args hash the same.
-3. `findBySignature(env, tenantId, manifestId, toolName, callSignature)` — D1 lookup using the unique index `uq_approval_signature`.
+3. `findBySignature(env, tenantId, manifestId, toolName, callSignature)` — Postgres lookup using the unique index `uq_approval_signature`.
 4. On miss: `INSERT` an `approvals` row with `status='pending'`, `args_json = redactSecrets(args)`. Emit `approval_request` audit (`status: pending`). Return deny string to the model:
    ```
    [approval required] tool '<name>' requires human approval. approval_id=<uuid>. Retry later with the same arguments.
@@ -331,12 +331,12 @@ approvals:
 
 `POST /approvals/:id/decide` routes through `ApprovalsDO` (`src/api/approvals.ts`):
 
-1. Pre-check tenant ownership in D1 (return 404 if not owned; avoid locking the DO on a probe).
+1. Pre-check tenant ownership in Postgres (return 404 if not owned; avoid locking the DO on a probe).
 2. `approvalsDoStub(env, tenantId, id).fetch('https://do/decide', { ... })` — the DO uses `blockConcurrencyWhile` so concurrent decisions serialize.
-3. The DO calls back into `decideRequest()` which updates the D1 row.
+3. The DO calls back into `decideRequest()` which updates the Postgres row.
 4. Emit `approval_decision` audit (`status: approved` or `status: denied`).
 
-The DO is a critical section, not the system of record. D1 is the source of truth.
+The DO is a critical section, not the system of record. Postgres is the source of truth.
 
 ### Retry
 
@@ -394,6 +394,6 @@ A central authority ships a signed `PolicyBundle` to R2:
 | Limits | `LimitState` | wall_clock / tool_calls / peer_hops / tokens | deny string | `limit_exceeded` | `limit_breaches` |
 | Guardrails | filter providers | regex hits / placeholder | deny or redact | `guardrail_block` | `guardrail_blocks` |
 | LLM Judge | `env.AI` criteria score | score < threshold | deny string | `judge_score` | `judge_scores` |
-| Approvals | D1 status + call signature | pending/approved/denied | deny string | `approval_request`, `approval_decision` | `approval_*` |
+| Approvals | Postgres status + call signature | pending/approved/denied | deny string | `approval_request`, `approval_decision` | `approval_*` |
 
 Every wrapper's audit row and counter row carry the inner tool's `transport` (`local` / `mcp` / `a2a` / `container` / `queue` / `sandbox` / `browser`) as a payload field / label, so an operator can slice "policy denies by transport" or "approval requests for `container` tools." The transport label survives wrapping because each wrapper uses `wrapExecutor(inner.executor, ...)` (see [src/tools/executor.ts](../../src/tools/executor.ts)), which preserves the inner `transport` on the new outer executor — so `inner.executor.transport` is always available at audit/counter time.

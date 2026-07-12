@@ -149,7 +149,7 @@ Two distinct caches live at the module top:
 Per-request state (`RequestContext`, `LimitState`, threadId, manifestId) lives in `AsyncLocalStorage` and dies with the request.
 
 :::note[Cache invalidation]
-The per-isolate agent cache has no TTL. A newly deployed manifest only takes effect in a fresh isolate — Cloudflare Workers evicts isolates frequently in practice, so propagation is typically within seconds to minutes. If you need immediate rollout, use the `/manifests` API with per-tenant D1 versions, which are resolved at request time (bypassing the cache per-manifest-name lookup).
+The per-isolate agent cache has no TTL. A newly deployed manifest only takes effect in a fresh isolate — Cloudflare Workers evicts isolates frequently in practice, so propagation is typically within seconds to minutes. If you need immediate rollout, use the `/manifests` API with per-tenant Postgres versions, which are resolved at request time (bypassing the cache per-manifest-name lookup).
 :::
 
 ## Durable Object inventory
@@ -175,7 +175,7 @@ The DO is the storage layer; consumers go through the `Session` abstraction (`sr
 
 ### ApprovalsDO
 
-`src/approvals/approvals-do.ts`. One DO per `${tenantId}#${approvalId}`. The DO is a critical section, not the system of record — its only job is to serialize the `decide` writes for a given approval. The actual rows live in D1. The route handler (`/approvals/:id/decide`) pre-checks tenant ownership in D1 before routing to the DO, so a cross-tenant probe returns 404 without locking the DO.
+`src/approvals/approvals-do.ts`. One DO per `${tenantId}#${approvalId}`. The DO is a critical section, not the system of record — its only job is to serialize the `decide` writes for a given approval. The actual rows live in Postgres. The route handler (`/approvals/:id/decide`) pre-checks tenant ownership in Postgres before routing to the DO, so a cross-tenant probe returns 404 without locking the DO.
 
 ### FederationDO
 
@@ -224,7 +224,7 @@ Additional cron work lands in the same handler — three core jobs plus every in
 queue(batch, env):
   if batch.queue !== 'felix-audit': return
   try:
-    await persistBatch(env, batch.messages.map(m => m.body))   // single DB.batch() up to 50 rows
+    await persistBatch(env, batch.messages.map(m => m.body))   // single multi-row INSERT, up to 50 rows
     for m in batch.messages: m.ack()
     return
   catch:
@@ -256,7 +256,7 @@ fetch(request, env, ctx)
       enforceManifestAuth(c, manifest)        -> 401/403 or null
       resolve threadId = `${tenantId}:${suffix}`
       resolveManifest(env, tenantId, name)   -> ResolvedManifest { manifest, source, variant, cacheKey }
-                                                  walks tenant D1 -> tenant R2 -> global R2 -> bundled
+                                                  walks tenant Postgres -> tenant R2 -> global R2 -> bundled
                                                   picks stable|canary via SHA-256 hash routing
       getAgent(env, resolved)                 -> cached Promise<Agent>
         buildAgent(manifest, deps)

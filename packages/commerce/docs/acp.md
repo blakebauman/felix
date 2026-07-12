@@ -17,6 +17,6 @@ description: "Agentic Commerce Protocol merchant endpoint at /acp — catalog fe
 
 **Auth**: `/acp` is declared in the commerce plugin's `selfAuthenticatingMounts` (threaded into `authMiddleware` by `createApp`), so the global JWT middleware skips bearer parsing for it. The router compares `Authorization: Bearer …` against `env.ACP_API_KEY` in constant time (`src/security/constant-time.ts`); when the key is unset the surface returns 503 `not_configured`. Single-merchant: sessions belong to `env.ACP_MERCHANT_TENANT` (default `default`).
 
-**Pricing is server-side only** — the buyer agent supplies items, address, and a payment token, never amounts. `complete` rebuilds the session to lock pricing, then settles a **Stripe Shared Payment Token** by creating + confirming a PaymentIntent (delegated payment: buyer credentials never reach the Worker). Sessions persist in D1 `acp_checkout_sessions` (full session JSON with `status` / `order_id` promoted to columns).
+**Pricing is server-side only** — the buyer agent supplies items, address, and a payment token, never amounts. `complete` rebuilds the session to lock pricing, then settles a **Stripe Shared Payment Token** by creating + confirming a PaymentIntent (delegated payment: buyer credentials never reach the Worker). Sessions persist in Postgres `acp_checkout_sessions` (full session JSON with `status` / `order_id` promoted to columns).
 
 Payment idempotency for `complete` is shared with the conversational checkout path — see [Conversational shopping](./shopping.md).

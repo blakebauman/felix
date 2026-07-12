@@ -8,7 +8,7 @@ when_to_use: 'Requests like "canary this manifest", "rollback the manifest", "up
 
 ## Resolution (who wins)
 
-`resolveManifest(env, tenantId, name)` walks: **tenant D1 → tenant R2 (`manifests/<tenant>/<name>.json`) → global R2 (`manifests/<name>.json`) → bundled**. The chain runs for every tenant including `default`. Bundled = code-reviewed defaults shipped with the Worker (`packages/harness/manifests/*.yaml` → `pnpm build:manifests` → deploy); D1/R2 = runtime overrides, no deploy needed.
+`resolveManifest(env, tenantId, name)` walks: **tenant Postgres → tenant R2 (`manifests/<tenant>/<name>.json`) → global R2 (`manifests/<name>.json`) → bundled** (audit `source` strings keep the legacy `tenant_d1` name). The chain runs for every tenant including `default`. Bundled = code-reviewed defaults shipped with the Worker (`packages/harness/manifests/*.yaml` → `pnpm build:manifests` → deploy); Postgres/R2 = runtime overrides, no deploy needed.
 
 ## REST lifecycle (`/manifests`, scopes `manifests:read` / `manifests:write` — token via staging-auth skill)
 
@@ -38,4 +38,4 @@ Beyond the CLI gate, `POST /manifests/:name/activate` and `/canary` accept `eval
 
 ## Bundled-manifest changes (the deploy path)
 
-Edit `packages/harness/manifests/<name>.yaml` → `pnpm build:manifests` → tests → deploy. Remember tenant D1/R2 overrides still shadow the new bundled version for tenants that have them.
+Edit `packages/harness/manifests/<name>.yaml` → `pnpm build:manifests` → tests → deploy. Remember tenant Postgres/R2 overrides still shadow the new bundled version for tenants that have them.

@@ -13,7 +13,7 @@ Target env comes from the prompt (default: staging). Domains: staging → `https
 ## Sequence (strict order — stop at the first failure and report)
 
 1. **Preflight**: `pnpm build && pnpm typecheck && pnpm lint && pnpm test`. Red = stop; report the failure (delegating diagnosis stays with the caller).
-2. **Pending migrations**: `cd apps/api && wrangler d1 migrations list orchestrator-staging --remote --env staging` (or `orchestrator-prod`/`production`). If any are pending: `pnpm migrate:staging` / `pnpm migrate:production` (ask-gated). Migrations ALWAYS precede the code deploy — an unapplied prod migration 404s every manifest.
+2. **Pending migrations**: `DATABASE_URL=<env's Neon DIRECT url> pnpm migrate:staging -- --dry-run` shows pending node-pg-migrate migrations (or check the `pgmigrations` table). If any are pending: `DATABASE_URL=... pnpm migrate:staging` / `pnpm migrate:production` (ask-gated; the URL is the operator-held Neon direct endpoint, never the Hyperdrive string). Migrations ALWAYS precede the code deploy — an unapplied prod migration 404s every manifest.
 3. **Secrets sanity** (only if the diff introduced/rotated one): confirm with the human which secrets need `wrangler secret put <NAME> --env <env>`; required set: `OAUTH_CACHE_KEY`, `POLICY_BUNDLE_PUBKEY`, `JWKS_PUBLIC`, provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CF_AIG_TOKEN`), Stripe/ACP if commerce is exercised.
 4. **Vectorize** (only if embedding/memory schema changed or first deploy): `pnpm setup:vectorize:<env>` (ask-gated), then note that re-import/reindex is required.
 5. **Deploy**: `pnpm deploy:staging` or `pnpm deploy` (ask-gated).

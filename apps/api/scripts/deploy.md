@@ -2,7 +2,7 @@
 
 First-time deploy of the Felix orchestrator. Each section's commands are
 **ordered** — running them out of order will break the worker on its first
-request (missing migration → SQL errors, missing `OAUTH_CACHE_KEY` →
+request (missing migration → 404 unknown_manifest on everything, missing `OAUTH_CACHE_KEY` →
 encrypt throws, missing `POLICY_BUNDLE_PUBKEY` → federation refresh is a
 no-op).
 
@@ -38,9 +38,17 @@ Each `create` prints an id; paste it into the corresponding `REPLACE_AFTER_*`
 placeholder in `wrangler.jsonc` under `env.staging`.
 
 ```bash
-# D1
-wrangler d1 create orchestrator-staging
-# → copy database_id into env.staging.d1_databases[0].database_id
+# Neon (console or CLI): one project; the DEFAULT branch is production.
+# Create a child branch `staging` and copy its DIRECT connection string
+# (host WITHOUT the `-pooler` suffix — Hyperdrive replaces Neon's pooler).
+# Keep the direct URLs in your password manager: migrations use them, the
+# Worker never sees them (it only reads env.HYPERDRIVE.connectionString).
+
+# Hyperdrive — MUST be --caching-disabled: Felix depends on read-after-write
+# (approvals CAS, manifest activate→resolve, checkout).
+wrangler hyperdrive create felix-hyperdrive-staging \
+  --connection-string='<staging DIRECT url>' --caching-disabled
+# → copy id into env.staging.hyperdrive[0].id
 
 # KV
 wrangler kv namespace create CACHE --env staging
@@ -48,9 +56,6 @@ wrangler kv namespace create CACHE --env staging
 
 # R2
 wrangler r2 bucket create felix-orchestrator-bundles-staging
-
-# Vectorize (768 dims = bge-base-en-v1.5; matches packages/harness/src/memory/store.ts)
-wrangler vectorize create felix-memory-staging --dimensions 768 --metric cosine
 
 # Queue
 wrangler queues create felix-audit-staging
@@ -83,30 +88,31 @@ openssl pkey -in /tmp/felix-bundle.pem -pubout -outform DER \
 
 ---
 
-## 3. Apply D1 migrations (remote)
+## 3. Apply Postgres migrations (remote)
 
-**Do this before the first deploy** — the `jobs` table change in `0002`
-is load-bearing and the worker's `jobs/store.ts` assumes it.
+**Do this before the first deploy.** node-pg-migrate runs over the branch's
+DIRECT connection string — never through Hyperdrive (transaction pooling +
+caching are wrong for DDL), never via wrangler.
 
 ```bash
-pnpm migrate:staging     # wrangler d1 migrations apply orchestrator-staging --env staging --remote
+DATABASE_URL='<staging DIRECT url>' pnpm migrate:staging
 ```
 
-Verify:
+Verify (psql against the same direct URL):
 
 ```bash
-wrangler d1 execute orchestrator-staging --env staging --remote \
-  --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+psql '<staging DIRECT url>' -c "\\dt"
+psql '<staging DIRECT url>' -c "SELECT extname FROM pg_extension"   # expect vector + pg_trgm
 ```
 
 You should see the harness core (`audit_events`, `approvals`, `jobs`,
 `oauth_token_cache`, `plans`, `skill_activation`, `manifests`,
-`manifest_active`, `eval_*`) plus the commerce tables from migrations
-0006–0018 (`products`, `orders`, `acp_checkout_sessions`, `brands`,
-`accounts`, `quotes`, `invoices`, `geo_queries`, `consents`,
-`customers`, `pricing_rules`, …). Missing commerce tables mean an
-unapplied migration — the resolver will 404 every manifest until the
-migration set is complete.
+`manifest_active`, `eval_*`), `memory_vectors`, and the commerce tables
+(`products`, `orders`, `acp_checkout_sessions`, `brands`, `accounts`,
+`quotes`, `invoices`, `geo_queries`, `consents`, `customers`,
+`pricing_rules`, …) plus node-pg-migrate's `pgmigrations` bookkeeping
+table. A missing table means an unapplied migration — the resolver will
+404 every manifest until the schema is complete.
 
 ---
 
@@ -118,12 +124,14 @@ pnpm deploy:staging      # runs build:manifests, then wrangler deploy --env stag
 
 Cert for `staging-make.felix.run` provisions in the background.
 
-Smoke test:
+Smoke test (see the smoke-test skill for the full suite):
 
 ```bash
 curl https://staging-make.felix.run/health
 curl https://staging-make.felix.run/v1/models
 curl https://staging-make.felix.run/.well-known/agent-card.json
+# Postgres-backed read-after-write proof (also proves caching is disabled):
+# create a manifest version, activate it, resolve it — see manifest-ops skill.
 ```
 
 ---
@@ -156,9 +164,10 @@ wrangler tail --env staging
 
 ## 6. Production (after staging soak)
 
-Repeat steps 1–5 with `--env production` (`pnpm migrate:production`,
-`pnpm deploy`), replacing names with the `-prod` variants and the custom
-domain with `make.felix.run`. If the commerce surfaces are in use, also
+Repeat steps 1–5 with `--env production` (`DATABASE_URL='<prod DIRECT url>'
+pnpm migrate:production`, `pnpm deploy`), replacing names with the `-prod`
+variants (`felix-hyperdrive-prod` against the Neon DEFAULT branch) and the
+custom domain with `make.felix.run`. If the commerce surfaces are in use, also
 set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `ACP_API_KEY`
 (see [the deploy guide](../../../packages/harness/docs/guide/deploy.md#secrets)).
 

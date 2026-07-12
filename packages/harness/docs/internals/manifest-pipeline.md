@@ -30,7 +30,7 @@ const manifest = typeof manifestOrName === 'string' ? loadManifest(manifestOrNam
 validateManifest(manifest);
 ```
 
-`loadManifest` reads from `BUNDLED_MANIFESTS` (sync) with an in-memory cache — `buildAgent` always uses the bundled fallback when handed a bare name. Request-path code resolves the manifest **before** calling `buildAgent`, via `resolveManifest(env, tenantId, name)` (`src/manifests/resolver.ts`), which walks tenant D1 → tenant R2 → global R2 → bundled. The route then passes the resolved `Manifest` object into `buildAgent`, so the builder itself stays tenant-unaware. `validateManifest` re-applies the Zod schema and runs cross-field checks: `apiVersion` constant, `kind` constant, single-agent vs multi-agent constraints, `aggregator_prompt` only for parallel.
+`loadManifest` reads from `BUNDLED_MANIFESTS` (sync) with an in-memory cache — `buildAgent` always uses the bundled fallback when handed a bare name. Request-path code resolves the manifest **before** calling `buildAgent`, via `resolveManifest(env, tenantId, name)` (`src/manifests/resolver.ts`), which walks tenant Postgres → tenant R2 → global R2 → bundled. The route then passes the resolved `Manifest` object into `buildAgent`, so the builder itself stays tenant-unaware. `validateManifest` re-applies the Zod schema and runs cross-field checks: `apiVersion` constant, `kind` constant, single-agent vs multi-agent constraints, `aggregator_prompt` only for parallel.
 
 A `manifestSpan(name, version)` opens here for observability and closes in the `finally` block at the end.
 
@@ -167,7 +167,7 @@ let resolvedTools = manifest.spec.sub_agents.length ? [] : deps.tools.resolve(to
 Auto-injection passes (each dedupes by name) on the single-agent branch:
 
 1. **Memory tools** — if `memory.store ∈ {vectorize, agentcore}`, inject `memory_remember` and `memory_recall`.
-2. **Procedural memory** — if `spec.procedural_memory.enabled`, inject `recall_procedure` (reads successful past plans from Vectorize index keyed by manifest).
+2. **Procedural memory** — if `spec.procedural_memory.enabled`, inject `recall_procedure` (reads successful past plans from the `memory_vectors` pgvector table, filtered by manifest).
 3. **Artifact fetch** — if `spec.artifacts.enabled`, inject `fetch_artifact` (reads back an R2-spilled tool result by ref). Auto-injected because `react` spills above `threshold_chars` to keep the working set small.
 4. **MCP tools, peer tools, container tools, queue tools, sandbox tools, browser tools** — appended in that order.
 5. **Plan tools** — if `spec.pattern === 'deep'`, inject `PLAN_TOOLS` (`plan_create`/`plan_update_step`/`plan_get`), then **extraTools**.

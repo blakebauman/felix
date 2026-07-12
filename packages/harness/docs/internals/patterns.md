@@ -53,7 +53,7 @@ Same control flow with one wrinkle: `model.streamChat(...)` is an `AsyncGenerato
 - `PLAN_TOOLS = [plan_create, plan_update_step, plan_get]` is auto-injected by the **core builder** (`buildAgent`) into `resolvedTools` when `spec.pattern === 'deep'`, BEFORE the governance pipeline — so the plan tools are gated by policies/limits/guardrails/judges/approvals like any other tool. The adapter itself no longer injects them; it just forwards the already-wrapped `ctx.tools` (along with `tools_retrieval` / `artifacts` opts) into the underlying react agent.
 - A planning suffix is appended to the system prompt: "You are a deep agent. Before tool use, draft a short plan via plan_create. Update plan steps as you go using plan_update_step. Finalize with a synthesis when steps are complete."
 
-Plans live in the D1 `plans` table with a 30-day TTL. See [persistence.md](persistence.md).
+Plans live in the Postgres `plans` table with a 30-day TTL. See [persistence.md](persistence.md).
 
 ## router
 

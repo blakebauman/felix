@@ -15,7 +15,7 @@ Management surfaces (`/audit`, `/plans`, `/jobs`, `/approvals`, `/manifests`, `/
 
 The **Felix Commerce layer** adds buyer- and merchant-side surfaces on the same harness: conversational shopping tools, an Agentic Commerce Protocol endpoint (`/acp`), D2C brand storefronts (`/shop`, `/widget`, `/brands`), schema.org / answer-engine discoverability (`/structured`, `/geo`), B2B quote-to-cash (`/b2b`), an entity data-source seam (`/entities`), and consent + attribution. See [the commerce docs](../../commerce/docs/index.md).
 
-Every D1 row is keyed by `(tenant_id, id)` and every thread id is server-prefixed by the authenticated tenant, so transcripts can never cross tenants.
+Every Postgres row is keyed by `(tenant_id, id)` and every thread id is server-prefixed by the authenticated tenant, so transcripts can never cross tenants.
 
 ## Three seams
 
@@ -97,7 +97,7 @@ Prose docs are published at [docs.felix.run](https://docs.felix.run). The Worker
   <LinkCard
     title="Persistence"
     href="/internals/persistence/"
-    description="D1 / KV / R2 / Vectorize / Queues / Durable Objects."
+    description="Postgres (Hyperdrive) / pgvector / KV / R2 / Queues / Durable Objects."
   />
   <LinkCard
     title="Commerce"
@@ -123,7 +123,7 @@ docs/
     manifest-pipeline.md     the buildAgent compile step
     patterns.md              react / deep / router / parallel / groupchat / reflect / plan_execute
     model-client.md          AI Gateway: Anthropic + OpenAI + Workers AI
-    persistence.md           D1 schema + KV + R2 + Vectorize + Queues + DOs
+    persistence.md           Postgres schema + pgvector + KV + R2 + Queues + DOs
     governance.md            policy / limits / guardrails / approvals + federation
     auth.md                  JWT verifiers + outbound OAuth + RequestContext
     observability.md         counter labels, audit payload shapes, alert thresholds

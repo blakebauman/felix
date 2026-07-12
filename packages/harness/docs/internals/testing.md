@@ -12,10 +12,12 @@ Vitest with two projects covering separate concerns.
 
 | Project | Pool | Includes | Bindings |
 |---|---|---|---|
-| `unit` | node | `packages/*/tests/**/*.test.ts` + `apps/*/tests/**/*.test.ts` (excluding integration) | none — pure logic, schema, governance wrappers, fake DOs, the plugin-boundary guard |
-| `workers` | `@cloudflare/vitest-pool-workers` (miniflare/workerd) | `apps/api/tests/integration/**/*.test.ts` | declared explicitly in the config (not read from `wrangler.jsonc`) |
+| `unit` | node | `packages/*/tests/**/*.test.ts` + `apps/*/tests/**/*.test.ts` (excluding integration) | none — pure logic, schema, governance wrappers, fake DOs (and a fake postgres.js client, see below), the plugin-boundary guard |
+| `workers` | `@cloudflare/vitest-pool-workers` (miniflare/workerd) | `apps/api/tests/integration/**/*.test.ts` | declared explicitly in the config (not read from `wrangler.jsonc`); real Postgres via `miniflare.hyperdrives` |
 
-The workers project does **not** point at `wrangler.jsonc` because the bundled workerd doesn't support the wrapped `AI` binding the production config declares. Bindings are explicitly enumerated in `vitest.config.ts` under `miniflare.{bindings, d1Databases, kvNamespaces, r2Buckets, queueProducers, queueConsumers, durableObjects}` and the AI binding is stubbed via a service worker in test code.
+The workers project does **not** point at `wrangler.jsonc` because the bundled workerd doesn't support the wrapped `AI` binding the production config declares. Bindings are explicitly enumerated in `vitest.config.ts` under `miniflare.{bindings, hyperdrives, kvNamespaces, r2Buckets, queueProducers, queueConsumers, durableObjects}` and the AI binding is stubbed via a service worker in test code.
+
+`miniflare.hyperdrives` points `HYPERDRIVE` at a real Postgres instance — `TEST_DATABASE_URL` if set, else `postgresql://postgres:postgres@localhost:5432/felix_test` (Docker locally, a service container in CI; `pnpm db:up` starts the same `pgvector/pgvector:pg17` image used for dev). A Node-side `globalSetup` (`apps/api/tests/integration/global-setup.ts`) waits for Postgres, resets the `felix_test` schema, and applies `apps/api/migrations/` via node-pg-migrate before any test file runs. Because Postgres is shared across test files — unlike miniflare's per-test D1 isolation in the old setup — the workers project sets `fileParallelism: false` and runs files serially; tests isolate by using distinct tenant ids, and serial order keeps the tenant-agnostic scans (anomaly detector, retention sweep, audit metrics) deterministic.
 
 ## Running
 
@@ -29,10 +31,12 @@ pnpm test -- --project workers                     # workers only
 
 ## Adding integration bindings
 
-When a new test needs a Cloudflare binding (e.g. a new DO class, a new Queue, a new Vectorize index), it must be added in **two places**:
+When a new test needs a Cloudflare binding (e.g. a new DO class, a new Queue), it must be added in **two places**:
 
 1. `apps/api/wrangler.jsonc` for production.
-2. `vitest.config.ts` under the appropriate `miniflare` sub-block (`bindings`, `d1Databases`, `kvNamespaces`, `r2Buckets`, `queueProducers`, `queueConsumers`, `durableObjects`) for the workers test project.
+2. `vitest.config.ts` under the appropriate `miniflare` sub-block (`bindings`, `hyperdrives`, `kvNamespaces`, `r2Buckets`, `queueProducers`, `queueConsumers`, `durableObjects`) for the workers test project.
+
+New tables/columns go through `apps/api/migrations/` instead — the workers project's `globalSetup` reapplies every migration against `felix_test` before each run, so no separate test-schema step is needed.
 
 The integration tests boot the worker via `SELF.fetch`; the miniflare entry needs `main: './apps/api/src/index.ts'` (the deployable shell, which wires the harness + plugins exactly like production) to know where to compile from.
 
@@ -80,12 +84,13 @@ Biome config: single quotes, semicolons, trailing commas, 100-column width, 2-sp
 - Pattern and model-provider registries (`tests/unit/patterns/registry.test.ts`, `tests/unit/patterns/model_registry.test.ts`)
 - Session rendering: `tests/unit/session/strategies.test.ts` covers `full_replay` / `windowed:N`; `tests/unit/session/summarizing.test.ts` covers `summarizing:N` including cache reuse and degraded-windowed fallback; `tests/unit/session_semantic.test.ts` covers `semantic:N` BGE retrieval and pinned-anchor inclusion
 - Pure model code: `parseModelRoutes`, `zodToJsonSchema`, the cron matcher
-- Anything that doesn't need a real DO or D1
+- Store logic against the fake postgres.js client (`packages/harness/tests/helpers/fake-sql.ts`) — assert on query shape (`{ text, params }`) and drive fake rows back, no real database needed
+- Anything that doesn't need a real DO or a real database
 
 ### Workers project — `apps/api/tests/integration/**`
 
 - HTTP routes via `SELF.fetch`
-- D1 reads/writes (the miniflare D1 honors `migrations` and runs them on first use if configured)
+- Real Postgres reads/writes over the `HYPERDRIVE` binding (`miniflare.hyperdrives`; schema applied by the `globalSetup`)
 - Durable Object behavior (real DO state, real `blockConcurrencyWhile`)
 - Queue producer + consumer round-trips
 - End-to-end agent builds and tool dispatch
@@ -104,6 +109,7 @@ There is no shared fixtures module today. Common ad-hoc patterns in the existing
 
 - `makeFakeTool(name, returns)` — `defineTool({ name, args: z.object({}), async handler() { return returns; } })`. For non-local transports, build with `defineToolWithExecutor({ ..., executor: { transport: 'fake', async execute() { return returns; } } })`.
 - `withCtx(authCtx, fn)` — wraps `fn` in `runWithContext({ env, auth: authCtx, limitState: newLimitState() }, fn)` so wrappers reading `getContext()` find what the test expects.
+- `makeFakeSql(handler)` + `withFakeDb(env, sql, fn)` (`packages/harness/tests/helpers/fake-sql.ts`) — `makeFakeSql` builds a fake postgres.js client from a `({ text, params }) => rows | count | throw` handler; `withFakeDb` installs it on a RequestContext so `getDb(env)` inside the code under test returns it, and store-layer unit tests never open a real connection.
 - Building principals: `{ subject: 'u1', tenantId: 't1', scopes: ['a'], issuer: 'https://test' }` and passing them through a constructed `AuthContext`.
 - `recordingSessionStore()` / `mutableSession()` — in-memory `SessionStore` / `Session` implementations for pattern tests (see `tests/unit/react_hydration.test.ts`, `tests/unit/groupchat_persistence.test.ts`, `tests/unit/session/summarizing.test.ts`).
 - Pattern registry tests use module-level side-effect imports (`import '../../../src/patterns/react'`) so the built-ins self-register before assertions run. The registry is a process singleton; tests register additional patterns with names that can't collide with built-ins (e.g. `'echo-test-pattern'`).

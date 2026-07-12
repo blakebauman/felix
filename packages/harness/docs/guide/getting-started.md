@@ -11,7 +11,9 @@ This walks through standing up Felix locally and making your first request. Feli
 - Node.js 20 or newer
 - `pnpm` 9 or newer
 - Wrangler 4 (installed transitively via `pnpm install`)
-- A Cloudflare account with D1, KV, R2, Vectorize, and Queues enabled
+- Docker (for the local Postgres + pgvector container used by `pnpm db:up`)
+- A Cloudflare account with Hyperdrive, KV, R2, and Queues enabled
+- A [Neon](https://neon.tech) Postgres project (staging/production; local dev uses the Dockerized Postgres instead) with the `vector` and `pg_trgm` extensions available
 - For external LLM providers: an Anthropic and/or OpenAI API key (Workers AI requires no extra setup)
 
 ## Bootstrap
@@ -28,28 +30,41 @@ This walks through standing up Felix locally and making your first request. Feli
 
    `apps/api/wrangler.jsonc` is your local copy of the tracked template — it's gitignored so account-specific ids stay out of the repo.
 
-2. **Create Cloudflare resources**
+2. **Start local Postgres**
+
+   ```bash title="From the repo root"
+   pnpm db:up
+   ```
+
+   Brings up a Dockerized `pgvector/pgvector:pg17` container (`docker compose up --wait -d db`) that `wrangler dev` routes the `HYPERDRIVE` binding to via `localConnectionString` — no Neon project or Hyperdrive config needed for local dev.
+
+3. **Create Cloudflare resources**
 
    Bare `wrangler` commands run from `apps/api/`:
 
    ```bash
    cd apps/api
-   pnpm wrangler d1 create orchestrator
    pnpm wrangler kv namespace create CACHE
    pnpm wrangler r2 bucket create felix-orchestrator-bundles
-   pnpm wrangler vectorize create felix-memory --dimensions=768 --metric=cosine
    pnpm wrangler queues create felix-audit
    ```
 
+   Staging/production also need a Hyperdrive config pointed at a Neon **DIRECT** connection string (no `-pooler` suffix — Hyperdrive owns pooling) with caching disabled, since Felix depends on read-after-write:
+
+   ```bash
+   pnpm wrangler hyperdrive create felix-hyperdrive-staging \
+     --connection-string='postgresql://<user>:<pass>@<neon-direct-host>/<db>' --caching-disabled
+   ```
+
    :::note
-   Vectorize must be created with **768 dimensions** to match `@cf/baai/bge-base-en-v1.5`, the embedding model Felix uses for semantic memory.
+   Local `pnpm dev` never touches a real Hyperdrive config — it always routes through the Docker Postgres started in the previous step.
    :::
 
-3. **Populate wrangler.jsonc with resource ids**
+4. **Populate wrangler.jsonc with resource ids**
 
-   Paste the `database_id` and KV namespace `id` from the create commands into `wrangler.jsonc` (lines that say `REPLACE_AFTER_wrangler_d1_create` / `REPLACE_AFTER_wrangler_kv_create`), along with your `AI_GATEWAY_ACCOUNT_ID`.
+   Paste the Hyperdrive config `id` and KV namespace `id` from the create commands into `wrangler.jsonc` (lines that say `REPLACE_AFTER_wrangler_hyperdrive_create` / `REPLACE_AFTER_wrangler_kv_create`), along with your `AI_GATEWAY_ACCOUNT_ID`.
 
-4. **Configure local secrets**
+5. **Configure local secrets**
 
    :::caution
    Never commit secret values to `wrangler.jsonc`. Use `.dev.vars` for local-only values; `wrangler dev` reads it but deployed environments do not.
@@ -88,6 +103,8 @@ This walks through standing up Felix locally and making your first request. Feli
    ```bash
    pnpm migrate:local
    ```
+
+   Applies `apps/api/migrations/0001_baseline.sql` (node-pg-migrate) to the local `felix` database started by `pnpm db:up`. Run this before `pnpm dev` any time the schema changes.
 
 3. **Start the dev server**
 

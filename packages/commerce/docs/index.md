@@ -44,7 +44,7 @@ The whole layer is the **`@felix/commerce`** workspace package (`packages/commer
   <LinkCard
     title="Data Model + Configuration"
     href="/commerce/data-model/"
-    description="/commerce/consents, /commerce/attribution/* — D1 schema, migrations, env vars, consent log, per-order attribution."
+    description="/commerce/consents, /commerce/attribution/* — Postgres schema, migrations, env vars, consent log, per-order attribution."
   />
 </CardGrid>
 

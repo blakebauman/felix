@@ -1,8 +1,8 @@
 {
   // Template config — copy to wrangler.jsonc and fill in your own values:
   //   cp wrangler.example.jsonc wrangler.jsonc
-  // Replace every REPLACE_* placeholder (Cloudflare account id, D1 database
-  // ids, KV namespace ids — each `wrangler <resource> create` prints the id)
+  // Replace every REPLACE_* placeholder (Cloudflare account id, Hyperdrive
+  // config ids, KV namespace ids — each `wrangler <resource> create` prints the id)
   // and adjust the custom-domain routes to your zone. wrangler.jsonc is
   // gitignored so account-specific ids never land in the repo.
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -69,16 +69,6 @@
       "binding": "HYPERDRIVE",
       "id": "REPLACE_AFTER_wrangler_hyperdrive_create",
       "localConnectionString": "postgresql://postgres:postgres@localhost:5432/felix"
-    }
-  ],
-
-  // --- D1 (audit, plans, jobs, approvals, skill_activation) ---------------
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "orchestrator",
-      "database_id": "REPLACE_AFTER_wrangler_d1_create",
-      "migrations_dir": "migrations"
     }
   ],
 
@@ -216,14 +206,6 @@
           "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
         }
       ],
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "orchestrator-staging",
-          "database_id": "REPLACE_AFTER_wrangler_d1_create",
-          "migrations_dir": "migrations"
-        }
-      ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
       "r2_buckets": [{ "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-staging" }],
       "queues": {
@@ -300,14 +282,6 @@
         {
           "binding": "HYPERDRIVE",
           "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
-        }
-      ],
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "orchestrator-prod",
-          "database_id": "REPLACE_AFTER_wrangler_d1_create",
-          "migrations_dir": "migrations"
         }
       ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
