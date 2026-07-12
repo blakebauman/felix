@@ -33,7 +33,11 @@ See also [.claude/rules/git-workflow.md](../../rules/git-workflow.md).
    git switch -c <type>/<short-slug>
    ```
    Branch types (match existing history): `feat/`, `fix/`, `docs/`, `chore/`, `refactor/`.
-   One branch = one reviewable concern; don't batch unrelated changes.
+   **Feature-based PRs:** the unit of a PR is a feature/area, not a single edit. Group all the
+   related changes for one feature (or one audit area) into ONE branch/PR — do NOT open a
+   separate PR per file or per individual fix. A larger body of related work lands as a *small
+   number* of feature-scoped PRs, not dozens of tiny ones. Don't batch *unrelated* features
+   together, and never stack. Reserve a one-fix PR for a genuinely isolated one-off change.
 
 2. **Work + verify** on the branch: felix-dev-loop (`pnpm build` → `typecheck` → `test` → `lint`),
    docs-sync if API/schema surfaces changed. Commit messages follow the repo style
