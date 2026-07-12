@@ -16,6 +16,9 @@
     "migrate:local": "wrangler d1 migrations apply orchestrator --local",
     "migrate:staging": "wrangler d1 migrations apply orchestrator-staging --remote --env staging",
     "migrate:production": "wrangler d1 migrations apply orchestrator-prod --remote --env production",
+    "migrate:pg:local": "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/felix node-pg-migrate -m migrations-pg up",
+    "migrate:pg:staging": "node-pg-migrate -m migrations-pg up",
+    "migrate:pg:production": "node-pg-migrate -m migrations-pg up",
     "setup:vectorize:staging": "bash scripts/setup-vectorize.sh felix-memory-staging",
     "setup:vectorize:production": "bash scripts/setup-vectorize.sh felix-memory-prod",
     "eval": "tsx scripts/eval.ts"
@@ -27,7 +30,10 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260511.1",
+    "@types/pg": "^8.20.0",
     "jose": "^6.2.3",
+    "node-pg-migrate": "^8.0.4",
+    "pg": "^8.22.0",
     "tsx": "^4.21.0",
     "wrangler": "^4.90.1"
   },

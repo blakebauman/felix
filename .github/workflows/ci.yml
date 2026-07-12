@@ -13,6 +13,24 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      # Real Postgres for the vitest `workers` project (miniflare hyperdrives).
+      # pgvector image because the baseline schema installs the vector extension.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: felix_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/felix_test
     steps:
       - uses: actions/checkout@v7
       # version comes from the root package.json `packageManager` field

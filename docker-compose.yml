@@ -1,0 +1,33 @@
+# Local Postgres for Felix development and tests.
+#
+# pgvector/pgvector (not plain `postgres`) because the baseline schema
+# installs the `vector` extension for memory_vectors. Two databases on one
+# server: `felix` backs `wrangler dev` (via the Hyperdrive binding's
+# localConnectionString) and `felix_test` backs the vitest workers project
+# (its globalSetup drops + re-migrates the schema every run, so it must
+# never share a database with dev data).
+#
+#   pnpm db:up      # start + wait healthy
+#   pnpm migrate:pg:local
+#   pnpm db:down
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: felix-pg
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: felix
+    volumes:
+      - felix-pg-data:/var/lib/postgresql/data
+      - ./docker/pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d felix']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  felix-pg-data:

@@ -75,6 +75,16 @@ export interface Env {
   JWT_VERIFIERS: string;
 
   // ---- Persistence ----
+  /**
+   * Hyperdrive → Neon Postgres. Stores connect via `getDb(env)`
+   * (db/client.ts), which reads `HYPERDRIVE.connectionString`. The config is
+   * created with `--caching-disabled` (Felix depends on read-after-write) and
+   * points at Neon's DIRECT endpoint — Hyperdrive replaces PgBouncer.
+   * Locally, wrangler routes this through `localConnectionString` (Docker
+   * Postgres); vitest through `miniflare.hyperdrives`.
+   */
+  HYPERDRIVE: Hyperdrive;
+  /** @deprecated D1 — being replaced by HYPERDRIVE; removed after the pg cutover. */
   DB: D1Database;
   CACHE: KVNamespace;
   BUNDLES: R2Bucket;
