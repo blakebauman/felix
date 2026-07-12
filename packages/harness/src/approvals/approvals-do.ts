@@ -38,8 +38,13 @@ export class ApprovalsDO {
         editedArgs: body.editedArgs ?? null,
       }),
     );
-    if (!result) return new Response('not found', { status: 404 });
-    return Response.json(result);
+    if (result.outcome === 'not_found') return new Response('not found', { status: 404 });
+    if (result.outcome === 'already_decided') {
+      // Finality guard: the request was resolved by an earlier decision.
+      // 409 so the REST layer surfaces it rather than reporting success.
+      return Response.json(result.request, { status: 409 });
+    }
+    return Response.json(result.request);
   }
 
   private async get(url: URL): Promise<Response> {

@@ -185,6 +185,101 @@ describe('ApprovalsDO tenant prefix', () => {
   });
 });
 
+describe('approval decision finality', () => {
+  it('rejects re-deciding a resolved request and leaves the original decision intact', async () => {
+    const id = `final-${crypto.randomUUID()}`;
+    await testEnv.DB.prepare(
+      `INSERT INTO approvals
+         (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
+          principal_subj, status, created_at)
+         VALUES (?, 'tenant-f', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
+    )
+      .bind(id, `sig-f-${id}`, Date.now())
+      .run();
+
+    const stub = approvalsDoStub(testEnv, 'tenant-f', id);
+    // First decision approves with edited_args.
+    const first = await stub.fetch('https://do/decide', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenantId: 'tenant-f',
+        id,
+        status: 'approved',
+        decidedBy: 'operator-first',
+        editedArgs: { text: 'approved-args' },
+      }),
+    });
+    expect(first.status).toBe(200);
+
+    // Second decision (flip to denied, different args) must be refused — a
+    // decision is a one-way transition.
+    const second = await stub.fetch('https://do/decide', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenantId: 'tenant-f',
+        id,
+        status: 'denied',
+        decidedBy: 'operator-second',
+        editedArgs: { text: 'tampered-args' },
+      }),
+    });
+    expect(second.status).toBe(409);
+
+    // The stored decision is unchanged: still approved, original decider,
+    // original edited_args.
+    const row = await testEnv.DB.prepare(
+      'SELECT status, decided_by, edited_args_json FROM approvals WHERE tenant_id = ? AND id = ?',
+    )
+      .bind('tenant-f', id)
+      .first<{ status: string; decided_by: string; edited_args_json: string | null }>();
+    expect(row?.status).toBe('approved');
+    expect(row?.decided_by).toBe('operator-first');
+    expect(row?.edited_args_json).toBe(JSON.stringify({ text: 'approved-args' }));
+  });
+});
+
+describe('manifest-name path confusion', () => {
+  it("can't reach another tenant's R2 override via a slash in the manifest name", async () => {
+    // Seed what would be tenant `victim`'s tenant-scoped R2 override. Its
+    // object key (`manifests/victim/secret.json`) is a subset of the global
+    // layer's keyspace (`manifests/<name>.json`), so before the fix a caller
+    // in tenant `default` requesting name `victim/secret` would resolve it
+    // via the global R2 layer and be able to invoke an agent built from it.
+    await testEnv.BUNDLES.put(
+      'manifests/victim/secret.json',
+      JSON.stringify({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'secret' },
+        spec: {
+          pattern: 'react',
+          model: { provider: 'workers-ai', name: '@cf/meta/llama-3.1-8b-instruct' },
+          system_prompt: { inline: 'victim private prompt' },
+        },
+      }),
+    );
+
+    // /chat body carries `manifest` as a bare string; the resolver rejects
+    // the slash-containing name before any R2 read, so it 404s instead of
+    // resolving the seeded victim object.
+    const chat = await SELF.fetch('https://orchestrator.test/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        manifest: 'victim/secret',
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+    expect(chat.status).toBe(404);
+    const chatBody = (await chat.json()) as { error: string };
+    expect(chatBody.error).toBe('unknown_manifest');
+
+    // The /manifests param surface rejects the slash at param validation.
+    const resolve = await SELF.fetch('https://orchestrator.test/manifests/victim%2Fsecret');
+    expect([400, 404]).toContain(resolve.status);
+  });
+});
+
 describe('/audit cross-tenant scoping', () => {
   it('only returns audit events for the caller tenant', async () => {
     const tenants = ['default', 'other-tenant'] as const;

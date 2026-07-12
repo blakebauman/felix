@@ -120,7 +120,7 @@ describe('/jobs', () => {
 });
 
 describe('/approvals/:id/decide via ApprovalsDO', () => {
-  it('serializes concurrent decisions — only one status wins, even on a tie', async () => {
+  it('serializes concurrent decisions — exactly one wins, the loser gets 409 (finality)', async () => {
     // Seed a pending approval directly through D1 — bypasses the wrap
     // path so we don't need a model.
     const id = crypto.randomUUID();
@@ -147,8 +147,11 @@ describe('/approvals/:id/decide via ApprovalsDO', () => {
         body: JSON.stringify({ status: 'denied' }),
       }),
     ]);
-    expect(approve.status).toBe(200);
-    expect(deny.status).toBe(200);
+    // Decisions are a one-way transition: the DO's blockConcurrencyWhile
+    // serializes the racing calls, so exactly one sees the row still
+    // `pending` (200) and the other is rejected as already decided (409).
+    const statuses = [approve.status, deny.status].sort();
+    expect(statuses).toEqual([200, 409]);
 
     const row = await testEnv.DB.prepare('SELECT status FROM approvals WHERE id = ?')
       .bind(id)

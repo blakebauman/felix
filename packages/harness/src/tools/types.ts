@@ -25,25 +25,35 @@ export type ToolInput = Record<string, unknown>;
 export type ToolOutput = string | { content: string; metadata?: Record<string, unknown> };
 
 /**
- * Metadata key used by governance wrappers to mark their deny outputs.
- * Outer wrappers (especially post-call ones like guardrails output filters)
- * MUST check `isWrapperDeny(output)` before doing any work — otherwise they
- * end up filtering / scoring / approving an inner wrapper's deny string,
- * which is at best wasted work and at worst masks the deny.
+ * Marker that governance wrappers stamp on their deny outputs. Outer wrappers
+ * (especially post-call ones like the guardrails output filter) MUST check
+ * `isWrapperDeny(output)` before doing any work — otherwise they filter /
+ * score / approve an inner wrapper's deny string, which is at best wasted work
+ * and at worst masks the deny (or, via `react.ts`, suppresses the `tool_call`
+ * audit row).
  *
- * The string content always survives to the LLM; the metadata flag is the
- * only thing wrappers should branch on.
+ * The marker is a module-private `Symbol`, NOT a string flag: a tool executor
+ * can return an arbitrary `{ content, metadata }` object, and a public string
+ * key would let a malicious/buggy tool FORGE a wrapper-deny — exempting its own
+ * output from guardrail/judge filtering and suppressing its audit row. The
+ * symbol is never exported, so only `denyOutput` (wrapper code) can stamp it.
+ * It survives object spreads (symbol-keyed own props are copied) and is only
+ * ever checked in-memory before serialization, so JSON round-tripping is not a
+ * concern. The string `content` still always reaches the LLM; the symbol is
+ * the only thing wrappers branch on.
  */
-export const WRAPPER_DENY_FLAG = '__felix_wrapper_deny__';
+const WRAPPER_DENY_MARKER = Symbol('felix.wrapper_deny');
 export type WrapperSource = 'policy' | 'limits' | 'guardrails' | 'approvals';
 
 export function denyOutput(content: string, source: WrapperSource): ToolOutput {
-  return { content, metadata: { [WRAPPER_DENY_FLAG]: true, source } };
+  return { content, metadata: { source, [WRAPPER_DENY_MARKER]: true } };
 }
 
 export function isWrapperDeny(output: ToolOutput): boolean {
   if (typeof output === 'string') return false;
-  return output.metadata?.[WRAPPER_DENY_FLAG] === true;
+  return (
+    (output.metadata as Record<PropertyKey, unknown> | undefined)?.[WRAPPER_DENY_MARKER] === true
+  );
 }
 
 export interface ToolInvocationCtx {
