@@ -185,6 +185,59 @@ describe('ApprovalsDO tenant prefix', () => {
   });
 });
 
+describe('approval decision finality', () => {
+  it('rejects re-deciding a resolved request and leaves the original decision intact', async () => {
+    const id = `final-${crypto.randomUUID()}`;
+    await testEnv.DB.prepare(
+      `INSERT INTO approvals
+         (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
+          principal_subj, status, created_at)
+         VALUES (?, 'tenant-f', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
+    )
+      .bind(id, `sig-f-${id}`, Date.now())
+      .run();
+
+    const stub = approvalsDoStub(testEnv, 'tenant-f', id);
+    // First decision approves with edited_args.
+    const first = await stub.fetch('https://do/decide', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenantId: 'tenant-f',
+        id,
+        status: 'approved',
+        decidedBy: 'operator-first',
+        editedArgs: { text: 'approved-args' },
+      }),
+    });
+    expect(first.status).toBe(200);
+
+    // Second decision (flip to denied, different args) must be refused — a
+    // decision is a one-way transition.
+    const second = await stub.fetch('https://do/decide', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenantId: 'tenant-f',
+        id,
+        status: 'denied',
+        decidedBy: 'operator-second',
+        editedArgs: { text: 'tampered-args' },
+      }),
+    });
+    expect(second.status).toBe(409);
+
+    // The stored decision is unchanged: still approved, original decider,
+    // original edited_args.
+    const row = await testEnv.DB.prepare(
+      'SELECT status, decided_by, edited_args_json FROM approvals WHERE tenant_id = ? AND id = ?',
+    )
+      .bind('tenant-f', id)
+      .first<{ status: string; decided_by: string; edited_args_json: string | null }>();
+    expect(row?.status).toBe('approved');
+    expect(row?.decided_by).toBe('operator-first');
+    expect(row?.edited_args_json).toBe(JSON.stringify({ text: 'approved-args' }));
+  });
+});
+
 describe('manifest-name path confusion', () => {
   it("can't reach another tenant's R2 override via a slash in the manifest name", async () => {
     // Seed what would be tenant `victim`'s tenant-scoped R2 override. Its

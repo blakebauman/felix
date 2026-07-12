@@ -195,6 +195,8 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 
 Response is the updated `ApprovalRequest` row. An `approval_decision` audit event is emitted with `status: approved` or `status: denied`.
 
+A decision is a **one-way transition**: deciding a request that is no longer `pending` (already approved or denied) changes nothing and returns `409 { "error": "already_decided", "detail": "<current status>" }`. This is what prevents an operator from flipping an approved request to denied — or re-approving it with different `edited_args` that a later retry would run on.
+
 ---
 
 ## Plans
