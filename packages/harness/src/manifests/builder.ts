@@ -10,9 +10,10 @@
  *  7. Build container-backed tools                    → `ContainerExecutor`
  *  8. Build queue-backed tools                        → `QueueExecutor`
  *  9. Resolve sub-agents (multi-agent) or tools (single-agent);
- *     auto-inject memory tools when `memory.store` is Vectorize-backed.
- *     Pattern-specific tool injection (e.g. `PLAN_TOOLS` for `deep`)
- *     lives inside the pattern's registered adapter, not here.
+ *     auto-inject memory tools when `memory.store` is Vectorize-backed,
+ *     and `PLAN_TOOLS` for the `deep` pattern. This injection happens
+ *     BEFORE the governance pipeline so pattern-injected tools are gated
+ *     by policies/limits/guardrails/judges/approvals like any other.
  * 10. Governance pipeline: `mergeWithManifest` → `applyPolicies`
  *     → `applyLimits` → `applyGuardrails` → `applyApprovals`.
  *     Each wrapper replaces `tool.executor` via `wrapExecutor(...)` so
@@ -55,7 +56,9 @@ import '../patterns/reflect';
 import '../patterns/router';
 import { getPattern, listPatterns } from '../patterns/registry';
 import type { Agent, InvokeInput, InvokeResult, StreamEvent } from '../patterns/types';
+import { PLAN_TOOLS } from '../plans/tools';
 import { mergeWithManifest } from '../policy/bundle';
+import { ensureFederationSynced } from '../policy/federation-do';
 import { applyPolicies } from '../policy/wrap';
 import { getSessionStore } from '../session/do-session';
 import { getSessionStrategy } from '../session/strategies';
@@ -253,6 +256,15 @@ export async function buildAgent(
       });
       if (!seen.has(tool.name)) resolvedTools.push(tool);
     }
+    // Auto-inject `PLAN_TOOLS` (plan_create / plan_update_step / plan_get)
+    // for the `deep` pattern BEFORE the governance pipeline so they are
+    // gated by policies/approvals, counted by `max_tool_calls`, and seen by
+    // guardrails/judges like any other tool. The deep adapter used to inject
+    // these post-dispatch, which let them escape every governance wrapper.
+    if (manifest.spec.pattern === 'deep' && !manifest.spec.sub_agents.length) {
+      const seen = new Set(resolvedTools.map((t) => t.name));
+      for (const t of PLAN_TOOLS) if (!seen.has(t.name)) resolvedTools.push(t);
+    }
     if (deps.extraTools?.length) {
       const seen = new Set(resolvedTools.map((t) => t.name));
       for (const t of deps.extraTools) if (!seen.has(t.name)) resolvedTools.push(t);
@@ -261,6 +273,12 @@ export async function buildAgent(
     // -------------------------------------------------------------------
     // Governance pipeline: policies → limits → guardrails → approvals
     // -------------------------------------------------------------------
+    // Mirror the FederationDO's active bundle into this isolate before
+    // merging so centrally-distributed policies actually apply. Without this
+    // the module-level `activeBundle` stays null in every request isolate and
+    // `mergeWithManifest` enforces nothing. TTL-throttled — cheap to call per
+    // build.
+    await ensureFederationSynced(deps.env);
     const merged = mergeWithManifest(manifest.spec.policies, manifest.spec.approvals);
 
     if (merged.policies.length) {

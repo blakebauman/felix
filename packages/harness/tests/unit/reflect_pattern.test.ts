@@ -266,6 +266,32 @@ describe('buildReflectAgent', () => {
     expect(terminals[0]!.content).toBe('much better answer');
   });
 
+  it('records verifier token usage against the request budget', async () => {
+    const inner = fakeReactAgent(['great answer']);
+    vi.spyOn(reactModule, 'buildReactAgent').mockReturnValue(inner);
+    vi.spyOn(modelModule, 'buildModel').mockReturnValue(fakeVerifier([0.9]) as never);
+    const recordUsageSpy = vi.spyOn(modelModule, 'recordUsage');
+    const wrapped = buildReflectAgent({
+      env: {} as Env,
+      modelSpec: MODEL_SPEC,
+      tools: [],
+      systemPrompt: 'sp',
+      manifestId: 'm',
+      manifestVersion: '1.0.0',
+      primaryModel: MODEL_SPEC,
+      reflect: { verifier_model: 'verifier', threshold: 0.7, max_iterations: 2, criteria: '' },
+    });
+    await runWithContext(ctx(), () =>
+      wrapped.invoke({ messages: [{ role: 'user', content: 'q' }] }),
+    );
+    // The verifier call must flow through recordUsage so its tokens count
+    // against max_input/output_tokens and the orchestrator_tokens metric.
+    expect(recordUsageSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ manifestId: 'm', modelId: 'verifier' }),
+    );
+  });
+
   it('treats a thrown verifier as a pass (no infinite loop on a broken binding)', async () => {
     const inner = fakeReactAgent(['only answer']);
     vi.spyOn(reactModule, 'buildReactAgent').mockReturnValue(inner);

@@ -27,11 +27,21 @@
  * the same recurring query is consistently in or out of the sample across
  * ticks (stable online benchmarking) without persisting a seed.
  *
- * Loop safety: replays run under the anonymous cron context (tenant
- * `default`), so any `tool_call` rows they emit land under `default` and
- * are never re-sampled — `listActiveCanaries` skips the `default` tenant.
- * Each replay gets a fresh `LimitState` so one candidate's token budget
- * can't bleed into the next.
+ * Tenant isolation: the sampled inputs are tenant A's real production text.
+ * Each replay therefore runs under a context scoped to the canary's *own*
+ * tenant (`canary.tenant_id`), never the anonymous `default` tenant — so the
+ * incidental `tool_call` rows the react loop emits during replay (which carry
+ * the sampled `user_input`, the derived `args`, and an `output_preview`) stay
+ * inside the tenant that already owns that data, instead of leaking tenant-A
+ * text into `default`'s audit log where any `audit:read` holder could see it.
+ *
+ * Loop safety: because replays now land under the canary's tenant (an active
+ * canary tenant the sampler *does* scan), each replay context sets
+ * `replay: true` so the react loop stamps `replay: true` onto those tool_call
+ * rows and `sampleInputs` excludes them — otherwise a replay's own input would
+ * be re-sampled on the next tick (an infinite feedback loop). Each replay also
+ * gets a fresh `LimitState` so one candidate's token budget can't bleed into
+ * the next.
  */
 
 import { recordEventDetached } from '../audit/store';
@@ -157,6 +167,7 @@ async function sampleInputs(
        FROM audit_events
        WHERE tenant_id = ? AND manifest_id = ? AND event_type = 'tool_call'
          AND ts >= ? AND json_extract(payload_json, '$.user_input') IS NOT NULL
+         AND json_extract(payload_json, '$.replay') IS NULL
        GROUP BY user_input
        ORDER BY last_ts DESC`,
   )
@@ -173,15 +184,30 @@ async function sampleInputs(
   return out;
 }
 
-/** Replay one input through a pre-built candidate agent, judge it. Fresh context per replay. */
+/**
+ * Replay one input through a pre-built candidate agent, judge it. Fresh
+ * context per replay, scoped to the canary's own tenant so the sampled
+ * production text never lands in another tenant's audit log, and flagged
+ * `replay: true` so the incidental tool_call rows are excluded from future
+ * sampling (see `sampleInputs`).
+ */
 async function replayAndJudge(
   env: Env,
   execCtx: ExecutionContext | undefined,
+  tenantId: string,
   agent: Awaited<ReturnType<typeof buildAgent>>,
   judge: Judge,
   input: string,
 ): Promise<{ score: number; verdict: 'pass' | 'fail'; reasoning: string }> {
-  const ctx: RequestContext = buildAnonymousContext(env, execCtx);
+  const base = buildAnonymousContext(env, execCtx);
+  const ctx: RequestContext = {
+    ...base,
+    auth: {
+      ...base.auth,
+      principal: { ...base.auth.principal, tenantId },
+    },
+    replay: true,
+  };
   try {
     return await runWithContext(ctx, async () => {
       const result = await agent.invoke({ messages: [{ role: 'user', content: input }] });
@@ -246,7 +272,7 @@ export async function runContinuousEvalTick(
     for (const input of inputs) {
       let verdict: { score: number; verdict: 'pass' | 'fail'; reasoning: string };
       try {
-        verdict = await replayAndJudge(env, execCtx, agent, judge, input);
+        verdict = await replayAndJudge(env, execCtx, canary.tenant_id, agent, judge, input);
       } catch (err) {
         verdict = {
           score: 0,

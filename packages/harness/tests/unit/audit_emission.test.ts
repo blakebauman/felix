@@ -289,6 +289,67 @@ describe('plan_step audit emission', () => {
   });
 });
 
+describe('audit enqueue durability', () => {
+  function captureExecCtx(): { execCtx: ExecutionContext; settled: () => Promise<void> } {
+    const pending: Promise<unknown>[] = [];
+    const execCtx = {
+      waitUntil: (p: Promise<unknown>) => {
+        pending.push(p);
+      },
+      passThroughOnException: () => {},
+    } as unknown as ExecutionContext;
+    return { execCtx, settled: async () => void (await Promise.all(pending)) };
+  }
+
+  function dbStub() {
+    const run = vi.fn().mockResolvedValue({});
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    return { prepare, bind, run, DB: { prepare } as unknown as Env['DB'] };
+  }
+
+  it('falls back to a direct D1 write when AUDIT_QUEUE.send rejects', async () => {
+    const { counters } = recordedCounters();
+    const db = dbStub();
+    const send = vi.fn().mockRejectedValue(new Error('queue overloaded'));
+    const env = {
+      AUDIT_QUEUE: { send } as unknown as Env['AUDIT_QUEUE'],
+      DB: db.DB,
+    } as Env;
+    const { execCtx, settled } = captureExecCtx();
+
+    await runWithContext({ ...ctx(env), execCtx }, async () => {
+      auditStore.recordEvent({ tenantId: 'default', eventType: 'tool_call', manifestId: 'm' });
+    });
+    await settled();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    // Rejected send must not silently drop — the event lands in D1 instead.
+    expect(db.prepare).toHaveBeenCalledTimes(1);
+    expect(db.run).toHaveBeenCalledTimes(1);
+    const fallback = counters.find((c) => c.name === 'orchestrator_audit_enqueue_fallback');
+    expect(fallback?.labels).toMatchObject({ manifest_id: 'm' });
+  });
+
+  it('does not touch D1 on a successful send (happy path unchanged)', async () => {
+    const db = dbStub();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const env = {
+      AUDIT_QUEUE: { send } as unknown as Env['AUDIT_QUEUE'],
+      DB: db.DB,
+    } as Env;
+    const { execCtx, settled } = captureExecCtx();
+
+    await runWithContext({ ...ctx(env), execCtx }, async () => {
+      auditStore.recordEvent({ tenantId: 'default', eventType: 'tool_call', manifestId: 'm' });
+    });
+    await settled();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+});
+
 describe('governance wrappers carry transport on audit + counters', () => {
   // A non-local tool surface so wrapper-emitted transport is meaningfully
   // different from `local`. Using `mcp` here exercises the path that audit

@@ -155,6 +155,115 @@ describe('manifest schema', () => {
     expect(() => validateManifest(raw)).toThrow(ManifestValidationError);
   });
 
+  it('rejects tool-targeted governance on multi-agent parents (silently inert)', () => {
+    // The builder wraps a multi-agent parent's governance pipeline around an
+    // EMPTY tool list (it dispatches to sub-agents, drives no tools). So
+    // parent-level policies / approvals / tool-guardrails govern NOTHING —
+    // reject them so an operator can't believe the fleet is gated when it isn't.
+    const base = {
+      apiVersion: 'orchestrator/v1',
+      kind: 'Agent',
+      metadata: { name: 'r' },
+    } as const;
+
+    const withPolicies = ManifestSchema.parse({
+      ...base,
+      spec: {
+        pattern: 'router',
+        sub_agents: ['quick'],
+        policies: [{ id: 'p', tools: ['*'], required_scopes: ['data:write'] }],
+      },
+    });
+    expect(() => validateManifest(withPolicies)).toThrow(ManifestValidationError);
+    expect(() => validateManifest(withPolicies)).toThrow(/leaf\/sub-agent manifests/);
+
+    const withApprovals = ManifestSchema.parse({
+      ...base,
+      spec: {
+        pattern: 'parallel',
+        sub_agents: ['quick'],
+        approvals: [{ id: 'a', tools: ['*'] }],
+      },
+    });
+    expect(() => validateManifest(withApprovals)).toThrow(ManifestValidationError);
+    expect(() => validateManifest(withApprovals)).toThrow(/approval gates wrap nothing/);
+
+    const withToolGuardrails = ManifestSchema.parse({
+      ...base,
+      spec: {
+        pattern: 'groupchat',
+        sub_agents: ['quick'],
+        guardrails: { providers: ['pii'], targets: ['input', 'output'] },
+      },
+    });
+    expect(() => validateManifest(withToolGuardrails)).toThrow(ManifestValidationError);
+    expect(() => validateManifest(withToolGuardrails)).toThrow(/content filter wraps nothing/);
+
+    const withToolJudge = ManifestSchema.parse({
+      ...base,
+      spec: {
+        pattern: 'router',
+        sub_agents: ['quick'],
+        guardrails: { judges: [{ name: 'relevance', criteria: 'on-topic' }] },
+      },
+    });
+    expect(() => validateManifest(withToolJudge)).toThrow(ManifestValidationError);
+    expect(() => validateManifest(withToolJudge)).toThrow(/judges score nothing/);
+  });
+
+  it('allows response-level guardrails on multi-agent parents (still active)', () => {
+    // final-response guardrails / judges run over the aggregated answer in
+    // parallel & groupchat, so they are NOT inert and must be accepted.
+    const withFinalResponseFilter = ManifestSchema.parse({
+      apiVersion: 'orchestrator/v1',
+      kind: 'Agent',
+      metadata: { name: 'r' },
+      spec: {
+        pattern: 'parallel',
+        sub_agents: ['quick'],
+        guardrails: { providers: ['pii'], targets: ['final_response'] },
+      },
+    });
+    expect(() => validateManifest(withFinalResponseFilter)).not.toThrow();
+
+    const withFinalResponseJudge = ManifestSchema.parse({
+      apiVersion: 'orchestrator/v1',
+      kind: 'Agent',
+      metadata: { name: 'r' },
+      spec: {
+        pattern: 'groupchat',
+        sub_agents: ['quick'],
+        guardrails: {
+          targets: ['final_response'],
+          judges: [{ name: 'quality', criteria: 'helpful', final_response: true }],
+        },
+      },
+    });
+    expect(() => validateManifest(withFinalResponseJudge)).not.toThrow();
+  });
+
+  it('keeps tool-targeted governance valid on single-agent patterns', () => {
+    // The exact same governance blocks are meaningful on a react agent that
+    // actually drives tools — only multi-agent parents reject them.
+    const single = ManifestSchema.parse({
+      apiVersion: 'orchestrator/v1',
+      kind: 'Agent',
+      metadata: { name: 's' },
+      spec: {
+        pattern: 'react',
+        tools: ['calculator'],
+        policies: [{ id: 'p', tools: ['*'], required_scopes: ['data:write'] }],
+        approvals: [{ id: 'a', tools: ['*'] }],
+        guardrails: {
+          providers: ['pii'],
+          targets: ['input', 'output'],
+          judges: [{ name: 'relevance', criteria: 'on-topic' }],
+        },
+      },
+    });
+    expect(() => validateManifest(single)).not.toThrow();
+  });
+
   it('accepts the legacy agentcore memory alias', () => {
     const parsed = ManifestSchema.parse({
       apiVersion: 'orchestrator/v1',

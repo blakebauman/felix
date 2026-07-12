@@ -24,6 +24,13 @@ export interface Env {
    * a redeploy via `wrangler secret put` / the dashboard. Unset = defaults.
    */
   CONTINUOUS_EVAL?: string;
+  /**
+   * Optional retention window (in days) for the `retention_sweep` cron
+   * (`jobs/retention.ts`). Audit events older than this are pruned each
+   * tick. Parsed defensively by `parseAuditRetentionDays`: unset/non-numeric
+   * → default 90; valid values are floored and clamped to `[7, 3650]`.
+   */
+  AUDIT_RETENTION_DAYS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   /**
@@ -38,9 +45,13 @@ export interface Env {
   // ---- Auth ----
   /**
    * The sole inbound-auth config surface. Comma-separated verifiers; each is
-   * whitespace-separated `<scheme> <issuer> [audience]` where scheme is
-   * `access` (Cloudflare Access) or `cognito` (standard OIDC JWKS path).
-   * See `parseVerifiers` in `auth/jwt.ts`. Empty string = no verifiers.
+   * whitespace-separated `<scheme> <issuer> [audience] [tenant=<directive>]`
+   * where scheme is `access` (Cloudflare Access) or `cognito` (standard OIDC
+   * JWKS path). `audience` is required for `cognito` outside development
+   * (unless self-issuing via JWKS_PUBLIC); the optional `tenant=` field pins
+   * how the verifier maps a token to a tenant (`tenant=<id>` fixed,
+   * `tenant=issuer`, `tenant=claim`). See `parseVerifiers` in `auth/jwt.ts`.
+   * Empty string = no verifiers.
    */
   JWT_VERIFIERS: string;
 
