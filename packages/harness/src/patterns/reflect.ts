@@ -35,10 +35,11 @@ import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
 import { checkTokenBudget } from '../limits/wrap';
 import type { Model } from '../manifests/schema';
+import { DEFAULT_PROCEDURAL_OPTS, type ProceduralOpts, storeProcedure } from '../memory/procedural';
 import { buildModel, recordUsage } from './model';
 import { type BuildReactOptions, buildReactAgent } from './react';
 import { registerPattern } from './registry';
-import type { Agent, InvokeInput, InvokeResult, StreamEvent } from './types';
+import type { Agent, ChatMessage, InvokeInput, InvokeResult, StreamEvent } from './types';
 
 export interface ReflectOpts {
   /** Workers-AI / Anthropic / OpenAI logical model id the verifier
@@ -111,9 +112,17 @@ export interface BuildReflectOptions extends BuildReactOptions {
 }
 
 export function buildReflectAgent(opts: BuildReflectOptions): Agent {
-  const inner = buildReactAgent(opts);
   const reflect = opts.reflect;
-  if (reflect.max_iterations <= 1) return inner;
+  // Degenerate case (no reflection): behave exactly like react and let the
+  // inner loop's own success path record the procedure once.
+  if (reflect.max_iterations <= 1) return buildReactAgent(opts);
+
+  // Reflection active: build the inner react WITHOUT procedural writes so a
+  // procedure isn't recorded once per react replay. The reflect wrapper
+  // records exactly once, on the verifier-accepted (or final-iteration)
+  // terminal result — see `rememberProcedureAsync`.
+  const inner = buildReactAgent({ ...opts, procedural: null });
+  const proceduralOpts: ProceduralOpts = opts.procedural ?? DEFAULT_PROCEDURAL_OPTS;
 
   const verifierSpec: Model = {
     ...opts.primaryModel,
@@ -196,6 +205,26 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
     });
   }
 
+  // Distill the accepted run's (intent → tool sequence) into procedural
+  // memory. Called exactly once per reflect run — on the verifier-accepted
+  // (or final-iteration) terminal result — so a multi-iteration reflect run
+  // records one procedure, not one per react replay. Fire-and-forget through
+  // `waitUntil`; `storeProcedure` no-ops when disabled, when there was no
+  // tool-call sequence, or on any embedding/upsert error.
+  function rememberProcedureAsync(messages: readonly ChatMessage[]): void {
+    if (!proceduralOpts.enabled) return;
+    const ctx = getContext();
+    const tenantId = ctx?.auth.principal.tenantId ?? 'default';
+    const p = storeProcedure(opts.env, proceduralOpts, {
+      tenantId,
+      manifestId: opts.manifestId,
+      messages,
+    }).catch((err) => {
+      console.warn('procedural memory store failed', (err as Error).message);
+    });
+    if (ctx?.execCtx) ctx.execCtx.waitUntil(p);
+  }
+
   return {
     tools: inner.tools,
     pattern: `reflect:${inner.pattern}`,
@@ -218,8 +247,11 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
           passed: verdict.passed,
           critique: verdict.critique,
         });
-        if (verdict.passed) return result;
-        if (i === reflect.max_iterations - 1) return result;
+        if (verdict.passed || i === reflect.max_iterations - 1) {
+          // Terminal accepted answer — record the procedure exactly once.
+          rememberProcedureAsync(result.messages);
+          return result;
+        }
         // Append the critique as a synthetic user turn and replay.
         // The next iteration sees the prior response in `messages` so
         // the model knows what to fix.
@@ -260,6 +292,8 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
           critique: verdict.critique,
         });
         if (verdict.passed || i === reflect.max_iterations - 1) {
+          // Terminal accepted answer — record the procedure exactly once.
+          rememberProcedureAsync(result.messages);
           yield { event: 'on_chain_end', data: { output: result } };
           return;
         }
@@ -284,6 +318,7 @@ registerPattern('reflect', (ctx) =>
     toolsRetrieval: ctx.manifest.spec.tools_retrieval,
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
+    procedural: ctx.manifest.spec.procedural_memory,
     primaryModel: ctx.modelSpec,
     reflect: ctx.manifest.spec.reflect,
   }),

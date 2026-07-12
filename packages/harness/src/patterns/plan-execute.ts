@@ -40,6 +40,7 @@ import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
 import { checkTokenBudget } from '../limits/wrap';
 import type { Manifest, Model } from '../manifests/schema';
+import { storeProcedure } from '../memory/procedural';
 import { recordCounter } from '../observability/metrics';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
 import { fullReplaySessionStrategy } from '../session/strategies';
@@ -596,6 +597,40 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
         durationMs: 0,
         extra: { subtask_count: allOutcomes.length, replans_used: replansUsed },
       });
+
+      // Distill the successful plan (intent → executed tool sequence) into
+      // procedural memory — the same Vectorize index the planner's few-shot
+      // preamble reads from. Only on a clean synthesized answer (the planner
+      // produced a plan); the executor sub-loops run WITHOUT procedural writes,
+      // so this parent-level write is the single source per plan_execute run.
+      // The subtask tool calls never reach the parent transcript, so build a
+      // synthetic (user → tool-call sequence) transcript for the distiller.
+      // Fire-and-forget through `waitUntil`; `storeProcedure` no-ops when
+      // disabled, when no tools ran, or on any embedding/upsert error.
+      if (!plannerFailed && opts.manifest.spec.procedural_memory.enabled) {
+        const proceduralMessages: ChatMessage[] = [
+          { role: 'user', content: userGoal },
+          ...allOutcomes.map((o) => ({
+            role: 'assistant' as const,
+            content: '',
+            tool_calls: o.tool_calls.map((name, ci) => ({
+              id: `${o.subtask.id}-${ci}`,
+              name,
+              args: {} as Record<string, unknown>,
+            })),
+          })),
+          final,
+        ];
+        const p = storeProcedure(opts.env, opts.manifest.spec.procedural_memory, {
+          tenantId,
+          manifestId: opts.manifestId,
+          messages: proceduralMessages,
+        }).catch((err) => {
+          console.warn('procedural memory store failed', (err as Error).message);
+        });
+        if (ctx?.execCtx) ctx.execCtx.waitUntil(p);
+      }
+
       return { messages, final };
     },
 
