@@ -32,6 +32,10 @@ EVAL_TOKEN=$(pnpm tsx apps/api/scripts/mint-jwt.ts --scope "eval:read eval:write
 ```
 Enforces a pass-rate floor (baseline − tolerance or explicit `--min-pass-rate`), a token-cost gate, and optionally the adversarial floor (0.95). Use before widening a canary or promoting it to active.
 
+### Server-side activation gate (opt-in)
+
+Beyond the CLI gate, `POST /manifests/:name/activate` and `/canary` accept `eval_run_id` (and/or `require_eval: true`). When supplied, the server refuses the version flip (`409 eval_gate_failed`) unless that `/eval` run is `completed`, has zero failures, and tested this exact `(manifest, version)`. Both fields default off — omitting them keeps activation ungated. To produce a matching run, pin the version at run time: `POST /eval/datasets/:name/run` with `candidate_version: N` (the runner records it as `manifest_version` on the run). A run that throws before finishing is finalized `failed`, never left `in_progress`.
+
 ## Bundled-manifest changes (the deploy path)
 
 Edit `packages/harness/manifests/<name>.yaml` → `pnpm build:manifests` → tests → deploy. Remember tenant D1/R2 overrides still shadow the new bundled version for tenants that have them.

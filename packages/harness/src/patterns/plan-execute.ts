@@ -36,10 +36,12 @@ import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
 import type { Env } from '../env';
 import { guardFinalResponse } from '../guardrails/final-response';
+import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
+import { checkTokenBudget } from '../limits/wrap';
 import type { Manifest, Model } from '../manifests/schema';
 import { recordCounter } from '../observability/metrics';
-import { buildModel, type ModelClient } from './model';
+import { buildModel, type ModelClient, recordUsage } from './model';
 import { buildReactAgent } from './react';
 import { registerPattern } from './registry';
 import type { Agent, ChatMessage, InvokeInput, InvokeResult, StreamEvent } from './types';
@@ -228,6 +230,7 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
   };
   const planner = buildModel(opts.env, plannerSpec);
   const synthesizer = planner;
+  const limits: Limits = opts.limits ?? DEFAULT_LIMITS;
 
   // The executor is a full react agent — it shares everything from the
   // outer build except the model id and the recursion cap, both of which
@@ -269,6 +272,9 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
       `User goal: ${userGoal}`,
     ].filter((s): s is string => !!s);
     const userPrompt = sections.join('\n\n');
+    // Blown token budget short-circuits to "no plan" — the caller surfaces
+    // the graceful can't-plan message rather than spending more tokens.
+    if (checkTokenBudget(limits, opts.manifestId)) return null;
     const result = await planner.chat(
       [
         { role: 'system', content: PLANNER_SYSTEM_PROMPT },
@@ -277,6 +283,7 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
       [],
       { signal: currentSignal() },
     );
+    recordUsage(result, { manifestId: opts.manifestId, modelId: plannerSpec.id });
     return parsePlannerReply(result.message.content, planExecute.max_subtasks);
   }
 
@@ -384,6 +391,10 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
           (o.error ? `\n  error: ${o.error}` : ''),
       )
       .join('\n');
+    // If the budget is already exhausted, surface the deny string as the
+    // synthesized answer instead of spending another model call.
+    const preDeny = checkTokenBudget(limits, opts.manifestId);
+    if (preDeny) return preDeny;
     const result = await synthClient.chat(
       [
         { role: 'system', content: SYNTHESIS_SYSTEM_PROMPT },
@@ -395,6 +406,7 @@ export function buildPlanExecuteAgent(opts: BuildPlanExecuteOptions): Agent {
       [],
       { signal: currentSignal() },
     );
+    recordUsage(result, { manifestId: opts.manifestId, modelId: plannerSpec.id });
     return result.message.content;
   }
 

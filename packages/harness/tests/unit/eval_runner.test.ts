@@ -142,6 +142,34 @@ describe('eval runner — regression detection', () => {
     expect(failed?.reasoning).toMatch(/missing required substring: "paris"/i);
   });
 
+  it('finalizes a run out of in_progress (status failed) when the candidate build throws', async () => {
+    // A throw before the completion finalize (here: buildAgent) must still
+    // transition the run row to a terminal status — otherwise the run is
+    // stuck `in_progress` forever and no gate can ever read it.
+    const finalizeSpy = vi.spyOn(datasetsModule, 'finalizeRun').mockImplementation(async () => {});
+    vi.spyOn(builderModule, 'buildAgent').mockRejectedValue(new Error('boom'));
+
+    await expect(
+      runWithContext(ctx(), () =>
+        runDataset(fakeEnv(), toolsStub, {
+          tenantId: 'acme',
+          principalSubject: '',
+          runId: 'run-throws',
+          datasetName: 'smoke',
+          candidateManifest: 'quick',
+          judge: deterministicJudge(),
+        }),
+      ),
+    ).rejects.toThrow('boom');
+
+    expect(finalizeSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'acme',
+      'run-throws',
+      expect.objectContaining({ status: 'failed' }),
+    );
+  });
+
   it('marks an item failed when the candidate response trips a must_not_include gate', async () => {
     // item-a passes (Paris present). item-b trips the unsafe-marker gate.
     vi.spyOn(builderModule, 'buildAgent').mockResolvedValue(

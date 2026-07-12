@@ -125,6 +125,122 @@ describe('/manifests CRUD', () => {
     expect(afterBody.source).toBe('bundled');
   });
 
+  it('gates activation on a passing eval run when require_eval is set', async () => {
+    const base = 'https://orchestrator.test';
+    const name = 'gated';
+    const manifest = {
+      apiVersion: 'orchestrator/v1',
+      kind: 'Agent',
+      metadata: { name, version: '1.0.0', description: 'gated', tags: [] },
+      spec: {
+        pattern: 'react',
+        model: { temperature: 0 },
+        system_prompt: { inline: 'You are a test agent.' },
+        auth: { inbound: { allow_anonymous: true } },
+      },
+    };
+
+    // v1 (activated), then v2 so we can distinguish versions.
+    const c1 = await SELF.fetch(`${base}/manifests/${name}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ manifest }),
+    });
+    expect(c1.status).toBe(201);
+    const c2 = await SELF.fetch(`${base}/manifests/${name}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        manifest: { ...manifest, metadata: { ...manifest.metadata, version: '2.0.0' } },
+      }),
+    });
+    expect(c2.status).toBe(201);
+
+    // Empty eval dataset → run completes with zero failures (no model calls).
+    await SELF.fetch(`${base}/eval/datasets`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'gate_set', description: '' }),
+    });
+    // Passing run pinned to version 1.
+    const runV1Resp = await SELF.fetch(`${base}/eval/datasets/gate_set/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        candidate_manifest: name,
+        candidate_version: 1,
+        deterministic_judge: true,
+      }),
+    });
+    expect(runV1Resp.status).toBe(200);
+    const runV1 = (await runV1Resp.json()) as { run_id: string; fail_count: number };
+    expect(runV1.fail_count).toBe(0);
+
+    // Passing run pinned to version 2 (used for the version-mismatch case).
+    const runV2Resp = await SELF.fetch(`${base}/eval/datasets/gate_set/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        candidate_manifest: name,
+        candidate_version: 2,
+        deterministic_judge: true,
+      }),
+    });
+    expect(runV2Resp.status).toBe(200);
+    const runV2 = (await runV2Resp.json()) as { run_id: string };
+
+    // The run records the version it tested.
+    const runDetail = await SELF.fetch(`${base}/eval/runs/${runV1.run_id}`);
+    expect(((await runDetail.json()) as { manifest_version: number }).manifest_version).toBe(1);
+
+    // require_eval + a passing run for version 1 → activation succeeds.
+    const ok = await SELF.fetch(`${base}/manifests/${name}/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: 1, require_eval: true, eval_run_id: runV1.run_id }),
+    });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { active_version: number }).active_version).toBe(1);
+
+    // require_eval with no run id → 409.
+    const noRun = await SELF.fetch(`${base}/manifests/${name}/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: 1, require_eval: true }),
+    });
+    expect(noRun.status).toBe(409);
+    expect(((await noRun.json()) as { error: string }).error).toBe('eval_gate_failed');
+
+    // A run that tested a different version → 409 (version mismatch), even
+    // without require_eval — supplying a run id always enforces the gate.
+    const mismatch = await SELF.fetch(`${base}/manifests/${name}/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: 1, eval_run_id: runV2.run_id }),
+    });
+    expect(mismatch.status).toBe(409);
+    const mismatchBody = (await mismatch.json()) as { error: string; detail: string };
+    expect(mismatchBody.error).toBe('eval_gate_failed');
+    expect(mismatchBody.detail).toMatch(/tested version 2, not 1/);
+
+    // An unknown run id → 409.
+    const unknown = await SELF.fetch(`${base}/manifests/${name}/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: 1, eval_run_id: 'does-not-exist' }),
+    });
+    expect(unknown.status).toBe(409);
+
+    // Backward compatible: default activation (no gate fields) still works.
+    const plain = await SELF.fetch(`${base}/manifests/${name}/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: 2 }),
+    });
+    expect(plain.status).toBe(200);
+    expect(((await plain.json()) as { active_version: number }).active_version).toBe(2);
+  });
+
   it('rejects a name mismatch between URL and metadata.name', async () => {
     const resp = await SELF.fetch('https://orchestrator.test/manifests/foo', {
       method: 'POST',

@@ -16,6 +16,9 @@
  * call only when new events have crossed the keep boundary.
  */
 
+import { getContext } from '../context';
+import { currentSignal } from '../limits/state';
+import { recordUsage } from '../patterns/model';
 import type { ChatMessage } from '../patterns/types';
 import { makeSemanticRetrievalSessionStrategy } from './semantic-strategy';
 import {
@@ -169,7 +172,14 @@ class SummarizingStrategy implements SessionStrategy {
             'Summarize the conversation above following the system prompt. Output only the summary.',
         },
       ];
-      const result = await opts.model.chat(summarizerMessages, []);
+      // Thread the request abort signal so a wall-clock breach cancels the
+      // summarizer in-flight, and account its tokens against the request
+      // budget/metric via recordUsage. Preflight `checkTokenBudget` isn't
+      // reachable here without plumbing manifest limits through
+      // `SessionRenderOpts` — render runs before the pattern's first token
+      // check, so this call is counted after the fact rather than gated.
+      const result = await opts.model.chat(summarizerMessages, [], { signal: currentSignal() });
+      recordUsage(result, { manifestId: getContext()?.manifestId ?? 'session_summarizer' });
       newSummary = result.message.content.trim();
       if (!newSummary) throw new Error('summarizer returned empty content');
     } catch {
