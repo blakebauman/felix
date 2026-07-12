@@ -161,6 +161,34 @@ export function buildModel(env: Env, spec: Model): ModelClient {
 }
 
 /**
+ * Error thrown for a non-OK gateway/stream HTTP response. Carries the numeric
+ * `status` so `isProviderError` can classify it for fallback WITHOUT parsing
+ * the message, and bounds the upstream response body so a provider's error
+ * payload (which may echo request internals) doesn't flow verbatim into
+ * tenant-visible audit rows via `app.onError`.
+ */
+export class ModelGatewayError extends Error {
+  readonly status: number;
+  constructor(label: string, status: number, body: string) {
+    // Cap the echoed body — enough to debug, not the whole payload.
+    super(`${label}: ${status} ${body.slice(0, 200)}`);
+    this.name = 'ModelGatewayError';
+    this.status = status;
+  }
+}
+
+/** Read a non-OK response and wrap it as a status-bearing ModelGatewayError. */
+async function gatewayError(label: string, resp: Response): Promise<ModelGatewayError> {
+  let body = '';
+  try {
+    body = await resp.text();
+  } catch {
+    // response body already consumed / not readable — status is enough.
+  }
+  return new ModelGatewayError(label, resp.status, body);
+}
+
+/**
  * Heuristic for whether a thrown model error is recoverable by trying
  * the next fallback. We do NOT retry on user-cancellations or 4xx
  * errors that look like client misuse (auth, validation) — those would
@@ -181,13 +209,21 @@ function isProviderError(err: unknown): boolean {
     if (status === 408 || status === 429) return true;
     return false;
   }
-  // Network-level failures with no status (DNS, socket reset) — treat
-  // as recoverable provider issues.
+  // No structured status: fall back to message sniffing. Covers network-level
+  // failures (DNS, socket reset) and any legacy throw path that hasn't been
+  // migrated to ModelGatewayError yet (belt-and-suspenders — the gateway
+  // clients now throw status-bearing errors handled above).
   const message = (e.message ?? String(err)).toLowerCase();
   if (
     message.includes('fetch failed') ||
     message.includes('econnreset') ||
-    message.includes('etimedout')
+    message.includes('etimedout') ||
+    message.includes('rate limit') ||
+    message.includes(' 429') ||
+    message.includes(' 500') ||
+    message.includes(' 502') ||
+    message.includes(' 503') ||
+    message.includes(' 504')
   ) {
     return true;
   }
@@ -518,7 +554,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok) {
-      throw new Error(`anthropic gateway: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic gateway', resp);
     }
     const data = (await resp.json()) as AnthropicResponse;
     const toolCalls: ToolCall[] = [];
@@ -588,7 +624,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok) {
-      throw new Error(`anthropic count_tokens: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic count_tokens', resp);
     }
     const data = (await resp.json()) as { input_tokens?: number };
     return data.input_tokens ?? 0;
@@ -614,7 +650,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok || !resp.body) {
-      throw new Error(`anthropic stream: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic stream', resp);
     }
     const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = '';
@@ -908,7 +944,7 @@ class OpenAIGatewayClient implements ModelClient {
       }),
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
-    if (!resp.ok) throw new Error(`openai gateway: ${resp.status} ${await resp.text()}`);
+    if (!resp.ok) throw await gatewayError('openai gateway', resp);
     const data = (await resp.json()) as OpenAIResponse;
     const choice = data.choices[0]!;
     const calls: ToolCall[] = (choice.message.tool_calls ?? []).map((c) => ({
@@ -989,7 +1025,7 @@ class OpenAIGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok || !resp.body) {
-      throw new Error(`openai stream: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('openai stream', resp);
     }
     const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = '';
