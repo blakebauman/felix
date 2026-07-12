@@ -2,17 +2,15 @@
  * Procedural memory.
  *
  * After a successful agent run, distill `(user_intent →
- * tool_call_sequence)` into a Vectorize vector and upsert under the
+ * tool_call_sequence)` into a pgvector row and upsert under the
  * tenant's namespace. On future runs, a `recall_procedure(query)`
  * tool retrieves the top-K most similar past successes — the agent
  * gets to see "last time this came up, the sequence that worked was
  * [search → summarize → memory_remember]."
  *
- * The vector namespace reuses the existing `MEMORY_VEC` binding but
- * keys procedural memories under a `procedural:` prefix so semantic
- * memory and procedural memory don't collide. A tenant scopes via
- * the `tenant_id` metadata; cross-tenant retrievals are filtered
- * server-side.
+ * Procedural rows share the `memory_vectors` table with semantic
+ * memory and product embeddings, isolated by `kind: 'procedural'`
+ * (a real column, not metadata) and scoped by `tenant_id`.
  *
  * The model is taught about `recall_procedure` via the tool
  * description; no system-prompt changes required.
@@ -20,6 +18,7 @@
 
 import { z } from 'zod';
 import { getContext } from '../context';
+import { queryVectors, upsertVector } from '../db/vectors';
 import type { Env } from '../env';
 import type { ChatMessage } from '../patterns/types';
 import { defineTool, type Tool } from '../tools/types';
@@ -53,7 +52,7 @@ export const DEFAULT_PROCEDURAL_OPTS: ProceduralOpts = {
 
 /**
  * Extract the tool call sequence + the user intent from an
- * `InvokeResult.messages` and upsert the pair into Vectorize. Called
+ * `InvokeResult.messages` and upsert the pair as a vector row. Called
  * by the react loop right before returning a successful result, so
  * one bad run doesn't pollute the procedural index — only ends-of-
  * turn assistant responses (no tool errors as the terminal) qualify.
@@ -77,7 +76,7 @@ export async function storeProcedure(
   }
   if (sequence.length === 0) return; // nothing procedural to remember
   const ai = env.AI as unknown as AiBinding | undefined;
-  if (!ai) return;
+  if (!ai || !env.HYPERDRIVE) return;
   let vec: number[];
   try {
     vec = await embed(ai, opts.embedding_model, userIntent.slice(0, 2000));
@@ -92,20 +91,18 @@ export async function storeProcedure(
     crypto.randomUUID().slice(0, 8),
   );
   try {
-    await env.MEMORY_VEC.upsert([
-      {
-        id,
-        values: vec,
-        metadata: {
-          tenant_id: args.tenantId,
-          manifest_id: args.manifestId,
-          kind: 'procedural',
-          intent: userIntent.slice(0, 500),
-          sequence: JSON.stringify(sequence.slice(0, 50)),
-          stored_at: Date.now(),
-        },
+    await upsertVector(env, {
+      tenantId: args.tenantId,
+      id,
+      kind: 'procedural',
+      manifestId: args.manifestId,
+      values: vec,
+      metadata: {
+        intent: userIntent.slice(0, 500),
+        sequence: JSON.stringify(sequence.slice(0, 50)),
+        stored_at: Date.now(),
       },
-    ]);
+    });
   } catch (err) {
     console.warn('procedural memory upsert failed', (err as Error).message);
   }
@@ -135,6 +132,7 @@ export function recallProcedureTool(opts: ProceduralOpts): Tool {
       if (!ctx) return '[procedural error] no request context';
       const ai = ctx.env.AI as unknown as AiBinding | undefined;
       if (!ai) return '[procedural unavailable] AI binding not configured';
+      if (!ctx.env.HYPERDRIVE) return '[procedural unavailable] database not configured';
       let qvec: number[];
       try {
         qvec = await embed(ai, opts.embedding_model, query.slice(0, 2000));
@@ -142,21 +140,18 @@ export function recallProcedureTool(opts: ProceduralOpts): Tool {
         return `[procedural error] embedding failed: ${(err as Error).message}`;
       }
       if (qvec.length === 0) return '[procedural unavailable] empty embedding';
-      const result = await ctx.env.MEMORY_VEC.query(qvec, {
+      const matches = await queryVectors(ctx.env, {
+        tenantId: ctx.auth.principal.tenantId,
+        kinds: ['procedural'],
+        values: qvec,
         topK: opts.top_k,
-        returnMetadata: 'all',
-        filter: {
-          tenant_id: ctx.auth.principal.tenantId,
-          kind: 'procedural',
-        },
       });
-      const matches = result.matches ?? [];
       if (matches.length === 0) return '[no past procedures found for this query]';
       const lines = matches.map((m, i) => {
-        const meta = m.metadata as { intent?: string; sequence?: string } | undefined;
+        const meta = m.metadata as { intent?: string; sequence?: string };
         return (
-          `[${i + 1}] intent: ${(meta?.intent ?? '').slice(0, 200)}\n` +
-          `    sequence: ${meta?.sequence ?? '[]'}`
+          `[${i + 1}] intent: ${String(meta.intent ?? '').slice(0, 200)}\n` +
+          `    sequence: ${meta.sequence ?? '[]'}`
         );
       });
       return lines.join('\n');

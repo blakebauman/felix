@@ -98,14 +98,6 @@
     }
   ],
 
-  // --- Vectorize (semantic memory store) ----------------------------------
-  "vectorize": [
-    {
-      "binding": "MEMORY_VEC",
-      "index_name": "felix-memory"
-    }
-  ],
-
   // --- Queues (audit batching, background jobs) ---------------------------
   // `AUDIT_QUEUE` fans audit events out to the D1-bound consumer in
   // index.ts. Additional queue producers (e.g. `JOBS_QUEUE` for the
@@ -213,7 +205,7 @@
       },
       "ai": { "binding": "AI" },
       // Smart Placement: move the isolate closer to the dominant back-end
-      // fan-out (AI Gateway + D1 + Vectorize). Needs steady traffic from
+      // fan-out (AI Gateway + Hyperdrive). Needs steady traffic from
       // multiple locations to take effect; can take ~15 min to settle after
       // a deploy.
       "placement": { "mode": "smart" },
@@ -234,7 +226,6 @@
       ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
       "r2_buckets": [{ "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-staging" }],
-      "vectorize": [{ "binding": "MEMORY_VEC", "index_name": "felix-memory-staging" }],
       "queues": {
         "producers": [{ "binding": "AUDIT_QUEUE", "queue": "felix-audit-staging" }],
         "consumers": [
@@ -321,7 +312,6 @@
       ],
       "kv_namespaces": [{ "binding": "CACHE", "id": "REPLACE_AFTER_wrangler_kv_create" }],
       "r2_buckets": [{ "binding": "BUNDLES", "bucket_name": "felix-orchestrator-bundles-prod" }],
-      "vectorize": [{ "binding": "MEMORY_VEC", "index_name": "felix-memory-prod" }],
       "queues": {
         "producers": [{ "binding": "AUDIT_QUEUE", "queue": "felix-audit-prod" }],
         "consumers": [

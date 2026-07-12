@@ -208,9 +208,9 @@ export async function upsertProduct(env: Env, product: Product): Promise<void> {
   `;
 
   // Refresh the product's text + image embeddings for similarity/visual search.
-  // Best-effort and off the response path (waitUntil): a missing vector index
-  // or embed failure never fails the catalog write. Embeddings access
-  // `env.MEMORY_VEC` directly, so the manifest's `memory.store` is irrelevant.
+  // Best-effort and off the response path (waitUntil): an embed failure never
+  // fails the catalog write. Embeddings access the pgvector store directly,
+  // so the manifest's `memory.store` is irrelevant.
   const exec = getContext()?.execCtx;
   const embed = Promise.all([
     upsertProductEmbedding(env, product).catch(() => {}),

@@ -34,6 +34,7 @@
 
 import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
+import { queryVectors } from '../db/vectors';
 import type { Env } from '../env';
 import { guardFinalResponse } from '../guardrails/final-response';
 import { DEFAULT_LIMITS, type Limits } from '../limits/models';
@@ -167,9 +168,9 @@ interface SubtaskOutcome {
 
 /**
  * Pull up to `topK` past successful procedures for this manifest from
- * Vectorize. Used to prepend a "previous successful plans" preamble to
- * the planner. Returns empty string when the AI binding or Vectorize
- * isn't wired — never throws.
+ * the pgvector store. Used to prepend a "previous successful plans"
+ * preamble to the planner. Returns empty string when the AI binding or
+ * the database isn't wired — never throws.
  */
 async function fetchPlannerFewShots(
   env: Env,
@@ -183,25 +184,26 @@ async function fetchPlannerFewShots(
   const ai = env.AI as unknown as
     | { run(model: string, input: { text: string[] }): Promise<unknown> }
     | undefined;
-  if (!ai || !env.MEMORY_VEC) return '';
+  if (!ai || !env.HYPERDRIVE) return '';
   try {
     const embedded = (await ai.run(embeddingModel, { text: [query.slice(0, 2000)] })) as {
       data?: number[][];
     };
     const vec = embedded.data?.[0];
     if (!vec || vec.length === 0) return '';
-    const result = await env.MEMORY_VEC.query(vec, {
+    const matches = await queryVectors(env, {
+      tenantId,
+      kinds: ['procedural'],
+      manifestId,
+      values: vec,
       topK,
-      returnMetadata: 'all',
-      filter: { tenant_id: tenantId, manifest_id: manifestId, kind: 'procedural' },
     });
-    const matches = result.matches ?? [];
     if (matches.length === 0) return '';
     const lines = matches.map((m, i) => {
-      const meta = m.metadata as { intent?: string; sequence?: string } | undefined;
+      const meta = m.metadata as { intent?: string; sequence?: string };
       return (
-        `[past plan ${i + 1}] intent: ${(meta?.intent ?? '').slice(0, 200)}\n` +
-        `  successful sequence: ${meta?.sequence ?? '[]'}`
+        `[past plan ${i + 1}] intent: ${String(meta.intent ?? '').slice(0, 200)}\n` +
+        `  successful sequence: ${meta.sequence ?? '[]'}`
       );
     });
     return `Previous successful plans for this manifest:\n${lines.join('\n')}\n`;

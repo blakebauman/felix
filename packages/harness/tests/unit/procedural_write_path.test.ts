@@ -2,13 +2,13 @@
  * Regression: procedural memory had no write path. `storeProcedure`
  * (memory/procedural.ts) had ZERO call sites, so `procedural_memory.enabled`
  * — and the `recall_procedure` tool that reads the index — were non-functional
- * (the schema docstring even claims "the react loop stores successful pairs in
- * Vectorize after each run", which was false).
+ * (the schema docstring even claims the react loop stores successful pairs
+ * after each run, which was false).
  *
  * Pins:
  *   1. A clean end-of-turn success whose transcript contains a tool-call
- *      sequence distills (intent → sequence) into MEMORY_VEC when procedural
- *      memory is enabled.
+ *      sequence distills (intent → sequence) into memory_vectors when
+ *      procedural memory is enabled.
  *   2. Disabled procedural memory writes nothing.
  *   3. A run with no tool calls writes nothing (no procedure to remember).
  */
@@ -22,6 +22,7 @@ import * as modelModule from '../../src/patterns/model';
 import { buildReactAgent } from '../../src/patterns/react';
 import type { ChatMessage } from '../../src/patterns/types';
 import { defineTool } from '../../src/tools/types';
+import { type CapturedQuery, makeFakeSql } from '../helpers/fake-sql';
 
 const MODEL_SPEC = {
   id: null,
@@ -62,26 +63,27 @@ const echo = defineTool({
   handler: async ({ text }) => text,
 });
 
-function envCapturing(upserts: unknown[]): Env {
+function envForVectors(): Env {
   return {
     AI: {
       async run() {
         return { data: [[0.1, 0.2, 0.3]] };
       },
     },
-    MEMORY_VEC: {
-      async upsert(vectors: unknown) {
-        upserts.push(vectors);
-      },
-    },
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
   } as unknown as Env;
 }
 
-function ctxWith(env: Env, pending: Promise<unknown>[]): RequestContext {
+function ctxWith(env: Env, pending: Promise<unknown>[], queries: CapturedQuery[]): RequestContext {
+  const { sql } = makeFakeSql((q) => {
+    queries.push(q);
+    return [];
+  });
   return {
     env,
     auth: ANONYMOUS,
     limitState: newLimitState(),
+    db: sql,
     // Collect fire-and-forget work so the test can await it deterministically.
     execCtx: { waitUntil: (p: Promise<unknown>) => pending.push(p) } as unknown as ExecutionContext,
   };
@@ -90,10 +92,10 @@ function ctxWith(env: Env, pending: Promise<unknown>[]): RequestContext {
 async function runOnce(
   procedural: typeof PROCEDURAL_ON | { enabled: false; top_k: number; embedding_model: string },
   responses: ChatMessage[],
-): Promise<unknown[]> {
-  const upserts: unknown[] = [];
+): Promise<CapturedQuery[]> {
+  const queries: CapturedQuery[] = [];
   const pending: Promise<unknown>[] = [];
-  const env = envCapturing(upserts);
+  const env = envForVectors();
   vi.spyOn(modelModule, 'buildModel').mockReturnValue(fakeModel(responses) as never);
   const agent = buildReactAgent({
     env,
@@ -104,12 +106,12 @@ async function runOnce(
     manifestVersion: '1.0.0',
     procedural,
   });
-  await runWithContext(ctxWith(env, pending), async () => {
+  await runWithContext(ctxWith(env, pending, queries), async () => {
     await agent.invoke({ messages: [{ role: 'user', content: 'do the thing' }] });
     await Promise.all(pending);
   });
   vi.restoreAllMocks();
-  return upserts;
+  return queries.filter((q) => q.text.includes('INSERT INTO memory_vectors'));
 }
 
 const TOOL_THEN_FINAL: ChatMessage[] = [
@@ -125,9 +127,13 @@ describe('procedural memory write path', () => {
   it('distills (intent → tool sequence) on a successful tool-using run', async () => {
     const upserts = await runOnce(PROCEDURAL_ON, [...TOOL_THEN_FINAL]);
     expect(upserts).toHaveLength(1);
-    const vectors = upserts[0] as Array<{ metadata: Record<string, unknown> }>;
-    expect(vectors[0]!.metadata).toMatchObject({ kind: 'procedural', manifest_id: 'm' });
-    expect(String(vectors[0]!.metadata.sequence)).toContain('echo');
+    // Scope columns: tenant + kind + manifest; sequence lands in metadata.
+    expect(upserts[0]!.params).toContain('procedural');
+    expect(upserts[0]!.params).toContain('m');
+    const metadata = upserts[0]!.params.find(
+      (p): p is Record<string, unknown> => typeof p === 'object' && p !== null && 'sequence' in p,
+    );
+    expect(String(metadata?.sequence)).toContain('echo');
   });
 
   it('writes nothing when procedural memory is disabled', async () => {

@@ -670,7 +670,7 @@ const Memory = z
       .default('vectorize')
       .openapi({
         description:
-          'Long-term semantic memory. `vectorize` (default) uses Cloudflare Vectorize — when ' +
+          'Long-term semantic memory. `vectorize` (default; legacy name) uses the pgvector-backed store — when ' +
           'set, the builder auto-injects `memory_remember` / `memory_recall` tools. ' +
           '`agentcore` / `memory` are legacy aliases. `none` disables the store.',
       }),
@@ -771,7 +771,7 @@ const ProceduralSpec = z
       .openapi({
         description:
           'When true, the react loop stores successful (intent → tool sequence) pairs in ' +
-          'Vectorize after each run and auto-injects the `recall_procedure` tool the model ' +
+          'the vector store after each run and auto-injects the `recall_procedure` tool the model ' +
           'can use to look up past successes.',
       }),
     top_k: z
@@ -1224,7 +1224,7 @@ export const AgentSpec = z
     procedural_memory: ProceduralSpec.default(ProceduralSpec.parse({})).openapi({
       description:
         'Procedural memory. When enabled, successful runs are distilled into ' +
-        '(intent → tool_call_sequence) vectors stored in MEMORY_VEC, and `recall_procedure` ' +
+        '(intent → tool_call_sequence) vectors stored in the pgvector memory table, and `recall_procedure` ' +
         'is auto-injected so the model can look up past successes as few-shot examples.',
     }),
     policies: z

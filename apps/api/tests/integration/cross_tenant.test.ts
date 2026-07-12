@@ -22,6 +22,7 @@ import { approvalsDoStub } from '@felix/harness/approvals/approvals-do';
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { describe, expect, it } from 'vitest';
+import { withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -285,5 +286,82 @@ describe('/audit cross-tenant scoping', () => {
     };
     expect(events.length).toBeGreaterThan(0);
     for (const e of events) expect(e.tenant_id).toBe('default');
+  });
+});
+
+describe('memory_vectors cross-tenant scoping (pgvector)', () => {
+  // Deterministic 768-dim embeddings — no AI binding needed: the vector
+  // round-trip and tenant/kind/manifest scoping are what's under test.
+  function vec(seed: number): number[] {
+    return Array.from({ length: 768 }, (_, i) => (i === seed ? 1 : 0.001));
+  }
+
+  it('round-trips a vector and never recalls across tenants or manifests', async () => {
+    const { deleteVector, queryVectors, upsertVector } = await import('@felix/harness/db/vectors');
+    const suffix = crypto.randomUUID().slice(0, 8);
+    await withPgContext(testEnv, async () => {
+      await upsertVector(testEnv, {
+        tenantId: 'vec-a',
+        id: `m-${suffix}`,
+        kind: 'fact',
+        manifestId: 'agent-1',
+        values: vec(1),
+        metadata: { text: 'tenant A private fact' },
+      });
+      await upsertVector(testEnv, {
+        tenantId: 'vec-b',
+        id: `m-${suffix}`,
+        kind: 'fact',
+        manifestId: 'agent-1',
+        values: vec(1),
+        metadata: { text: 'tenant B private fact' },
+      });
+
+      // Same-tenant, same-manifest recall hits.
+      const hits = await queryVectors(testEnv, {
+        tenantId: 'vec-a',
+        kinds: ['fact', 'preference', 'episode'],
+        manifestId: 'agent-1',
+        values: vec(1),
+        topK: 5,
+      });
+      expect(hits.length).toBeGreaterThan(0);
+      expect(hits[0]?.metadata.text).toBe('tenant A private fact');
+      expect(hits[0]?.score).toBeGreaterThan(0.99);
+      // Nothing from tenant B leaks in.
+      for (const h of hits) expect(String(h.metadata.text)).not.toContain('tenant B');
+
+      // Another manifest under the SAME tenant sees nothing (per-agent pool).
+      const otherManifest = await queryVectors(testEnv, {
+        tenantId: 'vec-a',
+        kinds: ['fact', 'preference', 'episode'],
+        manifestId: 'agent-2',
+        values: vec(1),
+        topK: 5,
+      });
+      expect(otherManifest.filter((h) => h.id === `m-${suffix}`)).toEqual([]);
+
+      // Kind filter keeps procedural pools out of semantic recall.
+      await upsertVector(testEnv, {
+        tenantId: 'vec-a',
+        id: `proc-${suffix}`,
+        kind: 'procedural',
+        manifestId: 'agent-1',
+        values: vec(1),
+        metadata: { intent: 'should not surface in memory recall' },
+      });
+      const memoryOnly = await queryVectors(testEnv, {
+        tenantId: 'vec-a',
+        kinds: ['fact', 'preference', 'episode'],
+        manifestId: 'agent-1',
+        values: vec(1),
+        topK: 10,
+      });
+      expect(memoryOnly.filter((h) => h.kind === 'procedural')).toEqual([]);
+
+      // Cross-tenant delete is a silent no-op; own-tenant delete works.
+      expect(await deleteVector(testEnv, 'vec-b', `proc-${suffix}`)).toBe(false);
+      expect(await deleteVector(testEnv, 'vec-a', `proc-${suffix}`)).toBe(true);
+    });
   });
 });

@@ -124,9 +124,11 @@ describe('runRetentionSweep', () => {
       audit_deleted: 0,
       plans_deleted: 0,
       artifacts_deleted: 0,
+      memory_deleted: 0,
       audit_capped: false,
       plans_capped: false,
       artifacts_capped: false,
+      memory_capped: false,
       errors: [],
     });
   });
@@ -237,5 +239,47 @@ describe('runRetentionSweep — R2 artifact GC', () => {
     expect(result.artifacts_deleted).toBe(5000);
     expect(result.artifacts_capped).toBe(true);
     expect(deleted).toHaveLength(5000);
+  });
+});
+
+describe('memory_vectors retention (opt-in)', () => {
+  const NOW = 1_000_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('parseMemoryRetentionDays — disabled by default, clamped when set', async () => {
+    const { parseMemoryRetentionDays } = await import('../../src/jobs/retention');
+    const env = (v?: string) => ({ MEMORY_RETENTION_DAYS: v }) as unknown as Env;
+    expect(parseMemoryRetentionDays(env())).toBeNull();
+    expect(parseMemoryRetentionDays(env(''))).toBeNull();
+    expect(parseMemoryRetentionDays(env('nope'))).toBeNull();
+    expect(parseMemoryRetentionDays(env('30'))).toBe(30);
+    expect(parseMemoryRetentionDays(env('0'))).toBe(1);
+    expect(parseMemoryRetentionDays(env('999999'))).toBe(3650);
+  });
+
+  it('sweeps memory_vectors only when MEMORY_RETENTION_DAYS is set', async () => {
+    const deletes: string[] = [];
+    const { sql } = makeFakeSql((q) => {
+      deletes.push(q.text);
+      return 0;
+    });
+    const base = {
+      HYPERDRIVE: { connectionString: 'postgresql://fake' },
+      AUDIT_QUEUE: { send: () => Promise.resolve() },
+    };
+
+    // Unset → the sweep never touches memory_vectors.
+    const off = { ...base } as unknown as Env;
+    const offResult = await withFakeDb(off, sql, () => runRetentionSweep(off, NOW));
+    expect(offResult.memory_deleted).toBe(0);
+    expect(deletes.some((t) => t.includes('memory_vectors'))).toBe(false);
+
+    // Set → a bounded delete with the day-window cutoff runs.
+    deletes.length = 0;
+    const on = { ...base, MEMORY_RETENTION_DAYS: '30' } as unknown as Env;
+    await withFakeDb(on, sql, () => runRetentionSweep(on, NOW));
+    const memDelete = deletes.find((t) => t.includes('memory_vectors'));
+    expect(memDelete).toBeDefined();
+    expect(memDelete).toContain('created_at <');
   });
 });

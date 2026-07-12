@@ -10,6 +10,10 @@
  *   3. R2 artifact spills (`artifacts/<tenant>/<thread>/<tool_call>.txt`)
  *      whose `uploaded` timestamp is older than `ARTIFACT_RETENTION_DAYS`
  *      (default 30) — an R2 `list` + bounded `delete`.
+ *   4. OPT-IN: `memory_vectors` rows older than `MEMORY_RETENTION_DAYS`.
+ *      Unset (the default) keeps memories forever — long-term memory is
+ *      state, not a log; product embeddings refresh `created_at` on every
+ *      catalog upsert so live rows never age out.
  *
  * Every delete is BOUNDED per tick (`MAX_DELETES_PER_TABLE`) so one sweep
  * can't exceed query-duration/R2 subrequest limits — if more qualifies it
@@ -21,7 +25,6 @@
  * and the number of `list` pages scanned per tick (artifact keys carry no
  * time ordering, so old objects can only be found by scanning).
  *
- * Out of scope (deliberately): Vectorize GC — tracked as a follow-up.
  *
  * The sweep runs under the cron's anonymous `RequestContext`, but it uses
  * the `*Detached` audit/metric helpers (env passed explicitly) so it's
@@ -87,6 +90,20 @@ export function parseAuditRetentionDays(env: Env): number {
  * valid values are floored and clamped to `[MIN_ARTIFACT_RETENTION_DAYS,
  * MAX_ARTIFACT_RETENTION_DAYS]`.
  */
+/**
+ * Resolve the OPT-IN memory retention window (days) from
+ * `MEMORY_RETENTION_DAYS`. Returns null when unset/invalid — null disables
+ * the memory_vectors sweep entirely (the safe default for long-term state).
+ * Valid values are floored and clamped to `[1, 3650]`.
+ */
+export function parseMemoryRetentionDays(env: Env): number | null {
+  const raw = env.MEMORY_RETENTION_DAYS;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(1, Math.min(MAX_RETENTION_DAYS, Math.floor(n)));
+}
+
 export function parseArtifactRetentionDays(env: Env): number {
   const raw = env.ARTIFACT_RETENTION_DAYS;
   if (raw === undefined || raw === null || raw === '') return DEFAULT_ARTIFACT_RETENTION_DAYS;
@@ -102,17 +119,19 @@ export interface RetentionSweepResult {
   audit_deleted: number;
   plans_deleted: number;
   artifacts_deleted: number;
+  memory_deleted: number;
   /** True when a table/bucket hit the per-tick cap — more remains for next tick. */
   audit_capped: boolean;
   plans_capped: boolean;
   artifacts_capped: boolean;
+  memory_capped: boolean;
   errors: string[];
 }
 
 /** Bounded delete via a PK `(tenant_id, id) IN (SELECT ... LIMIT n)` subquery. */
 async function boundedDelete(
   env: Env,
-  table: 'audit_events' | 'plans',
+  table: 'audit_events' | 'plans' | 'memory_vectors',
   cutoff: number,
 ): Promise<number> {
   const sql = getDb(env);
@@ -124,13 +143,20 @@ async function boundedDelete(
               SELECT tenant_id, id FROM audit_events
                 WHERE ts < ${cutoff} LIMIT ${MAX_DELETES_PER_TABLE})
         `
-      : await sql`
-          DELETE FROM plans
-            WHERE (tenant_id, id) IN (
-              SELECT tenant_id, id FROM plans
-                WHERE expires_at IS NOT NULL AND expires_at < ${cutoff}
-                LIMIT ${MAX_DELETES_PER_TABLE})
-        `;
+      : table === 'plans'
+        ? await sql`
+            DELETE FROM plans
+              WHERE (tenant_id, id) IN (
+                SELECT tenant_id, id FROM plans
+                  WHERE expires_at IS NOT NULL AND expires_at < ${cutoff}
+                  LIMIT ${MAX_DELETES_PER_TABLE})
+          `
+        : await sql`
+            DELETE FROM memory_vectors
+              WHERE (tenant_id, id) IN (
+                SELECT tenant_id, id FROM memory_vectors
+                  WHERE created_at < ${cutoff} LIMIT ${MAX_DELETES_PER_TABLE})
+          `;
   return res.count;
 }
 
@@ -194,9 +220,11 @@ export async function runRetentionSweep(
     audit_deleted: 0,
     plans_deleted: 0,
     artifacts_deleted: 0,
+    memory_deleted: 0,
     audit_capped: false,
     plans_capped: false,
     artifacts_capped: false,
+    memory_capped: false,
     errors: [],
   };
 
@@ -221,6 +249,22 @@ export async function runRetentionSweep(
     } catch (err) {
       result.errors.push(`plans: ${(err as Error).message ?? String(err)}`);
       console.error('retention sweep — plans delete failed', err);
+    }
+
+    // Opt-in: memory_vectors GC only when MEMORY_RETENTION_DAYS is set.
+    const memoryDays = parseMemoryRetentionDays(env);
+    if (memoryDays !== null) {
+      try {
+        result.memory_deleted = await boundedDelete(
+          env,
+          'memory_vectors',
+          now - memoryDays * DAY_MS,
+        );
+        result.memory_capped = result.memory_deleted >= MAX_DELETES_PER_TABLE;
+      } catch (err) {
+        result.errors.push(`memory_vectors: ${(err as Error).message ?? String(err)}`);
+        console.error('retention sweep — memory_vectors delete failed', err);
+      }
     }
   }
 
@@ -249,9 +293,11 @@ export async function runRetentionSweep(
         audit_deleted: result.audit_deleted,
         plans_deleted: result.plans_deleted,
         artifacts_deleted: result.artifacts_deleted,
+        memory_deleted: result.memory_deleted,
         audit_capped: result.audit_capped,
         plans_capped: result.plans_capped,
         artifacts_capped: result.artifacts_capped,
+        memory_capped: result.memory_capped,
         max_deletes_per_table: MAX_DELETES_PER_TABLE,
         ...(result.errors.length > 0 ? { errors: result.errors } : {}),
       },
@@ -275,6 +321,12 @@ export async function runRetentionSweep(
     'orchestrator_retention_deleted',
     { table: 'artifacts' },
     result.artifacts_deleted,
+  );
+  recordCounterDetached(
+    env,
+    'orchestrator_retention_deleted',
+    { table: 'memory_vectors' },
+    result.memory_deleted,
   );
 
   console.log(

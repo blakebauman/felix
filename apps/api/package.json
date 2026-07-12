@@ -19,8 +19,6 @@
     "migrate:pg:local": "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/felix node-pg-migrate -m migrations-pg up",
     "migrate:pg:staging": "node-pg-migrate -m migrations-pg up",
     "migrate:pg:production": "node-pg-migrate -m migrations-pg up",
-    "setup:vectorize:staging": "bash scripts/setup-vectorize.sh felix-memory-staging",
-    "setup:vectorize:production": "bash scripts/setup-vectorize.sh felix-memory-prod",
     "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
