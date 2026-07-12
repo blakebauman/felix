@@ -132,6 +132,14 @@ export const EvalRunSchema = z
     id: z.string(),
     dataset_name: z.string(),
     candidate_manifest: z.string(),
+    /**
+     * The tenant-managed manifest version the run actually tested, when the
+     * candidate resolved to the tenant D1 layer. Null for bundled / R2
+     * candidates (no version number) or runs that never finalized. The
+     * `/manifests` activation gate matches this against the version being
+     * activated so a passing run can only clear its own version.
+     */
+    manifest_version: z.number().int().nullable().optional(),
     started_at: z.number().int(),
     finished_at: z.number().int().nullable(),
     status: z.enum(['in_progress', 'completed', 'failed']),
