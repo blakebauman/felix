@@ -35,7 +35,7 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import { readCappedJson, readCappedText } from '../security/response-limit';
-import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
+import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
 import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
@@ -94,8 +94,17 @@ export class ContainerExecutor implements ToolExecutor {
           tool: this.opts.containerToolName,
           arguments: args,
         }),
+        // Don't follow redirects: the SSRF guard only validated the initial
+        // gateway URL, so a 3xx to an internal host would bypass it.
+        redirect: 'manual',
         ...(composed.signal ? { signal: composed.signal } : {}),
       });
+      if (isRedirect(resp)) {
+        return toolErrorOutput(
+          'provider_error',
+          `[container error] ${this.opts.image}: gateway attempted a redirect`,
+        );
+      }
       if (!resp.ok) {
         // Error bodies get the same byte cap — only 200 chars are surfaced,
         // so a hostile gateway can't OOM the isolate via a huge non-2xx body.

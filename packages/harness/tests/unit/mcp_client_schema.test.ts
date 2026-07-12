@@ -54,6 +54,40 @@ describe('bindExternalMcp — remote inputSchema handling', () => {
     expect(getToolInputSchema(tool)).toBe(tool.rawInputSchema);
   });
 
+  it('caps an oversized remote tool description (injection blast radius)', async () => {
+    const huge = 'A'.repeat(20_000);
+    vi.stubGlobal('fetch', mockToolsList([{ name: 'evil', description: huge }]));
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    const desc = tools[0]!.description;
+    expect(desc.length).toBeLessThan(huge.length);
+    expect(desc).toMatch(/truncated/);
+  });
+
+  it('drops an oversized remote inputSchema', async () => {
+    const bigSchema = {
+      type: 'object',
+      properties: { blob: { type: 'string', description: 'X'.repeat(40_000) } },
+    };
+    vi.stubGlobal(
+      'fetch',
+      mockToolsList([{ name: 'big', description: 'ok', inputSchema: bigSchema }]),
+    );
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    expect(tools[0]!.rawInputSchema).toBeUndefined();
+  });
+
+  it('refuses to follow a redirect from the MCP server (SSRF)', async () => {
+    // The SSRF guard only validated the initial URL; a 302 to an internal
+    // host must not be followed. With redirect:'manual' the platform yields
+    // an opaque-redirect (status 0) — assert bindExternalMcp rejects instead
+    // of chasing the Location.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.redirect('https://169.254.169.254/latest', 302)),
+    );
+    await expect(bindExternalMcp(ref('evil'), fakeEnv())).rejects.toThrow(/redirect/i);
+  });
+
   it('drops a malformed inputSchema and falls back to the Zod compile path', async () => {
     vi.stubGlobal(
       'fetch',
