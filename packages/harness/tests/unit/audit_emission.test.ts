@@ -361,7 +361,13 @@ describe('governance wrappers carry transport on audit + counters', () => {
     });
     const wrapped = applyGuardrails(
       [leaky],
-      { providers: ['pii'], block_on_match: false, targets: ['output'], judges: [] },
+      {
+        providers: ['pii'],
+        block_on_match: false,
+        targets: ['output'],
+        final_response: { on_match: 'redact', streaming: 'buffer' },
+        judges: [],
+      },
       'm',
     );
     await runWithContext(ctx(), () => wrapped[0]!.executor.execute({}));

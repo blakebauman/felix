@@ -471,12 +471,24 @@ Absolute ceilings ([src/limits/models.ts](../../src/limits/models.ts)):
 ```yaml
 guardrails:
   providers: []                # default: []; available: "pii"
-  block_on_match: false        # default: false; true = deny, false = redact
-  targets: [input, output]     # default: [input, output]; subset of ["input", "output"]
+  block_on_match: false        # default: false; true = deny, false = redact (tool side)
+  targets: [input, output]     # default: [input, output]; subset of ["input", "output", "final_response"]
+  final_response:              # only consulted when "final_response" ∈ targets
+    on_match: redact           # default: redact; redact | block
+    streaming: buffer          # default: buffer; buffer | passthrough
   judges: []                   # default: []; declared JudgeRule entries
 ```
 
 `pii` runs four regex patterns (email, SSN, US phone, credit card) with SHA-256 fingerprints written to audit (never the raw value). `pii` is currently the only accepted provider — **any unknown provider name is rejected at parse time** (an unregistered provider would otherwise be silently skipped, disabling filtering while appearing protected), and `bedrock` is explicitly rejected until an AI Gateway content-policy hook lands. Omitting `targets` scans **both** input and output (the default is `[input, output]`, not `[]`). See [internals/governance.md](../internals/governance.md).
+
+### Final-response guard
+
+`input` / `output` scan **tool traffic** only (tool args and tool results). Adding **`final_response`** to `targets` also scans the model's **user-facing answer** at the end of the loop — the case where a model paraphrases a secret from a redacted tool result into its reply, which the tool-side filters never see. Reuses `providers` as the filter set; runs in the react / deep / reflect / plan_execute loops, outside the tool-executor wrapper chain. Off by default.
+
+- **`final_response.on_match`** — `redact` (default) masks the matched spans in the answer; `block` replaces the entire answer with `[response withheld by output policy]`. `redact` is the default because the regexes false-positive (a long order number can trip the credit-card pattern) and that risk now lands on the user-facing path.
+- **`final_response.streaming`** — how streamed responses are handled. `buffer` (default) holds the streamed deltas back, filters the completed answer, then emits the guarded text — correct, but trades token-by-token time-to-first-token. `passthrough` streams deltas raw (unfiltered) and only guards the message persisted to the session, emitting an `orchestrator_final_guard_skipped` counter so operators know the streamed bytes escaped the filter. Pick `buffer` unless streaming latency matters more than filtering the live bytes.
+
+A match emits a `guardrail_block` audit event with `payload.surface: 'final_response'` (fingerprints only). Judges over the final response and multi-agent (router/parallel/groupchat) aggregation guarding are not yet wired.
 
 **Judges** (`spec.guardrails.judges[]`) declare inferential sensors that score each tool result via `env.AI` (Workers AI, no AI Gateway tokens) and deny calls below threshold:
 

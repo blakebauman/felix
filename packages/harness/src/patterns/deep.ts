@@ -45,5 +45,6 @@ registerPattern('deep', (ctx) => {
     sessionStore: ctx.sessionStore ?? null,
     sessionStrategy: ctx.sessionStrategy ?? null,
     limits: ctx.limits,
+    guardrails: ctx.manifest.spec.guardrails,
   });
 });

@@ -279,6 +279,23 @@ if out is string and targets.includes('output'):
 
 Counter: `orchestrator_guardrail_blocks { surface, manifest_id }`.
 
+### Final-response guard
+
+The wrapper above only sees **tool traffic**. The model's final user-facing answer isn't a tool call, so it's filtered by a separate hook — `guardFinalResponse` ([src/guardrails/final-response.ts](../../src/guardrails/final-response.ts)) — invoked by the react / deep / reflect / plan_execute loops at the terminal message, **outside** the executor wrapper chain (it operates on the assistant `ChatMessage.content`). It runs only when `guardrails.targets` includes `final_response` and there is at least one provider.
+
+```
+at the loop's terminal assistant turn:
+  if targets.includes('final_response') and providers:
+    run all providers on message.content
+    if matches:
+      audit guardrail_block { surface: 'final_response', matches }   # fingerprints only
+      on_match == 'block' ? replace whole answer with a notice : replace content with filtered
+```
+
+Streaming: `final_response.streaming = buffer` holds deltas back, filters the completed answer, and emits the guarded text as one chunk (correct, costs TTFT). `passthrough` streams deltas raw and only guards the persisted terminal message, emitting `orchestrator_final_guard_skipped { reason: 'streaming_passthrough' }`. Only `content` is touched — `thinking` / `redacted_thinking` blocks are preserved. Judges over the final answer and multi-agent aggregation guarding are not yet wired.
+
+A `fatal: true` tool error is also a terminal answer — the react loop runs the same guard over the fatal message before it's returned, streamed (`on_tool_end` included), or persisted, since upstream error bodies can carry secrets. Intermediate (non-terminal) assistant text in `buffer` mode is still flushed unguarded — only the terminal answer is covered.
+
 ## Approvals
 
 Source: `src/approvals/wrap.ts`, `src/approvals/store.ts`, `src/approvals/approvals-do.ts`, `src/approvals/models.ts`.

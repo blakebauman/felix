@@ -87,10 +87,47 @@ export const GuardrailsSchema = z
       description: 'When true, a match denies the request. When false, the match is redacted.',
     }),
     targets: z
-      .array(z.enum(['input', 'output']))
+      .array(z.enum(['input', 'output', 'final_response']))
       .default(['input', 'output'])
       .openapi({
-        description: 'Which sides of the conversation are scanned.',
+        description:
+          'Which sides of the conversation are scanned. `input` / `output` scan tool arguments ' +
+          "and tool results (the default). `final_response` additionally scans the model's " +
+          'user-facing answer at the end of the loop — see `final_response` below. Off by default ' +
+          'so enabling it is an explicit choice.',
+      }),
+    final_response: z
+      .object({
+        on_match: z
+          .enum(['redact', 'block'])
+          .default('redact')
+          .openapi({
+            description:
+              'How a match in the final answer is handled. `redact` replaces the matched spans ' +
+              '(like the tool-output filter). `block` replaces the entire answer with a fixed ' +
+              'notice. `redact` is the default — the regex filters false-positive (a long order ' +
+              'number can trip the credit-card pattern), and that risk lands on the user-facing path.',
+          }),
+        streaming: z
+          .enum(['buffer', 'passthrough'])
+          .default('buffer')
+          .openapi({
+            description:
+              'How streamed responses are guarded. `buffer` accumulates the streamed deltas, ' +
+              'filters once the answer is complete, then emits the guarded text (correct, but ' +
+              'trades token-by-token time-to-first-token). `passthrough` streams deltas raw — the ' +
+              'streamed bytes are NOT filtered, only the message persisted to the session is — and ' +
+              'emits `orchestrator_final_guard_skipped` so operators know. `buffer` is the ' +
+              'safe-by-default choice; opt into `passthrough` knowingly.',
+          }),
+      })
+      .strict()
+      .default({ on_match: 'redact', streaming: 'buffer' })
+      .openapi({
+        description:
+          "Behavior for scanning the model's final user-facing answer. Only consulted when " +
+          '`targets` includes `final_response`. Reuses `providers` as the filter set; runs ' +
+          'OUTSIDE the tool-executor wrapper chain (it operates on the assistant message content).',
       }),
     judges: z
       .array(JudgeRuleSchema)
@@ -115,6 +152,7 @@ export const DEFAULT_GUARDRAILS: Guardrails = {
   providers: [],
   block_on_match: false,
   targets: ['input', 'output'],
+  final_response: { on_match: 'redact', streaming: 'buffer' },
   judges: [],
 };
 
@@ -124,4 +162,12 @@ export function guardrailsEnabled(g: Guardrails): boolean {
 
 export function judgesEnabled(g: Guardrails): boolean {
   return g.judges.length > 0;
+}
+
+/**
+ * True when the final-response guard should run: the caller opted `final_response`
+ * into `targets` AND there is at least one filter provider to run over the answer.
+ */
+export function finalResponseGuardEnabled(g: Guardrails): boolean {
+  return g.targets.includes('final_response') && g.providers.length > 0;
 }

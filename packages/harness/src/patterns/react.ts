@@ -33,6 +33,12 @@
 import { recordEvent } from '../audit/store';
 import { getContext, requireContext } from '../context';
 import type { Env } from '../env';
+import { guardFinalResponse } from '../guardrails/final-response';
+import {
+  DEFAULT_GUARDRAILS,
+  finalResponseGuardEnabled,
+  type Guardrails,
+} from '../guardrails/models';
 import { ABSOLUTE_LIMITS, clampLimit, DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
 import { checkPreflightTokenBudget, checkTokenBudget } from '../limits/wrap';
@@ -107,6 +113,13 @@ export interface BuildReactOptions {
    * tool reads back. Disabled by default.
    */
   artifacts?: ArtifactsOpts | null;
+  /**
+   * Guardrails config. Only the final-response guard is consulted here — the
+   * tool-side `providers` / `judges` run inside `applyGuardrails` / `applyJudges`
+   * at build time. When `targets` includes `final_response`, the loop filters
+   * the model's final answer before returning / streaming it.
+   */
+  guardrails?: Guardrails | null;
 }
 
 const DEFAULT_RECURSION = 10;
@@ -124,6 +137,8 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
   const strategy: SessionStrategy = opts.sessionStrategy ?? fullReplaySessionStrategy;
   const limits: Limits = opts.limits ?? DEFAULT_LIMITS;
   const artifactsOpts: ArtifactsOpts = opts.artifacts ?? DEFAULT_ARTIFACTS_OPTS;
+  const guardrails: Guardrails = opts.guardrails ?? DEFAULT_GUARDRAILS;
+  const guardFinal = finalResponseGuardEnabled(guardrails);
 
   /**
    * Dispatch a single tool call. Returns `{ kind: 'ok', message }` for the
@@ -392,8 +407,13 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
         messages.push(result.message);
 
         if (result.stopReason !== 'tool_use' || !result.message.tool_calls?.length) {
-          persistAsync(session, [result.message]);
-          return { messages, final: result.message };
+          // Guard the final user-facing answer (no-op unless `final_response`
+          // is a target). Replace the pushed message + persist the guarded copy
+          // so the redaction is what the caller and the session log see.
+          const guarded = await guardFinalResponse(result.message, guardrails, opts.manifestId);
+          messages[messages.length - 1] = guarded;
+          persistAsync(session, [guarded]);
+          return { messages, final: guarded };
         }
 
         const newMessages: ChatMessage[] = [result.message];
@@ -407,8 +427,18 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
             break;
           }
         }
+        if (fatal) {
+          // A fatal tool error becomes the terminal user-facing answer, so it
+          // gets the same final-response guard as a normal terminal turn —
+          // upstream error bodies can carry secrets. Guard BEFORE persisting
+          // so the session log gets the redacted copy too.
+          const guarded = await guardFinalResponse(fatal, guardrails, opts.manifestId);
+          messages[messages.length - 1] = guarded;
+          newMessages[newMessages.length - 1] = guarded;
+          persistAsync(session, newMessages);
+          return { messages, final: guarded };
+        }
         persistAsync(session, newMessages);
-        if (fatal) return { messages, final: fatal };
       }
       const fallback: ChatMessage = {
         role: 'assistant',
@@ -461,42 +491,89 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
         // dropped tool_calls on Workers AI; this avoids both.
         const stream = model.streamChat(messages, turnTools, { signal: currentSignal() });
         let result: ModelChatResult;
+        // In `buffer` mode we hold text deltas back so a secret can't stream to
+        // the client before the final-response guard runs. We don't know a turn
+        // is terminal until the stream returns, so every turn's deltas buffer;
+        // intermediate (tool-use) turns flush their buffer unguarded afterward.
+        const bufferMode = guardFinal && guardrails.final_response.streaming === 'buffer';
+        let buffered = '';
         while (true) {
           const next = await stream.next();
           if (next.done) {
             result = next.value;
             break;
           }
-          if (next.value)
-            yield { event: 'on_chat_model_stream', data: { chunk: { content: next.value } } };
+          if (next.value) {
+            if (bufferMode) buffered += next.value;
+            else yield { event: 'on_chat_model_stream', data: { chunk: { content: next.value } } };
+          }
         }
         trackUsage(result);
         messages.push(result.message);
 
-        if (result.stopReason !== 'tool_use' || !result.message.tool_calls?.length) {
-          persistAsync(session, [result.message]);
+        const isTerminal = result.stopReason !== 'tool_use' || !result.message.tool_calls?.length;
+
+        if (isTerminal) {
+          let finalMsg = result.message;
+          if (guardFinal) {
+            finalMsg = await guardFinalResponse(result.message, guardrails, opts.manifestId);
+            messages[messages.length - 1] = finalMsg;
+            if (!bufferMode && finalMsg !== result.message) {
+              // passthrough: the raw (unfiltered) deltas already went to the
+              // client; only the persisted/returned copy is guarded. Surface
+              // that the streamed bytes escaped the filter.
+              recordCounter('orchestrator_final_guard_skipped', {
+                reason: 'streaming_passthrough',
+                manifest_id: opts.manifestId,
+              });
+            }
+          }
+          // buffer mode held the deltas — emit the guarded answer as one chunk.
+          if (bufferMode && finalMsg.content) {
+            yield {
+              event: 'on_chat_model_stream',
+              data: { chunk: { content: finalMsg.content } },
+            };
+          }
+          persistAsync(session, [finalMsg]);
           yield {
             event: 'on_chain_end',
-            data: { output: withUsage({ messages, final: result.message }) },
+            data: { output: withUsage({ messages, final: finalMsg }) },
           };
           return;
         }
 
+        // Non-terminal turn: in buffer mode, flush any intermediate assistant
+        // text now (it re-enters the loop, it's not the final answer).
+        if (bufferMode && buffered) {
+          yield { event: 'on_chat_model_stream', data: { chunk: { content: buffered } } };
+        }
+
         const newMessages: ChatMessage[] = [result.message];
         let fatal: ChatMessage | null = null;
-        for (const call of result.message.tool_calls) {
+        // `isTerminal` was false, so tool_calls is present; `?? []` keeps the
+        // narrowing explicit for TS.
+        for (const call of result.message.tool_calls ?? []) {
           yield { event: 'on_tool_start', data: { name: call.name, input: call.args } };
           const dispatched = await dispatchToolCall(call, input.threadId, originatingInput);
+          if (dispatched.kind === 'fatal') {
+            // A fatal tool error becomes the terminal user-facing answer, so
+            // it gets the same final-response guard as a normal terminal turn
+            // — upstream error bodies can carry secrets. Guard BEFORE the
+            // on_tool_end yield and the persist so neither the stream nor the
+            // session log sees the raw error.
+            fatal = await guardFinalResponse(dispatched.message, guardrails, opts.manifestId);
+            messages.push(fatal);
+            newMessages.push(fatal);
+            yield { event: 'on_tool_end', data: { name: call.name, output: fatal.content } };
+            break;
+          }
           messages.push(dispatched.message);
           newMessages.push(dispatched.message);
           yield {
             event: 'on_tool_end',
             data: { name: call.name, output: dispatched.message.content },
           };
-          if (dispatched.kind === 'fatal') {
-            fatal = dispatched.message;
-            break;
-          }
         }
         persistAsync(session, newMessages);
         if (fatal) {
@@ -522,5 +599,6 @@ registerPattern('react', (ctx) =>
     limits: ctx.limits,
     toolsRetrieval: ctx.manifest.spec.tools_retrieval,
     artifacts: ctx.manifest.spec.artifacts,
+    guardrails: ctx.manifest.spec.guardrails,
   }),
 );

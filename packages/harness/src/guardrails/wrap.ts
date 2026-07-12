@@ -13,27 +13,7 @@ import { recordCounter } from '../observability/metrics';
 import { wrapExecutor } from '../tools/executor';
 import { denyOutput, isWrapperDeny, type Tool, type ToolInput } from '../tools/types';
 import { type Guardrails, guardrailsEnabled } from './models';
-import { FILTERS, type FilterResult } from './pipeline';
-
-async function runFilters(providers: string[], value: string): Promise<FilterResult> {
-  let current = value;
-  const matches: FilterResult['matches'] = [];
-  for (const name of providers) {
-    const fn = FILTERS[name];
-    if (!fn) {
-      // Should be unreachable — GuardrailsSchema rejects unknown providers at
-      // validation time. Count it anyway so a provider that slips through
-      // (e.g. a hand-built Manifest bypassing Zod) is alertable rather than
-      // silently disabling filtering.
-      recordCounter('orchestrator_guardrail_provider_unknown', { provider: name });
-      continue;
-    }
-    const r = await fn(current);
-    current = r.filtered;
-    matches.push(...r.matches);
-  }
-  return { filtered: current, matches };
-}
+import { type FilterResult, runFilters } from './pipeline';
 
 function recordBlock(opts: {
   manifestId: string;
