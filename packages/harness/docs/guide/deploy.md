@@ -4,20 +4,19 @@ description: "Deploy Felix to staging and production on Cloudflare Workers — b
 
 # Deploy
 
-Felix ships to two Cloudflare Workers environments out of the box (staging and production) and runs locally via Wrangler. Every environment has isolated D1, KV, R2, Vectorize, and Queue resources — the two never share state.
+Felix ships to two Cloudflare Workers environments out of the box (staging and production) and runs locally via Wrangler. Every environment has isolated Postgres (Neon branch via Hyperdrive), D1 (legacy, being removed), KV, R2, and Queue resources — the two never share state.
 
 ## Bindings
 
-From `apps/api/wrangler.jsonc` — your gitignored copy of the tracked template (`cp apps/api/wrangler.example.jsonc apps/api/wrangler.jsonc`, then fill in the `REPLACE_*` account/resource ids). Bare `wrangler` commands in this guide run from `apps/api/`. The dev/local set is the top-level block; `env.staging` and `env.production` override D1 / KV / R2 / Vectorize / Queue with isolated resources.
+From `apps/api/wrangler.jsonc` — your gitignored copy of the tracked template (`cp apps/api/wrangler.example.jsonc apps/api/wrangler.jsonc`, then fill in the `REPLACE_*` account/resource ids). Bare `wrangler` commands in this guide run from `apps/api/`. The dev/local set is the top-level block; `env.staging` and `env.production` override Hyperdrive / D1 / KV / R2 / Queue with isolated resources.
 
 | Binding | Type | Purpose |
 |---|---|---|
 | `AI` | Workers AI | Native Llama / Mistral inference. External providers (Anthropic, OpenAI) go through AI Gateway via `fetch` instead. |
-| `HYPERDRIVE` | Hyperdrive | Neon Postgres (relational store, replacing `DB` during the pg cutover). Create per env with `wrangler hyperdrive create <name> --connection-string='<Neon DIRECT url, no -pooler>' --caching-disabled` — caching must stay off (Felix depends on read-after-write), and Hyperdrive replaces Neon's pooler. Stores connect via `getDb(env)`; local dev routes through `localConnectionString` (Docker Postgres, `pnpm db:up`), and schema is applied with `pnpm migrate:pg:*` (node-pg-migrate over the direct connection — never through Hyperdrive). |
+| `HYPERDRIVE` | Hyperdrive | Neon Postgres (relational store, replacing `DB` during the pg cutover). Create per env with `wrangler hyperdrive create <name> --connection-string='<Neon DIRECT url, no -pooler>' --caching-disabled` — caching must stay off (Felix depends on read-after-write), and Hyperdrive replaces Neon's pooler. Stores connect via `getDb(env)`; the `memory_vectors` table (pgvector) also carries all 768-dim BGE embeddings — semantic + procedural memory and the commerce product/visual vectors (Vectorize is no longer used); local dev routes through `localConnectionString` (Docker Postgres, `pnpm db:up`), and schema is applied with `pnpm migrate:pg:*` (node-pg-migrate over the direct connection — never through Hyperdrive). |
 | `DB` | D1 | **Deprecated — being replaced by `HYPERDRIVE`; removed after the pg cutover.** Harness core: `audit_events`, `plans`, `jobs`, `approvals`, `skill_activation`, `oauth_token_cache`, `manifests` + `manifest_active`, `eval_datasets` + `eval_dataset_items` + `eval_runs`. Commerce (migrations 0006–0018): `products`/`orders`/`order_items`, `acp_checkout_sessions`, `brands`/`brand_domains`, `data_sources`, B2B `accounts`/`buyers`/`quotes`/`invoices`/`contract_prices`/`billing_settings`, `geo_queries`/`geo_observations`, `consents`/`order_attribution`, personalization + dynamic-pricing tables. |
 | `CACHE` | KV | JWKS cache, outbound OAuth token cache, manifest cache. |
 | `BUNDLES` | R2 | Signed `PolicyBundle`, per-tenant manifest overrides at `manifests/<tenant_id>/<name>.json`, global overrides at `manifests/<name>.json`, and artifact spills at `artifacts/<tenant_id>/<thread_id>/<tool_call_id>.json` (when `spec.artifacts.enabled`). |
-| `MEMORY_VEC` | Vectorize | 768-dim BGE index (`@cf/baai/bge-base-en-v1.5`) — semantic memory, JIT tool retrieval, `semantic:N` session strategy, procedural memory. |
 | `AUDIT_QUEUE` | Queue (producer) | Audit events fan out from the producer in `audit/store.ts`. |
 | `felix-audit` consumer | Queue (consumer) | Batched persist into Postgres — one multi-row INSERT per pull (`max_batch_size: 50`, `max_batch_timeout: 5s`). |
 | `METRICS` | Analytics Engine | `orchestrator_*` counters + histograms via `recordCounter` / `recordHistogram`. Falls back to structured `console.log` when absent. |
@@ -44,6 +43,7 @@ Set under `vars` in `wrangler.jsonc` (per-env overrides supported).
 | `SSRF_ALLOW_HOSTS` | optional | Comma-separated hostname allow-list for outbound (mcp/peers). |
 | `CONTINUOUS_EVAL` | optional | JSON tuning for the continuous-eval cron (`sample_rate` / `max_replays_per_tick` / `window_ms`); bad values degrade to defaults. |
 | `AUDIT_RETENTION_DAYS` | optional | Retention window (days) for the `retention_sweep` cron's `audit_events` prune. Parsed defensively (default 90, clamped `[7, 3650]`). |
+| `MEMORY_RETENTION_DAYS` | optional | OPT-IN retention window (days) for `memory_vectors`. UNSET = memories kept forever (the safe default). Valid values clamped `[1, 3650]`. |
 | `ARTIFACT_RETENTION_DAYS` | optional | Retention window (days) for the `retention_sweep` cron's R2 artifact-spill prune. Parsed defensively (default 30, clamped `[1, 3650]`). |
 | `CONVERSATION_IDLE_TTL_DAYS` | optional | Idle-TTL (days) after which a `ConversationDO` thread's storage is deleted by its DO alarm. Parsed defensively (default 90, clamped `[1, 3650]`). |
 | `GEO_MONITOR` | optional | JSON tuning for the GEO monitor cron (engine model, `max_queries_per_tick`, window). |

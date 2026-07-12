@@ -2,10 +2,12 @@
  * Predictive personalization: customer identity + behavior CRUD, the
  * abandoned-cart cron scan, and the recommend_products tool dispatch.
  *
- * Vectorize (MEMORY_VEC) isn't bound in the miniflare test pool, so similarity
- * queries degrade to empty — the tool is asserted to return a well-formed
- * (empty) array rather than throwing. The D1-backed behavior + abandonment
- * logic is exercised against the real test database.
+ * The AI binding isn't wired in the miniflare test pool, so embedding-backed
+ * similarity queries degrade to empty — the tool is asserted to return a
+ * well-formed (empty) array rather than throwing. (The pgvector round-trip
+ * itself is covered in cross_tenant.test.ts by seeding vectors directly.)
+ * The Postgres-backed behavior + abandonment logic is exercised against the
+ * real test database.
  */
 
 import { env } from 'cloudflare:test';

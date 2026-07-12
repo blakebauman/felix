@@ -50,6 +50,15 @@ export interface Env {
    * `[1, 3650]`.
    */
   CONVERSATION_IDLE_TTL_DAYS?: string;
+  /**
+   * Optional retention window (in days) for `memory_vectors` rows pruned by
+   * the `retention_sweep` cron. UNSET = memories are kept forever (the safe
+   * default — semantic/procedural memory is long-term state, and product
+   * embeddings refresh `created_at` on every catalog upsert so live rows
+   * never age out). Parsed defensively by `parseMemoryRetentionDays`:
+   * non-numeric → disabled; valid values floored + clamped to `[1, 3650]`.
+   */
+  MEMORY_RETENTION_DAYS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   /**
@@ -88,7 +97,6 @@ export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
   BUNDLES: R2Bucket;
-  MEMORY_VEC: VectorizeIndex;
   AUDIT_QUEUE: Queue;
 
   // ---- Observability ----

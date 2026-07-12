@@ -249,42 +249,27 @@ CREATE INDEX idx_eval_runs_dataset ON eval_runs (tenant_id, dataset_name, create
 
 Items snapshot the input + rubric verbatim — running an item later replays exactly what was scored before. Runs land a single summary row; item-level scoring lives in `payload_json` of the paired `eval_run` audit event so we don't fan out a fourth eval table per item.
 
-## Vectorize (`MEMORY_VEC`)
+## pgvector (`memory_vectors`)
 
-768-dimensional cosine index. Embeddings come from `@cf/baai/bge-base-en-v1.5` via the native `env.AI` binding.
+768-dimensional cosine vectors in the `memory_vectors` Postgres table (pgvector, HNSW index). Embeddings come from `@cf/baai/bge-base-en-v1.5` via the native `env.AI` binding; queries go through `src/db/vectors.ts` (`upsertVector` / `queryVectors` / `getVectorValues` / `deleteVector`).
 
-Used by the Vectorize-backed store in `src/memory/store.ts` when `manifest.memory.store` resolves to `vectorize`:
+Scope filters are REAL COLUMNS — `(tenant_id, id)` primary key plus `kind` and `manifest_id` — so isolation is schema-enforced rather than depending on provisioned metadata indexes (the old Vectorize fail-open footgun is gone), and every query must name an explicit kind list so the pools can never bleed into each other.
+
+Used by the pgvector-backed store in `src/memory/store.ts` when `manifest.memory.store` resolves to `vectorize` (the enum keeps its legacy name):
 
 | Op | Behavior |
 |---|---|
-| `remember(text, kind)` | Embed, upsert with metadata `{ tenant, manifest, kind, ts, text }`. |
-| `recall(query, k)` | Embed query, top-K query filtered by `{ tenant }`. |
-| `forget(id)` | Lookup, verify tenant ownership, delete. |
+| `remember(text, kind)` | Embed, upsert scoped to `(tenant, manifest, kind)` with `{ text, ts }` metadata. |
+| `recall(query, k)` | Embed query, top-K cosine query filtered by tenant + manifest + the memory kinds (`fact`/`preference`/`episode`). |
+| `forget(id)` | Tenant-scoped `DELETE` — a cross-tenant id deletes nothing, no lookup dance. |
 
-Every read is tenant-scoped. Every write tags the tenant. There is no cross-tenant recall path.
-
-:::caution[Provision the tenant metadata indexes]
-Vectorize only filters on a metadata field if a **metadata index** exists for it — a `filter` on an unindexed field is silently ignored, degrading a tenant-scoped `recall` into an **unfiltered top-K across all tenants**. Both metadata keys in use must be indexed: `tenant` (semantic store, `src/memory/store.ts`) and `tenant_id` (procedural memory, `src/memory/procedural.ts` + `plan_execute`). Provision them once per index:
-
-```bash
-wrangler vectorize create-metadata-index MEMORY_VEC --property-name tenant    --type string
-wrangler vectorize create-metadata-index MEMORY_VEC --property-name tenant_id --type string
-```
-
-The two keys are a historical split (the semantic store predates procedural memory); isolation holds because each query's filter matches its own writer's key, but a missing index is a fail-open. Unifying the key name is a data migration (existing vectors carry the old key), so it's deliberately not done in place.
-:::
+Every read is tenant-scoped. Every write tags the tenant. There is no cross-tenant recall path (guarded by `apps/api/tests/integration/cross_tenant.test.ts`).
 
 The builder auto-injects two tools (`memory_remember`, `memory_recall`) when this store is enabled, so manifest authors never need to declare them.
 
-### Three additional Vectorize use cases
+`kind` values in the shared table: `fact` / `preference` / `episode` (semantic memory), `procedural` (procedural memory — `storeProcedure` writes successful past plans tagged with the manifest; `recall_procedure` and the `plan_execute` planner few-shots read them back), and `product` / `product_image` (commerce catalog + visual-search embeddings, written by `@felix/commerce`). All share the same 768-dim BGE embedding pipeline.
 
-The same `MEMORY_VEC` index also backs:
-
-- **`semantic:N` session strategy** (`src/session/semantic-strategy.ts`) — on each render, embed the most recent user message and pull the top-N most relevant prior events from the session log scored against a per-thread namespace. Anchor messages (`metadata.pinned === true`) are always included regardless of score.
-- **JIT tool retrieval** (`src/tools/retrieval.ts`) — `selectTopKTools(tools, messages, opts)` embeds the conversation tail and each tool's `description + name` once at build time (cached in an isolate-local LRU), returns the top-K most relevant tools per react iteration. The full tool map is still available for dispatch so a hallucinated tool name routes through the existing unknown-tool audit path.
-- **Procedural memory** (`src/memory/procedural.ts`) — `storeProcedure(...)` writes successful past plans tagged with the manifest; `recall_procedure` (auto-injected when `spec.procedural_memory.enabled`) lets the model pull few-shot examples from the same index. Filtered by `{ tenant, manifest, kind: 'procedural' }`.
-
-All three share the same 768-dim BGE embedding pipeline. No additional Vectorize bindings are needed.
+Retention: OPT-IN via `MEMORY_RETENTION_DAYS` — unset (the default) keeps memories forever; long-term memory is state, not a log, and product embeddings refresh `created_at` on every catalog upsert so live rows never age out. When set, the `retention_sweep` cron prunes rows older than the window, bounded per tick like the other tables.
 
 ## R2 (`BUNDLES`) — artifact spill
 

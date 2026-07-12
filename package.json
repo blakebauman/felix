@@ -28,8 +28,6 @@
     "migrate:pg:local": "pnpm --filter @felix/api migrate:pg:local",
     "migrate:pg:staging": "pnpm --filter @felix/api migrate:pg:staging",
     "migrate:pg:production": "pnpm --filter @felix/api migrate:pg:production",
-    "setup:vectorize:staging": "pnpm --filter @felix/api setup:vectorize:staging",
-    "setup:vectorize:production": "pnpm --filter @felix/api setup:vectorize:production",
     "eval": "pnpm --filter @felix/api run eval",
     "chat:dev": "pnpm --filter @felix/chat-ui dev",
     "chat:deploy": "pnpm --filter @felix/chat-ui run deploy"

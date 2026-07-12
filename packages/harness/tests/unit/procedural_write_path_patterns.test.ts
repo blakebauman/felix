@@ -2,7 +2,7 @@
  * Procedural memory write path across the patterns that build react.
  *
  * The react loop distills a successful (intent → tool sequence) into
- * MEMORY_VEC (covered by `procedural_write_path.test.ts`). This suite pins
+ * memory_vectors (covered by `procedural_write_path.test.ts`). This suite pins
  * that the same write path fires uniformly for the patterns that wrap /
  * build react:
  *
@@ -27,6 +27,7 @@ import { buildPlanExecuteAgent } from '../../src/patterns/plan-execute';
 import { buildReflectAgent } from '../../src/patterns/reflect';
 import type { ChatMessage } from '../../src/patterns/types';
 import { defineTool } from '../../src/tools/types';
+import { type CapturedQuery, makeFakeSql } from '../helpers/fake-sql';
 
 const MODEL_SPEC: Model = {
   id: null,
@@ -76,29 +77,31 @@ function fakeModel(responses: ChatMessage[]) {
   };
 }
 
-function envCapturing(upserts: unknown[]): Env {
+function envForVectors(): Env {
   return {
     AI: {
       async run() {
         return { data: [[0.1, 0.2, 0.3]] };
       },
     },
-    MEMORY_VEC: {
-      async upsert(vectors: unknown) {
-        upserts.push(vectors);
-      },
-      async query() {
-        return { matches: [] };
-      },
-    },
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
   } as unknown as Env;
 }
 
-function ctxWith(env: Env, pending: Promise<unknown>[]): RequestContext {
+/**
+ * The fake sql captures every memory_vectors INSERT into `upserts` — one
+ * entry per procedural write, mirroring the old MEMORY_VEC.upsert capture.
+ */
+function ctxWith(env: Env, pending: Promise<unknown>[], upserts: CapturedQuery[]): RequestContext {
+  const { sql } = makeFakeSql((q) => {
+    if (q.text.includes('INSERT INTO memory_vectors')) upserts.push(q);
+    return [];
+  });
   return {
     env,
     auth: ANONYMOUS,
     limitState: newLimitState(),
+    db: sql,
     execCtx: { waitUntil: (p: Promise<unknown>) => pending.push(p) } as unknown as ExecutionContext,
   };
 }
@@ -106,19 +109,29 @@ function ctxWith(env: Env, pending: Promise<unknown>[]): RequestContext {
 async function drive(
   env: Env,
   pending: Promise<unknown>[],
+  upserts: CapturedQuery[],
   fn: () => Promise<void>,
 ): Promise<void> {
-  await runWithContext(ctxWith(env, pending), async () => {
+  await runWithContext(ctxWith(env, pending, upserts), async () => {
     await fn();
     await Promise.all(pending);
   });
 }
 
+/** Pull the metadata object param out of a captured memory_vectors INSERT. */
+function insertMetadata(q: CapturedQuery): Record<string, unknown> {
+  const metadata = q.params.find(
+    (p): p is Record<string, unknown> =>
+      typeof p === 'object' && p !== null && !Array.isArray(p) && 'sequence' in p,
+  );
+  return metadata ?? {};
+}
+
 describe('procedural memory write path across patterns', () => {
   it('deep: distills a procedure on a successful tool-using run', async () => {
-    const upserts: unknown[] = [];
+    const upserts: CapturedQuery[] = [];
     const pending: Promise<unknown>[] = [];
-    const env = envCapturing(upserts);
+    const env = envForVectors();
     vi.spyOn(modelModule, 'buildModel').mockReturnValue(fakeModel([...TOOL_THEN_FINAL]) as never);
     const agent = buildDeepAgent({
       env,
@@ -129,20 +142,20 @@ describe('procedural memory write path across patterns', () => {
       manifestVersion: '1.0.0',
       procedural: PROCEDURAL_ON,
     });
-    await drive(env, pending, async () => {
+    await drive(env, pending, upserts, async () => {
       await agent.invoke({ messages: [{ role: 'user', content: 'do the thing' }] });
     });
     vi.restoreAllMocks();
     expect(upserts).toHaveLength(1);
-    const vectors = upserts[0] as Array<{ metadata: Record<string, unknown> }>;
-    expect(vectors[0]!.metadata).toMatchObject({ kind: 'procedural', manifest_id: 'm' });
-    expect(String(vectors[0]!.metadata.sequence)).toContain('echo');
+    expect(upserts[0]!.params).toContain('procedural');
+    expect(upserts[0]!.params).toContain('m');
+    expect(String(insertMetadata(upserts[0]!).sequence)).toContain('echo');
   });
 
   it('reflect: records exactly once per accepted run, not per iteration', async () => {
-    const upserts: unknown[] = [];
+    const upserts: CapturedQuery[] = [];
     const pending: Promise<unknown>[] = [];
-    const env = envCapturing(upserts);
+    const env = envForVectors();
     // react model replays the tool→final pair twice (one per reflect
     // iteration); verifier fails iteration 0, passes iteration 1.
     const reactResponses = [...TOOL_THEN_FINAL, ...TOOL_THEN_FINAL];
@@ -172,20 +185,19 @@ describe('procedural memory write path across patterns', () => {
         criteria: '',
       },
     });
-    await drive(env, pending, async () => {
+    await drive(env, pending, upserts, async () => {
       await agent.invoke({ messages: [{ role: 'user', content: 'do the thing' }] });
     });
     vi.restoreAllMocks();
     // Two react replays happened, but only the accepted result records.
     expect(upserts).toHaveLength(1);
-    const vectors = upserts[0] as Array<{ metadata: Record<string, unknown> }>;
-    expect(String(vectors[0]!.metadata.sequence)).toContain('echo');
+    expect(String(insertMetadata(upserts[0]!).sequence)).toContain('echo');
   });
 
   it('plan_execute: writes on a clean synthesized answer', async () => {
-    const upserts: unknown[] = [];
+    const upserts: CapturedQuery[] = [];
     const pending: Promise<unknown>[] = [];
-    const env = envCapturing(upserts);
+    const env = envForVectors();
     const plannerResponses: ChatMessage[] = [
       { role: 'assistant', content: '{"plan":[{"id":"s1","description":"do it"}]}' },
       { role: 'assistant', content: 'the synthesized final answer' },
@@ -218,13 +230,13 @@ describe('procedural memory write path across patterns', () => {
         planner_few_shots: 0,
       },
     });
-    await drive(env, pending, async () => {
+    await drive(env, pending, upserts, async () => {
       await agent.invoke({ messages: [{ role: 'user', content: 'do the thing' }] });
     });
     vi.restoreAllMocks();
     expect(upserts).toHaveLength(1);
-    const vectors = upserts[0] as Array<{ metadata: Record<string, unknown> }>;
-    expect(vectors[0]!.metadata).toMatchObject({ kind: 'procedural', manifest_id: 'm' });
-    expect(String(vectors[0]!.metadata.sequence)).toContain('echo');
+    expect(upserts[0]!.params).toContain('procedural');
+    expect(upserts[0]!.params).toContain('m');
+    expect(String(insertMetadata(upserts[0]!).sequence)).toContain('echo');
   });
 });
