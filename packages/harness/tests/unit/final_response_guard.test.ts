@@ -179,3 +179,32 @@ describe('final-response judges', () => {
     expect(out.content).toBe('the answer');
   });
 });
+
+describe('final_response schema cross-field validation', () => {
+  it("rejects on_match 'block' combined with streaming 'incremental'", async () => {
+    const { GuardrailsSchema } = await import('../../src/guardrails/models');
+    const parsed = GuardrailsSchema.safeParse({
+      providers: ['pii'],
+      targets: ['final_response'],
+      final_response: { on_match: 'block', streaming: 'incremental' },
+    });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toMatch(/cannot be combined/);
+  });
+
+  it('accepts block+buffer and redact+incremental', async () => {
+    const { GuardrailsSchema } = await import('../../src/guardrails/models');
+    for (const final_response of [
+      { on_match: 'block', streaming: 'buffer' },
+      { on_match: 'block', streaming: 'passthrough' },
+      { on_match: 'redact', streaming: 'incremental' },
+    ]) {
+      const parsed = GuardrailsSchema.safeParse({
+        providers: ['pii'],
+        targets: ['final_response'],
+        final_response,
+      });
+      expect(parsed.success).toBe(true);
+    }
+  });
+});

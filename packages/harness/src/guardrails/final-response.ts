@@ -24,6 +24,14 @@ import { runFilters } from './pipeline';
 const BLOCKED_NOTICE = '[response withheld by output policy]';
 const FINAL_JUDGE_TOOL = '<final_response>';
 
+// How many chars of *filtered* output the incremental streamer holds back
+// before emitting. Any match near the live edge stays inside this window until
+// it either fully resolves (and is redacted) or enough non-matching text pushes
+// it out — so a match spanning a chunk boundary is caught before its bytes are
+// emitted. Must exceed the longest realistic match; a single contiguous secret
+// longer than this could leak its prefix (documented on the schema field).
+const SAFE_TAIL_CHARS = 320;
+
 function recordFilterBlock(
   manifestId: string,
   matches: { provider: string; fingerprint: string }[],
@@ -144,4 +152,45 @@ export async function guardFinalResponseText(
 ): Promise<string> {
   if (!g || !finalResponseGuardEnabled(g) || text.length === 0) return text;
   return applyFinalGuards(text, g, manifestId, opts);
+}
+
+/**
+ * Stateful content-filter for the streaming `incremental` mode. `push(delta)`
+ * returns the newly-emittable *filtered* text (holding back the last
+ * `SAFE_TAIL_CHARS` so a boundary-spanning match isn't emitted early);
+ * `finish()` returns the remaining tail plus the fully-filtered content and
+ * records the filter block once over the whole answer. Judges are NOT run here
+ * — they need the complete answer and can't retract streamed bytes, so the
+ * caller runs them at the terminal message (like `passthrough`).
+ */
+export function makeIncrementalGuard(g: Guardrails, manifestId: string) {
+  let raw = '';
+  let emitted = 0; // chars of filtered output already emitted (stable prefix)
+  const providers = g.providers;
+  return {
+    async push(delta: string): Promise<string> {
+      raw += delta;
+      if (providers.length === 0) {
+        // No content filter — stream raw (judges run at finish on the caller).
+        const chunk = raw.slice(emitted);
+        emitted = raw.length;
+        return chunk;
+      }
+      const { filtered } = await runFilters(providers, raw);
+      const commit = Math.max(0, filtered.length - SAFE_TAIL_CHARS);
+      if (commit <= emitted) return '';
+      const chunk = filtered.slice(emitted, commit);
+      emitted = commit;
+      return chunk;
+    },
+    async finish(): Promise<{ tail: string; content: string }> {
+      if (providers.length === 0) {
+        return { tail: raw.slice(emitted), content: raw };
+      }
+      const { filtered, matches } = await runFilters(providers, raw);
+      if (matches.length > 0) recordFilterBlock(manifestId, matches);
+      const tail = filtered.length > emitted ? filtered.slice(emitted) : '';
+      return { tail, content: filtered };
+    },
+  };
 }

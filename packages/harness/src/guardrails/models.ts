@@ -121,19 +121,34 @@ export const GuardrailsSchema = z
               'number can trip the credit-card pattern), and that risk lands on the user-facing path.',
           }),
         streaming: z
-          .enum(['buffer', 'passthrough'])
+          .enum(['buffer', 'incremental', 'passthrough'])
           .default('buffer')
           .openapi({
             description:
               'How streamed responses are guarded. `buffer` accumulates the streamed deltas, ' +
-              'filters once the answer is complete, then emits the guarded text (correct, but ' +
-              'trades token-by-token time-to-first-token). `passthrough` streams deltas raw — the ' +
-              'streamed bytes are NOT filtered, only the message persisted to the session is — and ' +
-              'emits `orchestrator_final_guard_skipped` so operators know. `buffer` is the ' +
-              'safe-by-default choice; opt into `passthrough` knowingly.',
+              'filters once the answer is complete, then emits the guarded text as one chunk ' +
+              '(correct, but trades token-by-token time-to-first-token). `incremental` streams ' +
+              'filtered deltas live, holding back a bounded tail window so a match spanning a ' +
+              'chunk boundary is still caught before it is emitted (keeps streaming live AND ' +
+              'filtered; a single contiguous secret longer than the ~320-char window could leak ' +
+              'its prefix). `passthrough` streams deltas raw — the streamed bytes are NOT filtered, ' +
+              'only the message persisted to the session is — and emits ' +
+              '`orchestrator_final_guard_skipped` so operators know. Content-filter redaction ' +
+              'works under all three. `on_match: "block"` cannot be combined with `incremental` ' +
+              '(rejected at validation — the filtered deltas have already streamed, so the block ' +
+              'would be silently downgraded to redact); under `passthrough` the persisted/returned ' +
+              'message is still blocked and the skip counter fires. A `final_response` judge only ' +
+              'BLOCKS under `buffer` / non-streaming. `buffer` is the safe-by-default choice.',
           }),
       })
       .strict()
+      .refine((fr) => !(fr.on_match === 'block' && fr.streaming === 'incremental'), {
+        message:
+          "final_response.on_match 'block' cannot be combined with streaming 'incremental': " +
+          'the filtered deltas have already streamed by the time a match could withhold the ' +
+          "answer, silently downgrading block to redact. Use streaming 'buffer' to block, or " +
+          "on_match 'redact' to keep incremental streaming.",
+      })
       .default({ on_match: 'redact', streaming: 'buffer' })
       .openapi({
         description:

@@ -5,6 +5,8 @@
  *     emitted as a single chunk once the stream completes.
  *   - streaming `passthrough`: raw deltas stream unfiltered, but the terminal
  *     `on_chain_end` message is still guarded.
+ *   - streaming `incremental`: filtered deltas stream live, and a match split
+ *     across a chunk boundary is caught before its bytes are emitted.
  *   - fatal tool errors: a `fatal: true` tool's error message becomes the
  *     terminal answer, so it goes through the same guard on both paths.
  */
@@ -215,5 +217,39 @@ describe('final-response guard in the react loop', () => {
       }
     });
     expect(chunks).toEqual(['plain ', 'answer']);
+  });
+
+  it('incremental mode: catches an email split across chunk boundaries and streams live', async () => {
+    // The email is split across two deltas; a long trailing tail forces the
+    // sliding window to commit some output mid-stream (proving live emission).
+    const tail = 'x'.repeat(400);
+    const deltas = ['My email is jane@exa', 'mple.com. ', tail];
+    const full = `My email is jane@example.com. ${tail}`;
+    vi.spyOn(modelModule, 'buildModel').mockReturnValue(fakeStreamingModel(deltas, full) as never);
+    const agent = agentWith(
+      G({
+        providers: ['pii'],
+        targets: ['final_response'],
+        final_response: { on_match: 'redact', streaming: 'incremental' },
+      }),
+    );
+    const chunks: string[] = [];
+    let finalContent = '';
+    await runWithContext(ctx(), async () => {
+      for await (const ev of agent.streamEvents({ messages: [{ role: 'user', content: 'hi' }] })) {
+        if (ev.event === 'on_chat_model_stream') chunks.push(ev.data.chunk.content);
+        if (ev.event === 'on_chain_end') finalContent = ev.data.output.final.content;
+      }
+    });
+    const streamed = chunks.join('');
+    // The raw email (and its partial prefix) never streamed.
+    expect(streamed).not.toContain('jane@example.com');
+    expect(streamed).not.toContain('jane@exa');
+    expect(streamed).toContain('[REDACTED:email]');
+    // Streaming was live, not one buffered chunk.
+    expect(chunks.length).toBeGreaterThan(1);
+    // Final message is fully guarded.
+    expect(finalContent).toContain('[REDACTED:email]');
+    expect(finalContent).not.toContain('jane@example.com');
   });
 });
