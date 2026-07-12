@@ -1137,12 +1137,17 @@ function toOpenAIMessage(m: ChatMessage): unknown {
   }
   if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
     // OpenAI's multimodal content array: text part(s) then image_url parts.
-    // image_url.url accepts both data: URLs and remote URLs.
+    // image_url.url accepts data: URLs and remote URLs, but we reject non-https
+    // remote URLs to match the outbound scheme policy (the provider fetches
+    // these, so the SSRF guard can't contain them — but https-only still holds).
     return {
       role: 'user',
       content: [
         ...(m.content ? [{ type: 'text', text: m.content }] : []),
-        ...m.attachments.map((a) => ({ type: 'image_url', image_url: { url: a.url } })),
+        ...m.attachments.map((a) => {
+          assertProviderImageUrl(a.url);
+          return { type: 'image_url', image_url: { url: a.url } };
+        }),
       ],
     };
   }
@@ -1160,9 +1165,22 @@ function parseDataUrl(url: string): { mediaType: string; data: string } | null {
 }
 
 /**
+ * Reject remote image URLs that aren't `https:`. These URLs are fetched by the
+ * model provider (Anthropic / OpenAI), not by Felix, so the SSRF guard can't
+ * contain where they connect — but we still hold them to the same https-only
+ * outbound scheme policy the rest of the codebase enforces, so an `http://`
+ * image URL can't smuggle a plaintext fetch to an internal target. `data:`
+ * URLs are inlined (not fetched) and are always allowed.
+ */
+function assertProviderImageUrl(url: string): void {
+  if (url.startsWith('data:') || url.startsWith('https://')) return;
+  throw new Error(`image url must use https: or data: scheme (rejected: ${url.slice(0, 40)})`);
+}
+
+/**
  * Map a Felix `ImageAttachment` to an Anthropic image content block. `data:`
- * URLs become a base64 source; `https://` URLs become a url source. Anything
- * else (or a malformed data URL) is dropped (returns null).
+ * URLs become a base64 source; `https://` URLs become a url source. A malformed
+ * data URL is dropped (returns null); a non-https remote URL throws.
  */
 function anthropicImageBlock(att: ImageAttachment): Record<string, unknown> | null {
   if (att.url.startsWith('data:')) {
@@ -1177,10 +1195,8 @@ function anthropicImageBlock(att: ImageAttachment): Record<string, unknown> | nu
       },
     };
   }
-  if (att.url.startsWith('https://') || att.url.startsWith('http://')) {
-    return { type: 'image', source: { type: 'url', url: att.url } };
-  }
-  return null;
+  assertProviderImageUrl(att.url);
+  return { type: 'image', source: { type: 'url', url: att.url } };
 }
 
 function safeJson(s: string): Record<string, unknown> {

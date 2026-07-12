@@ -37,17 +37,23 @@
  * branches on it the same way it branches on `sandbox` or `container`.
  *
  * SSRF NOTE: the `url` the headless browser navigates to is model/tool-arg
- * supplied and is NOT validated by the in-worker SSRF guard (the browser runs
- * in the wrapper Worker / Browser Rendering, not this isolate, so
- * `assertSafeOutboundUrlForEnv` can't contain where it actually connects).
- * Containing browser navigation to internal targets is therefore the wrapping
- * Worker's / Browser Rendering provider's responsibility — the adapter should
- * enforce its own allow-list or egress policy. Manifests should only grant
- * `browser_tools` to trusted agents.
+ * supplied. The harness now runs a best-effort SSRF pre-check on it before
+ * dispatch (`assertSafeOutboundUrlForEnv` — the same string/IP-literal guard
+ * mcp/container/a2a use, no DNS) so obvious internal targets (169.254.169.254,
+ * RFC1918, loopback, `.internal`) are rejected here with a `permission_denied`
+ * ToolError. This guard genuinely CAN'T contain where the remote browser
+ * actually connects (the browser runs in the wrapper Worker / Browser
+ * Rendering, not this isolate — a public DNS name that resolves to a private
+ * IP would still slip past), so containing browser navigation remains the
+ * wrapping Worker's / Browser Rendering provider's responsibility too: the
+ * adapter should default-deny internal ranges and enforce its own egress
+ * allow-list. Manifests should only grant `browser_tools` to trusted agents.
  */
 
 import { z } from 'zod';
-import { codeForStatus, toolErrorOutput } from './errors';
+import type { Env } from '../env';
+import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
+import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
   defineToolWithExecutor,
@@ -73,6 +79,8 @@ export interface BrowserExecutorOpts {
   binding: BrowserFetcher;
   /** Browser-side op the wrapper Worker routes on. */
   op: BrowserOp;
+  /** Env for the best-effort SSRF pre-check on the model-supplied target url. */
+  env: Env;
   /** Optional wall-clock cap composed with `ctx.signal`. */
   timeoutMs?: number;
   /** Optional path prefix prepended before `/{op}`. */
@@ -84,6 +92,22 @@ export class BrowserExecutor implements ToolExecutor {
   constructor(private readonly opts: BrowserExecutorOpts) {}
 
   async execute(args: ToolInput, ctx?: ToolInvocationCtx): Promise<ToolOutput> {
+    // Best-effort SSRF pre-check on the model/tool-supplied navigation target.
+    // The remote browser runs outside this isolate so we can't CONTAIN where it
+    // connects, but we can reject obvious internal literals (IMDS, RFC1918,
+    // loopback, `.internal`) before dispatch. Same string/IP guard mcp /
+    // container / a2a use; honors env.SSRF_ALLOW_HOSTS + dev localhost.
+    const targetUrl = typeof args.url === 'string' ? args.url : undefined;
+    if (targetUrl) {
+      try {
+        assertSafeOutboundUrlForEnv(targetUrl, this.opts.env);
+      } catch (err) {
+        throw new ToolError(
+          'permission_denied',
+          `[browser blocked] ${this.opts.op}: target url rejected by SSRF guard: ${(err as Error).message}`,
+        );
+      }
+    }
     const composed = composeSignal(ctx?.signal, this.opts.timeoutMs);
     try {
       const url = `https://browser${this.opts.pathPrefix ?? ''}/${this.opts.op}`;
@@ -182,6 +206,7 @@ export function browserTool(spec: {
   fatal?: boolean;
   binding: BrowserFetcher;
   op: BrowserOp;
+  env: Env;
   timeoutMs?: number;
   pathPrefix?: string;
 }): Tool {
@@ -195,6 +220,7 @@ export function browserTool(spec: {
     executor: new BrowserExecutor({
       binding: spec.binding,
       op: spec.op,
+      env: spec.env,
       timeoutMs: spec.timeoutMs,
       pathPrefix: spec.pathPrefix,
     }),
@@ -216,6 +242,7 @@ export function makeBrowserTool(ref: BrowserToolRefLike, env: Record<string, unk
     fatal: ref.fatal ?? false,
     binding,
     op: ref.op,
+    env: env as unknown as Env,
     timeoutMs: ref.timeout_ms ?? undefined,
     pathPrefix: ref.path_prefix,
   });
