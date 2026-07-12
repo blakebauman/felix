@@ -10,9 +10,10 @@
  *  7. Build container-backed tools                    → `ContainerExecutor`
  *  8. Build queue-backed tools                        → `QueueExecutor`
  *  9. Resolve sub-agents (multi-agent) or tools (single-agent);
- *     auto-inject memory tools when `memory.store` is Vectorize-backed.
- *     Pattern-specific tool injection (e.g. `PLAN_TOOLS` for `deep`)
- *     lives inside the pattern's registered adapter, not here.
+ *     auto-inject memory tools when `memory.store` is Vectorize-backed,
+ *     and `PLAN_TOOLS` for the `deep` pattern. This injection happens
+ *     BEFORE the governance pipeline so pattern-injected tools are gated
+ *     by policies/limits/guardrails/judges/approvals like any other.
  * 10. Governance pipeline: `mergeWithManifest` → `applyPolicies`
  *     → `applyLimits` → `applyGuardrails` → `applyApprovals`.
  *     Each wrapper replaces `tool.executor` via `wrapExecutor(...)` so
@@ -55,6 +56,7 @@ import '../patterns/reflect';
 import '../patterns/router';
 import { getPattern, listPatterns } from '../patterns/registry';
 import type { Agent, InvokeInput, InvokeResult, StreamEvent } from '../patterns/types';
+import { PLAN_TOOLS } from '../plans/tools';
 import { mergeWithManifest } from '../policy/bundle';
 import { applyPolicies } from '../policy/wrap';
 import { getSessionStore } from '../session/do-session';
@@ -252,6 +254,15 @@ export async function buildAgent(
         max_window_chars: manifest.spec.artifacts.max_window_chars,
       });
       if (!seen.has(tool.name)) resolvedTools.push(tool);
+    }
+    // Auto-inject `PLAN_TOOLS` (plan_create / plan_update_step / plan_get)
+    // for the `deep` pattern BEFORE the governance pipeline so they are
+    // gated by policies/approvals, counted by `max_tool_calls`, and seen by
+    // guardrails/judges like any other tool. The deep adapter used to inject
+    // these post-dispatch, which let them escape every governance wrapper.
+    if (manifest.spec.pattern === 'deep' && !manifest.spec.sub_agents.length) {
+      const seen = new Set(resolvedTools.map((t) => t.name));
+      for (const t of PLAN_TOOLS) if (!seen.has(t.name)) resolvedTools.push(t);
     }
     if (deps.extraTools?.length) {
       const seen = new Set(resolvedTools.map((t) => t.name));
