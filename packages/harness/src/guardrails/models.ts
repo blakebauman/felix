@@ -121,12 +121,22 @@ export const GuardrailsSchema = z
               'filtered; a single contiguous secret longer than the ~320-char window could leak ' +
               'its prefix). `passthrough` streams deltas raw — the streamed bytes are NOT filtered, ' +
               'only the message persisted to the session is — and emits ' +
-              '`orchestrator_final_guard_skipped` so operators know. Content filters work under ' +
-              'all three; a `final_response` judge can only BLOCK under `buffer` / non-streaming ' +
-              '(the others have already sent bytes). `buffer` is the safe-by-default choice.',
+              '`orchestrator_final_guard_skipped` so operators know. Content-filter redaction ' +
+              'works under all three. `on_match: "block"` cannot be combined with `incremental` ' +
+              '(rejected at validation — the filtered deltas have already streamed, so the block ' +
+              'would be silently downgraded to redact); under `passthrough` the persisted/returned ' +
+              'message is still blocked and the skip counter fires. A `final_response` judge only ' +
+              'BLOCKS under `buffer` / non-streaming. `buffer` is the safe-by-default choice.',
           }),
       })
       .strict()
+      .refine((fr) => !(fr.on_match === 'block' && fr.streaming === 'incremental'), {
+        message:
+          "final_response.on_match 'block' cannot be combined with streaming 'incremental': " +
+          'the filtered deltas have already streamed by the time a match could withhold the ' +
+          "answer, silently downgrading block to redact. Use streaming 'buffer' to block, or " +
+          "on_match 'redact' to keep incremental streaming.",
+      })
       .default({ on_match: 'redact', streaming: 'buffer' })
       .openapi({
         description:
