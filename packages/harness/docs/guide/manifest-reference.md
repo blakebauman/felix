@@ -476,7 +476,7 @@ guardrails:
   judges: []                   # default: []; declared JudgeRule entries
 ```
 
-`pii` runs four regex patterns (email, SSN, US phone, credit card) with SHA-256 fingerprints written to audit (never the raw value). `pii` is currently the only accepted provider — `bedrock` is explicitly rejected at parse time with a validation error until an AI Gateway content-policy hook lands. Omitting `targets` scans **both** input and output (the default is `[input, output]`, not `[]`). See [internals/governance.md](../internals/governance.md).
+`pii` runs four regex patterns (email, SSN, US phone, credit card) with SHA-256 fingerprints written to audit (never the raw value). `pii` is currently the only accepted provider — **any unknown provider name is rejected at parse time** (an unregistered provider would otherwise be silently skipped, disabling filtering while appearing protected), and `bedrock` is explicitly rejected until an AI Gateway content-policy hook lands. Omitting `targets` scans **both** input and output (the default is `[input, output]`, not `[]`). See [internals/governance.md](../internals/governance.md).
 
 **Judges** (`spec.guardrails.judges[]`) declare inferential sensors that score each tool result via `env.AI` (Workers AI, no AI Gateway tokens) and deny calls below threshold:
 
@@ -490,7 +490,7 @@ guardrails:
       target_tools: []                                # default: []; empty = all tools
 ```
 
-The `llm_judge` wrapper composes *after* the regex-style guardrails: a tool result that escapes the `pii` filter can still be denied for being off-topic or hallucinated. Each rule emits a `judge_score` audit event per call. Skipped on outputs already flagged by `denyOutput` (other wrappers) or `toolErrorOutput` (transport error) — judging a deny string is wasted compute. Short-circuits to pass when `env.AI` is absent so a misconfigured Worker doesn't silently block every tool call.
+The `llm_judge` wrapper composes *after* the regex-style guardrails: a tool result that escapes the `pii` filter can still be denied for being off-topic or hallucinated. Each rule emits a `judge_score` audit event per call. Skipped on outputs already flagged by `denyOutput` (other wrappers) or `toolErrorOutput` (transport error) — judging a deny string is wasted compute. When `env.AI` is absent the judge short-circuits to pass in `development`, but **fails closed (denies)** in any other environment — a declared judge that can't run is a misconfiguration, not a reason to ship unjudged output (the skip is counted via `orchestrator_judge_skipped`).
 
 ## spec.approvals
 

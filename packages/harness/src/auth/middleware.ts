@@ -20,6 +20,7 @@ import type { Context, Next } from 'hono';
 import { disposeLimitState, newLimitState, type RequestContext, runWithContext } from '../context';
 import type { Env } from '../env';
 import type { Manifest } from '../manifests/schema';
+import { recordCounterDetached } from '../observability/metrics';
 import { ANONYMOUS, type AuthContext } from './context';
 import { parseVerifiers, verifyJwt } from './jwt';
 import { outboundAuthHeader } from './providers';
@@ -52,12 +53,23 @@ let warnedNoVerifiers = false;
  * as tenant `default`, collapsing multi-tenant isolation. Bearer tokens still
  * fail closed (401), but anonymous requests proceed silently — so we emit a
  * one-shot structured error per isolate rather than let it pass unnoticed.
+ *
+ * We deliberately do NOT hard-fail the boot: some deployments legitimately
+ * run only anonymous public surfaces (`/shop`, `/widget`, `/acp`, discovery)
+ * as tenant `default` and have no verifiers by design. Instead we make the
+ * misconfiguration alertable via a counter so multi-tenant operators can page
+ * on it. Scope-gated routes still reject anonymous callers in non-dev (401).
  */
 function assertVerifiersConfigured(env: Env): void {
   if (warnedNoVerifiers) return;
   if (env.ENVIRONMENT === 'development') return;
   if (parseVerifiers(env).length > 0) return;
   warnedNoVerifiers = true;
+  // Detached variant: this runs before runWithContext is entered, so the
+  // context-reading recordCounter would silently miss the METRICS binding.
+  recordCounterDetached(env, 'orchestrator_auth_misconfigured', {
+    environment: env.ENVIRONMENT ?? 'unknown',
+  });
   console.error(
     JSON.stringify({
       level: 'error',

@@ -11,6 +11,28 @@ import { assertValidManifestName, ManifestSchema } from '../../src/manifests/sch
 import { ManifestValidationError, validateManifest } from '../../src/manifests/validate';
 
 describe('manifest schema', () => {
+  it('rejects an unknown guardrail provider (silent no-op fail-open)', () => {
+    // A typo'd/renamed provider would be skipped at runtime, silently
+    // disabling filtering while appearing protected. Reject at validation.
+    expect(() =>
+      ManifestSchema.parse({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'g' },
+        spec: { pattern: 'react', guardrails: { providers: ['piii'] } },
+      }),
+    ).toThrow();
+    // The known provider still parses.
+    expect(() =>
+      ManifestSchema.parse({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'g' },
+        spec: { pattern: 'react', guardrails: { providers: ['pii'] } },
+      }),
+    ).not.toThrow();
+  });
+
   it('rejects a manifest name containing a slash (R2 path confusion)', () => {
     // A `/` in the name would let it escape its R2 key prefix
     // (`manifests/<tenant>/<name>.json`) and reach another tenant's override.
