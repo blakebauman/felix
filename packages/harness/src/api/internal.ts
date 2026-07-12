@@ -12,18 +12,29 @@
  * The route is intentionally narrow:
  *   - `kind` MUST be `'tool_result'` (no arbitrary writes).
  *   - The shared secret is the only authn — there is no JWT path here.
- *   - On success, a `queue_complete` audit row is emitted server-side so
- *     consumers don't need to also emit it (and so a misbehaving consumer
- *     can't skip the audit trail).
  *   - The tenant_id is parsed from the thread_id prefix (`tenant:suffix`).
  *     A malformed thread_id is rejected.
+ *   - **Dispatch pairing.** The shared secret is fleet-global, so it alone
+ *     would let any holder inject an arbitrary `tool_result` into ANY
+ *     tenant's thread. Before writing, each event's `tool_call_id` is
+ *     matched against an outstanding `queue_dispatch` audit row for THIS
+ *     tenant whose recorded `thread_id` equals the addressed thread. A
+ *     write-back with no matching dispatch — a forged / cross-tenant id —
+ *     is rejected (409) and nothing is written.
+ *   - **One-shot.** A dispatch that already has a `queue_complete` /
+ *     `queue_expired` row is settled; a second write-back for the same
+ *     `tool_call_id` is a replay and is rejected (409). On success a
+ *     `queue_complete` audit row is emitted server-side (carrying the
+ *     dispatch's manifest id) so consumers don't need to emit it and a
+ *     misbehaving consumer can't skip the audit trail.
  *
  * Mounted under `/internal` in `app.ts`. The path is named, not secret —
- * security comes from the shared-secret check, not obscurity.
+ * security comes from the shared-secret check + dispatch pairing, not
+ * obscurity.
  */
 
 import { createRoute, OpenAPIHono, z } from '@hono/zod-openapi';
-import { recordEvent } from '../audit/store';
+import { findQueueDispatchState, recordEvent } from '../audit/store';
 import type { AuthContext } from '../auth/context';
 import type { Env } from '../env';
 import { conversationStub } from '../memory/conversation-do';
@@ -121,12 +132,20 @@ const writeBackRoute = createRoute({
       description: 'Missing or wrong shared secret.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
+    409: {
+      description:
+        'No outstanding queue dispatch pairs to a `tool_call_id` (forged / cross-tenant / ' +
+        'not-yet-visible), or the dispatch is already resolved (replay). Nothing is written.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
     502: {
       description: 'Append to ConversationDO failed.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
     503: {
-      description: 'CONSUMER_SHARED_SECRET is not configured on this deployment.',
+      description:
+        'CONSUMER_SHARED_SECRET is not configured, or the audit store (DB) needed to verify ' +
+        'dispatch pairing is unavailable, on this deployment.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
   },
@@ -157,6 +176,14 @@ export function buildInternalRouter(): OpenAPIHono<{
       return c.json({ error: 'unauthorized' }, 401) as never;
     }
 
+    // Dispatch pairing needs the audit store. Fail closed if it's absent —
+    // the harness core always wires DB in staging/production; refusing here
+    // is consistent with the missing-secret 503 above and never silently
+    // skips the integrity check.
+    if (!c.env.DB) {
+      return c.json({ error: 'dispatch verification unavailable (no audit store)' }, 503) as never;
+    }
+
     const { thread_id: threadId } = c.req.valid('param');
     const tenantId = tenantFromThreadId(threadId);
     if (!tenantId) {
@@ -164,6 +191,45 @@ export function buildInternalRouter(): OpenAPIHono<{
     }
 
     const body = c.req.valid('json');
+
+    // Prove each event pairs to a REAL, still-outstanding queue dispatch for
+    // this tenant + thread BEFORE anything is written. The shared secret is
+    // fleet-global, so without this a forged `tool_call_id` (or one naming
+    // another tenant's thread) would land a `tool_result` in a session it
+    // never dispatched. The `queue_dispatch` audit row is tenant-scoped and
+    // records the dispatching thread; a forged prefix has no such row.
+    const dispatchManifest = new Map<string, string>();
+    for (const e of body.events) {
+      const state = await findQueueDispatchState(c.env, tenantId, e.tool_call_id);
+      if (!state.dispatch) {
+        return c.json(
+          {
+            error: 'no outstanding queue dispatch for this tool_call_id',
+            detail: `tenant '${tenantId}' has no queue_dispatch row for tool_call_id '${e.tool_call_id}'`,
+          },
+          409,
+        ) as never;
+      }
+      if (state.dispatch.threadId !== threadId) {
+        return c.json(
+          {
+            error: 'queue dispatch targets a different thread',
+            detail: `tool_call_id '${e.tool_call_id}' was dispatched on another thread, not '${threadId}'`,
+          },
+          409,
+        ) as never;
+      }
+      if (state.resolved) {
+        return c.json(
+          {
+            error: 'queue dispatch already resolved',
+            detail: `tool_call_id '${e.tool_call_id}' already has a queue_complete/queue_expired row (replay)`,
+          },
+          409,
+        ) as never;
+      }
+      dispatchManifest.set(e.tool_call_id, state.dispatch.manifestId);
+    }
 
     const events = body.events.map((e) => ({
       kind: e.kind,
@@ -189,13 +255,16 @@ export function buildInternalRouter(): OpenAPIHono<{
 
     // One queue_complete audit per resolved tool_call_id. Server-side
     // emission means the consumer doesn't have to also emit it, and a
-    // misbehaving consumer can't skip the audit trail.
+    // misbehaving consumer can't skip the audit trail. The manifest id is
+    // carried over from the paired `queue_dispatch` row (it was empty here
+    // before — the consumer has no manifest context) so the completion row
+    // sits under the same manifest as its dispatch.
     for (const e of body.events) {
       const jobId = (e.metadata as { job_id?: string } | undefined)?.job_id ?? '';
       recordEvent({
         tenantId,
         eventType: 'queue_complete',
-        manifestId: '',
+        manifestId: dispatchManifest.get(e.tool_call_id) ?? '',
         status: 'ok',
         payload: {
           tool: e.name,
