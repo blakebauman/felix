@@ -26,7 +26,7 @@ import type { Env } from '../env';
 import type { McpServerRef } from '../manifests/schema';
 import { readCappedJson } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
-import { toolErrorOutput } from '../tools/errors';
+import { codeForStatus, ToolError, toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
 import {
   defineToolWithExecutor,
@@ -79,14 +79,24 @@ async function rpc<T>(
     ...(signal ? { signal } : {}),
   });
   if (isRedirect(resp)) {
-    throw new Error(`MCP ${method} refused: server attempted a redirect`);
+    // Mirror the container / A2A transports: a blocked redirect is a
+    // misbehaving upstream, classified as a provider error rather than
+    // an opaque `internal`.
+    throw new ToolError('provider_error', `MCP ${method} refused: server attempted a redirect`);
   }
   if (!resp.ok) {
-    throw new Error(`MCP ${method} failed: ${resp.status}`);
+    // Map the HTTP status onto the closed ToolErrorCode taxonomy so the
+    // anomaly detector can group by error code (429 → rate_limited,
+    // 5xx → provider_error, 401/403 → permission_denied, …) instead of
+    // bucketing every MCP failure as `internal`.
+    throw new ToolError(codeForStatus(resp.status), `MCP ${method} failed: ${resp.status}`);
   }
   // Byte-cap the read so a hostile server can't OOM the isolate with a huge body.
   const data = await readCappedJson<JsonRpcResponse<T>>(resp);
-  if (data.error) throw new Error(`MCP error: ${data.error.code} ${data.error.message}`);
+  // A JSON-RPC error object is a remote provider failure — same classification
+  // the A2A client gives a peer's JSON-RPC error.
+  if (data.error)
+    throw new ToolError('provider_error', `MCP error: ${data.error.code} ${data.error.message}`);
   return data.result as T;
 }
 
@@ -121,6 +131,9 @@ class McpExecutor implements ToolExecutor {
           'user_aborted',
           `[mcp cancelled] ${this.namespacedName}: ${(err as Error).message}`,
         );
+      }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[mcp error] ${this.namespacedName}: ${err.message}`);
       }
       throw err;
     }
