@@ -1,5 +1,6 @@
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
-import { parseVerifiers } from '../../src/auth/jwt';
+import { parseVerifiers, verifyJwt } from '../../src/auth/jwt';
 import type { Env } from '../../src/env';
 
 function env(jwtVerifiers: string): Env {
@@ -58,9 +59,10 @@ describe('parseVerifiers', () => {
 
   it('skips entries missing an issuer', () => {
     expect(parseVerifiers(env('access'))).toEqual([]);
-    // valid verifier survives; the bare-scheme entry is dropped
-    expect(parseVerifiers(env('access, cognito https://issuer.example/pool'))).toEqual([
-      { scheme: 'cognito', issuer: 'https://issuer.example/pool', audience: undefined },
+    // valid verifier survives; the bare-scheme entry is dropped (the cognito
+    // entry carries an audience so the non-dev audience rule doesn't drop it).
+    expect(parseVerifiers(env('access, cognito https://issuer.example/pool aud'))).toEqual([
+      { scheme: 'cognito', issuer: 'https://issuer.example/pool', audience: 'aud' },
     ]);
   });
 
@@ -89,5 +91,143 @@ describe('parseVerifiers', () => {
     expect(parseVerifiers(devEnv)).toEqual([
       { scheme: 'cognito', issuer: 'http://localhost:8080/pool', audience: undefined },
     ]);
+  });
+
+  it('requires an audience for cognito verifiers outside development', () => {
+    // Without an audience, any validly-signed token from the issuer would be
+    // accepted regardless of `aud` (cross-app replay) — fail closed by skipping.
+    expect(parseVerifiers(env('cognito https://issuer.example/pool'))).toEqual([]);
+    // With an audience it survives.
+    expect(parseVerifiers(env('cognito https://issuer.example/pool client-id'))).toEqual([
+      { scheme: 'cognito', issuer: 'https://issuer.example/pool', audience: 'client-id' },
+    ]);
+  });
+
+  it('allows an audience-less cognito verifier in development', () => {
+    const devEnv = {
+      JWT_VERIFIERS: 'cognito https://issuer.example/pool',
+      ENVIRONMENT: 'development',
+    } as Env;
+    expect(parseVerifiers(devEnv)).toEqual([
+      { scheme: 'cognito', issuer: 'https://issuer.example/pool', audience: undefined },
+    ]);
+  });
+
+  it('exempts self-issuing deployments (JWKS_PUBLIC) from the cognito audience rule', () => {
+    const selfEnv = {
+      JWT_VERIFIERS: 'cognito https://self.example/pool',
+      JWKS_PUBLIC: '{"keys":[]}',
+    } as Env;
+    expect(parseVerifiers(selfEnv)).toEqual([
+      { scheme: 'cognito', issuer: 'https://self.example/pool', audience: undefined },
+    ]);
+  });
+
+  it('keeps audience optional for access-scheme verifiers outside development', () => {
+    expect(parseVerifiers(env('access felix.cloudflareaccess.com'))).toEqual([
+      { scheme: 'access', issuer: 'felix.cloudflareaccess.com', audience: undefined },
+    ]);
+  });
+
+  it('parses a fixed tenant binding without disturbing the audience', () => {
+    expect(
+      parseVerifiers(env('cognito https://issuer.example/pool client-id tenant=acme')),
+    ).toEqual([
+      {
+        scheme: 'cognito',
+        issuer: 'https://issuer.example/pool',
+        audience: 'client-id',
+        tenant: { mode: 'fixed', tenantId: 'acme' },
+      },
+    ]);
+  });
+
+  it('accepts the tenant binding before the audience (order-independent)', () => {
+    expect(
+      parseVerifiers(env('cognito https://issuer.example/pool tenant=acme client-id')),
+    ).toEqual([
+      {
+        scheme: 'cognito',
+        issuer: 'https://issuer.example/pool',
+        audience: 'client-id',
+        tenant: { mode: 'fixed', tenantId: 'acme' },
+      },
+    ]);
+  });
+
+  it('parses the claim and issuer tenant directives', () => {
+    expect(parseVerifiers(env('access felix.cloudflareaccess.com aud tenant=claim'))).toEqual([
+      {
+        scheme: 'access',
+        issuer: 'felix.cloudflareaccess.com',
+        audience: 'aud',
+        tenant: { mode: 'claim' },
+      },
+    ]);
+    expect(parseVerifiers(env('access felix.cloudflareaccess.com aud tenant=issuer'))).toEqual([
+      {
+        scheme: 'access',
+        issuer: 'felix.cloudflareaccess.com',
+        audience: 'aud',
+        tenant: { mode: 'issuer' },
+      },
+    ]);
+  });
+
+  it('omits the tenant field for legacy entries with no directive (backward compat)', () => {
+    const [cfg] = parseVerifiers(env('access felix.cloudflareaccess.com aud'));
+    expect(cfg).not.toHaveProperty('tenant');
+  });
+});
+
+describe('verifyJwt tenant binding', () => {
+  async function signedToken(claims: Record<string, unknown>) {
+    const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+    const pub = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
+    const token = await new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuedAt()
+      .setIssuer('https://issuer.example/pool')
+      .setSubject('user-1')
+      .setExpirationTime('1h')
+      .sign(privateKey);
+    // JWKS_PUBLIC makes verifyJwt resolve the cognito JWKS locally (no fetch).
+    return { token, jwks: JSON.stringify({ keys: [pub] }) };
+  }
+
+  it('pins the tenant to a fixed binding, ignoring a mutable claim', async () => {
+    const { token, jwks } = await signedToken({ 'custom:tenant_id': 'attacker' });
+    const res = await verifyJwt({ JWKS_PUBLIC: jwks } as Env, token, [
+      {
+        scheme: 'cognito',
+        issuer: 'https://issuer.example/pool',
+        tenant: { mode: 'fixed', tenantId: 'acme' },
+      },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.principal.tenantId).toBe('acme');
+  });
+
+  it('trusts the tenant claim under the default (claim) binding', async () => {
+    const { token, jwks } = await signedToken({ 'custom:tenant_id': 'tenant-from-claim' });
+    const res = await verifyJwt({ JWKS_PUBLIC: jwks } as Env, token, [
+      { scheme: 'cognito', issuer: 'https://issuer.example/pool' },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.principal.tenantId).toBe('tenant-from-claim');
+  });
+
+  it('derives the tenant from the issuer host under the issuer binding', async () => {
+    const { token, jwks } = await signedToken({ 'custom:tenant_id': 'attacker' });
+    const res = await verifyJwt({ JWKS_PUBLIC: jwks } as Env, token, [
+      {
+        scheme: 'cognito',
+        issuer: 'https://issuer.example/pool',
+        tenant: { mode: 'issuer' },
+      },
+    ]);
+    expect(res.ok).toBe(true);
+    // first label of `issuer.example` → `issuer`, claim ignored.
+    if (res.ok) expect(res.principal.tenantId).toBe('issuer');
   });
 });
