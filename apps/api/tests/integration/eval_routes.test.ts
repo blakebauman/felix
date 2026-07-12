@@ -9,8 +9,8 @@
  * What this file pins:
  *   - dataset create / list / get
  *   - item add / list, idempotent on item_id
- *   - run on an empty dataset succeeds (no model calls) and persists
- *     pass_rate = 1, pass_count = 0, fail_count = 0
+ *   - run on an empty dataset is ACCEPTED (202, non-terminal) and the
+ *     background job finalizes it to completed / 0 / 0 (no model calls)
  *   - run / runs list / get retrieves the stored row
  */
 
@@ -24,6 +24,31 @@ const testEnv = env as unknown as AppEnv;
 beforeAll(async () => {
   await applyMigrations(testEnv.DB);
 });
+
+interface RunRow {
+  id: string;
+  status: string;
+  pass_count: number;
+  fail_count: number;
+  dataset_name: string;
+}
+
+/**
+ * Poll `GET /eval/runs/{id}` until the background job moves the row out of
+ * `in_progress`. The run route now returns 202 and finalizes the row via
+ * `execCtx.waitUntil` — the empty-dataset case has no model calls so it
+ * settles almost immediately, but we poll to keep the test deterministic.
+ */
+async function pollRun(runId: string, tries = 50): Promise<RunRow> {
+  for (let i = 0; i < tries; i += 1) {
+    const resp = await SELF.fetch(`https://orchestrator.test/eval/runs/${runId}`);
+    expect(resp.status).toBe(200);
+    const row = (await resp.json()) as RunRow;
+    if (row.status !== 'in_progress') return row;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`run ${runId} did not finalize`);
+}
 
 describe('/eval datasets + items', () => {
   it('creates, lists, and fetches a dataset', async () => {
@@ -107,8 +132,8 @@ describe('/eval datasets + items', () => {
 });
 
 describe('/eval runs', () => {
-  it('runs an empty dataset to a trivial pass and round-trips the record', async () => {
-    // Create dataset with no items — runner short-circuits with 0/0/1.
+  it('accepts a run (202, non-terminal) and the background job finalizes it', async () => {
+    // Create dataset with no items — runner short-circuits with 0/0.
     await SELF.fetch('https://orchestrator.test/eval/datasets', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -120,27 +145,17 @@ describe('/eval runs', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ candidate_manifest: 'quick', deterministic_judge: true }),
     });
-    expect(run.status).toBe(200);
-    const summary = (await run.json()) as {
-      run_id: string;
-      pass_count: number;
-      fail_count: number;
-      pass_rate: number;
-    };
-    expect(summary).toMatchObject({ pass_count: 0, fail_count: 0, pass_rate: 1 });
-    expect(typeof summary.run_id).toBe('string');
+    // The route returns immediately: run created, execution deferred to a
+    // background job. The body reports the id and a non-terminal status.
+    expect(run.status).toBe(202);
+    const accepted = (await run.json()) as { run_id: string; status: string };
+    expect(typeof accepted.run_id).toBe('string');
+    expect(accepted.status).toBe('in_progress');
 
-    const fetched = await SELF.fetch(`https://orchestrator.test/eval/runs/${summary.run_id}`);
-    expect(fetched.status).toBe(200);
-    const row = (await fetched.json()) as {
-      id: string;
-      status: string;
-      pass_count: number;
-      fail_count: number;
-      dataset_name: string;
-    };
+    // A separate step drains the background job to a terminal state.
+    const row = await pollRun(accepted.run_id);
     expect(row).toMatchObject({
-      id: summary.run_id,
+      id: accepted.run_id,
       status: 'completed',
       pass_count: 0,
       fail_count: 0,
@@ -149,7 +164,7 @@ describe('/eval runs', () => {
 
     const list = await SELF.fetch('https://orchestrator.test/eval/runs?dataset=empty_set&limit=10');
     const listBody = (await list.json()) as { runs: Array<{ id: string }> };
-    expect(listBody.runs.some((r) => r.id === summary.run_id)).toBe(true);
+    expect(listBody.runs.some((r) => r.id === accepted.run_id)).toBe(true);
   });
 
   it('404s on a run id that does not exist for this tenant', async () => {

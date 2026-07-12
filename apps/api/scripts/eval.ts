@@ -12,7 +12,9 @@
  *     [--baseline evals/baseline.json]
  *
  * Behavior:
- *   1. POSTs `/eval/datasets/{dataset}/run` with the candidate.
+ *   1. POSTs `/eval/datasets/{dataset}/run` with the candidate (which now
+ *      returns `202 { run_id }` and runs in the background), then polls
+ *      `GET /eval/runs/{run_id}` until the run finalizes.
  *   2. If `--baseline` is set and the file exists, the previous
  *      `pass_rate` for that (dataset, candidate) pair is loaded; this
  *      run must score at least baseline − tolerance (default 0.05).
@@ -157,6 +159,41 @@ function saveBaseline(path: string, data: Baseline): void {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+interface RunRow {
+  id: string;
+  status: 'in_progress' | 'completed' | 'failed';
+  pass_count: number;
+  fail_count: number;
+  scores: Array<{
+    tokens_input?: number | null;
+    tokens_output?: number | null;
+    tool_call_count?: number | null;
+  }>;
+}
+
+/** Poll `GET /eval/runs/{id}` until the run reaches a terminal status. */
+async function pollRun(args: Args, runId: string, token?: string): Promise<RunRow | null> {
+  const url = `${args.baseUrl.replace(/\/$/, '')}/eval/runs/${encodeURIComponent(runId)}`;
+  // ~5 min ceiling (150 × 2s): a golden set of a few dozen items judged by
+  // Workers AI settles well under this; a slower batch just polls longer.
+  const maxAttempts = 150;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const resp = await fetch(url, {
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      console.error(`fetching eval run '${runId}' failed: HTTP ${resp.status} ${text}`);
+      return null;
+    }
+    const row = (await resp.json()) as RunRow;
+    if (row.status !== 'in_progress') return row;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  console.error(`eval run '${runId}' did not finalize within the poll window`);
+  return null;
+}
+
 async function runOnce(
   args: Args,
   datasetName: string,
@@ -181,37 +218,34 @@ async function runOnce(
     console.error(`eval run on '${datasetName}' failed: HTTP ${resp.status} ${text}`);
     return null;
   }
-  const summary = (await resp.json()) as RunSummary;
+  // The run executes in the background now — the POST only accepts it and
+  // returns the id. Poll the run row until it finalizes, then derive the
+  // aggregates the gate reads from the terminal record.
+  const accepted = (await resp.json()) as { run_id: string };
+  const row = await pollRun(args, accepted.run_id, token);
+  if (!row) return null;
+  if (row.status === 'failed') {
+    console.error(`eval run '${row.id}' finalized as 'failed'`);
+    return null;
+  }
 
-  // The run-summary response only includes aggregates. Pull per-item
-  // scores via `GET /eval/runs/{id}` to compute mean cost dimensions.
-  try {
-    const detailResp = await fetch(
-      `${args.baseUrl.replace(/\/$/, '')}/eval/runs/${encodeURIComponent(summary.run_id)}`,
-      {
-        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      },
-    );
-    if (detailResp.ok) {
-      const detail = (await detailResp.json()) as {
-        scores: Array<{
-          tokens_input?: number | null;
-          tokens_output?: number | null;
-          tool_call_count?: number | null;
-        }>;
-      };
-      const tokenSum = detail.scores.reduce(
-        (acc, s) => acc + (s.tokens_input ?? 0) + (s.tokens_output ?? 0),
-        0,
-      );
-      const callSum = detail.scores.reduce((acc, s) => acc + (s.tool_call_count ?? 0), 0);
-      if (detail.scores.length > 0) {
-        summary.mean_tokens = tokenSum / detail.scores.length;
-        summary.mean_tool_calls = callSum / detail.scores.length;
-      }
-    }
-  } catch {
-    // Detail fetch failures are non-fatal — cost gate just skips.
+  const total = row.pass_count + row.fail_count;
+  const summary: RunSummary = {
+    run_id: row.id,
+    pass_count: row.pass_count,
+    fail_count: row.fail_count,
+    pass_rate: total === 0 ? 1 : row.pass_count / total,
+  };
+
+  // Compute mean cost dimensions from the per-item scores on the row.
+  const tokenSum = row.scores.reduce(
+    (acc, s) => acc + (s.tokens_input ?? 0) + (s.tokens_output ?? 0),
+    0,
+  );
+  const callSum = row.scores.reduce((acc, s) => acc + (s.tool_call_count ?? 0), 0);
+  if (row.scores.length > 0) {
+    summary.mean_tokens = tokenSum / row.scores.length;
+    summary.mean_tool_calls = callSum / row.scores.length;
   }
 
   return summary;

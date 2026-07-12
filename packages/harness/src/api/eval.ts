@@ -31,7 +31,7 @@ import {
   listRuns,
 } from '../eval/datasets';
 import { deterministicJudge, workersAiJudge } from '../eval/judge';
-import { runDataset } from '../eval/runner';
+import { runDatasetDetached } from '../eval/runner';
 import {
   EvalDatasetItemSchema,
   EvalDatasetSchema,
@@ -86,14 +86,16 @@ const RunBody = z
   .strict()
   .openapi('RunEvalRequest');
 
-const RunSummarySchema = z
+const RunAcceptedSchema = z
   .object({
     run_id: z.string(),
-    pass_count: z.number().int(),
-    fail_count: z.number().int(),
-    pass_rate: z.number(),
+    /**
+     * The run is created non-terminal and executed in the background; poll
+     * `GET /eval/runs/{id}` until `status` is `completed` / `failed`.
+     */
+    status: z.literal('in_progress'),
   })
-  .openapi('EvalRunSummary');
+  .openapi('EvalRunAccepted');
 
 const createDatasetRoute = createRoute({
   method: 'post',
@@ -200,21 +202,24 @@ const runDatasetRoute = createRoute({
   tags: ['Eval'],
   summary: 'Execute an eval dataset against a candidate manifest',
   description:
-    'Iterates the dataset items, invokes the candidate manifest on each, and judges the ' +
-    'response against the item rubric. Returns a run summary; the per-item scores are ' +
-    'available via `GET /eval/runs/{id}`.',
+    'Creates a run and executes it in the background: iterates the dataset items, invokes the ' +
+    'candidate manifest on each, and judges the response against the item rubric. Returns ' +
+    '`202 { run_id, status: "in_progress" }` immediately so large datasets do not hit the ' +
+    'Worker CPU / subrequest ceiling. Poll `GET /eval/runs/{id}` for the terminal status ' +
+    '(`completed` / `failed`), aggregate pass/fail counts, and per-item scores. A candidate ' +
+    'manifest that cannot be resolved surfaces as a `failed` run, not a 4xx on this call.',
   security: BearerSecurity(),
   request: {
     params: z.object({ name: z.string() }),
     body: { required: true, content: { 'application/json': { schema: RunBody } } },
   },
   responses: {
-    200: {
-      description: 'Run summary.',
-      content: { 'application/json': { schema: RunSummarySchema } },
+    202: {
+      description: 'Run accepted and executing in the background.',
+      content: { 'application/json': { schema: RunAcceptedSchema } },
     },
     404: {
-      description: 'Dataset or candidate manifest not found.',
+      description: 'Dataset not found for this tenant.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
   },
@@ -343,31 +348,28 @@ export function buildEvalRouter(deps: EvalRouterDeps) {
       candidateManifest: body.candidate_manifest,
     });
     const judge = body.deterministic_judge ? deterministicJudge() : workersAiJudge(c.env);
-    try {
-      const result = await runDataset(c.env, deps.tools, {
-        tenantId: auth.principal.tenantId,
-        principalSubject: auth.principal.subject,
-        runId: run.id,
-        datasetName: name,
-        candidateManifest: body.candidate_manifest,
-        candidateVersion: body.candidate_version,
-        judge,
-      });
-      return c.json(
+    // Execute off the request path. The run row is already `in_progress`;
+    // `runDatasetDetached` installs its own tenant-scoped context, drives
+    // the dataset, and finalizes the row (`completed` / `failed`) when it
+    // settles. `waitUntil` keeps the isolate alive until the background
+    // job completes without blocking the 202 response.
+    c.executionCtx.waitUntil(
+      runDatasetDetached(
+        c.env,
+        deps.tools,
         {
-          run_id: result.runId,
-          pass_count: result.passCount,
-          fail_count: result.failCount,
-          pass_rate: result.passRate,
+          tenantId: auth.principal.tenantId,
+          principalSubject: auth.principal.subject,
+          runId: run.id,
+          datasetName: name,
+          candidateManifest: body.candidate_manifest,
+          candidateVersion: body.candidate_version,
+          judge,
         },
-        200,
-      );
-    } catch (err) {
-      return c.json(
-        { error: 'eval_run_failed', detail: (err as Error).message ?? String(err) },
-        404,
-      );
-    }
+        c.executionCtx,
+      ),
+    );
+    return c.json({ run_id: run.id, status: 'in_progress' as const }, 202);
   });
 
   router.openapi(listRunsRoute, async (c) => {
