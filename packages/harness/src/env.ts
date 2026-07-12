@@ -38,9 +38,13 @@ export interface Env {
   // ---- Auth ----
   /**
    * The sole inbound-auth config surface. Comma-separated verifiers; each is
-   * whitespace-separated `<scheme> <issuer> [audience]` where scheme is
-   * `access` (Cloudflare Access) or `cognito` (standard OIDC JWKS path).
-   * See `parseVerifiers` in `auth/jwt.ts`. Empty string = no verifiers.
+   * whitespace-separated `<scheme> <issuer> [audience] [tenant=<directive>]`
+   * where scheme is `access` (Cloudflare Access) or `cognito` (standard OIDC
+   * JWKS path). `audience` is required for `cognito` outside development
+   * (unless self-issuing via JWKS_PUBLIC); the optional `tenant=` field pins
+   * how the verifier maps a token to a tenant (`tenant=<id>` fixed,
+   * `tenant=issuer`, `tenant=claim`). See `parseVerifiers` in `auth/jwt.ts`.
+   * Empty string = no verifiers.
    */
   JWT_VERIFIERS: string;
 
