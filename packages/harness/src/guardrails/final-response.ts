@@ -89,6 +89,7 @@ async function applyFinalGuards(
   content: string,
   g: Guardrails,
   manifestId: string,
+  opts: { judges?: boolean } = {},
 ): Promise<string> {
   let result = content;
 
@@ -104,13 +105,17 @@ async function applyFinalGuards(
 
   // 2. Final-response judges. Score the (filtered) answer; a below-threshold
   //    judge blocks. A judge that can't run (no AI binding) is skipped — a
-  //    missing binding must not silently block every answer.
-  const judges = finalResponseJudges(g);
-  for (const rule of judges) {
-    const outcome = await judgeOne(rule, FINAL_JUDGE_TOOL, {}, result, manifestId);
-    if (outcome === null) continue;
-    recordFinalJudge(manifestId, rule.name, outcome);
-    if (!outcome.passed) return BLOCKED_NOTICE;
+  //    missing binding must not silently block every answer. Callers guarding
+  //    non-final text (groupchat intermediate turns) opt out via
+  //    `judges: false` so judges score only the actual answer.
+  if (opts.judges !== false) {
+    const judges = finalResponseJudges(g);
+    for (const rule of judges) {
+      const outcome = await judgeOne(rule, FINAL_JUDGE_TOOL, {}, result, manifestId);
+      if (outcome === null) continue;
+      recordFinalJudge(manifestId, rule.name, outcome);
+      if (!outcome.passed) return BLOCKED_NOTICE;
+    }
   }
 
   return result;
@@ -143,9 +148,10 @@ export async function guardFinalResponseText(
   text: string,
   g: Guardrails | undefined,
   manifestId: string,
+  opts: { judges?: boolean } = {},
 ): Promise<string> {
   if (!g || !finalResponseGuardEnabled(g) || text.length === 0) return text;
-  return applyFinalGuards(text, g, manifestId);
+  return applyFinalGuards(text, g, manifestId, opts);
 }
 
 /**

@@ -7,6 +7,8 @@
  *     `on_chain_end` message is still guarded.
  *   - streaming `incremental`: filtered deltas stream live, and a match split
  *     across a chunk boundary is caught before its bytes are emitted.
+ *   - fatal tool errors: a `fatal: true` tool's error message becomes the
+ *     terminal answer, so it goes through the same guard on both paths.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -62,11 +64,11 @@ function fakeStreamingModel(deltas: string[], finalContent: string) {
   };
 }
 
-function agentWith(guardrails: Guardrails) {
+function agentWith(guardrails: Guardrails, tools = [echo]) {
   return buildReactAgent({
     env: {} as Env,
     modelSpec: MODEL_SPEC as never,
-    tools: [echo],
+    tools,
     systemPrompt: 'sp',
     manifestId: 'm',
     manifestVersion: '1.0.0',
@@ -75,6 +77,26 @@ function agentWith(guardrails: Guardrails) {
 }
 
 const G = (over: Partial<Guardrails>): Guardrails => ({ ...DEFAULT_GUARDRAILS, ...over });
+
+/** One tool_use turn calling `name`; the fatal dispatch terminates the loop. */
+function fatalToolModel(name: string) {
+  const message = {
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id: 't1', name, args: {} }],
+  };
+  return {
+    modelId: 'stub',
+    route: { provider: 'anthropic', model: 'stub' } as const,
+    async chat() {
+      return { message, stopReason: 'tool_use' };
+    },
+    // biome-ignore lint/correctness/useYield: single-turn stub — no deltas to emit
+    async *streamChat() {
+      return { message, stopReason: 'tool_use' };
+    },
+  };
+}
 
 describe('final-response guard in the react loop', () => {
   it('redacts the returned final on the non-streaming path', async () => {
@@ -137,6 +159,50 @@ describe('final-response guard in the react loop', () => {
     expect(chunks).toEqual(deltas);
     // …but the persisted/returned terminal message is guarded.
     expect(finalContent).toContain('[REDACTED:ssn]');
+  });
+
+  it('guards a fatal tool error on the non-streaming path', async () => {
+    const leaky = defineTool({
+      name: 'leaky',
+      description: 'throws with a secret in the message',
+      args: z.object({}),
+      fatal: true,
+      handler: async () => {
+        throw new Error('upstream rejected: ssn 123-45-6789');
+      },
+    });
+    vi.spyOn(modelModule, 'buildModel').mockReturnValue(fatalToolModel('leaky') as never);
+    const agent = agentWith(G({ providers: ['pii'], targets: ['final_response'] }), [leaky]);
+    const result = await runWithContext(ctx(), () =>
+      agent.invoke({ messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    expect(result.final.content).toContain('[REDACTED:ssn]');
+    expect(result.final.content).not.toContain('123-45-6789');
+  });
+
+  it('guards a fatal tool error on the streaming path (tool_end + chain_end)', async () => {
+    const leaky = defineTool({
+      name: 'leaky',
+      description: 'throws with a secret in the message',
+      args: z.object({}),
+      fatal: true,
+      handler: async () => {
+        throw new Error('upstream rejected: ssn 123-45-6789');
+      },
+    });
+    vi.spyOn(modelModule, 'buildModel').mockReturnValue(fatalToolModel('leaky') as never);
+    const agent = agentWith(G({ providers: ['pii'], targets: ['final_response'] }), [leaky]);
+    const toolOutputs: string[] = [];
+    let finalContent = '';
+    await runWithContext(ctx(), async () => {
+      for await (const ev of agent.streamEvents({ messages: [{ role: 'user', content: 'hi' }] })) {
+        if (ev.event === 'on_tool_end') toolOutputs.push(String(ev.data.output));
+        if (ev.event === 'on_chain_end') finalContent = ev.data.output.final.content;
+      }
+    });
+    expect(toolOutputs.join('')).not.toContain('123-45-6789');
+    expect(finalContent).toContain('[REDACTED:ssn]');
+    expect(finalContent).not.toContain('123-45-6789');
   });
 
   it('disabled: streams and returns the raw answer unchanged', async () => {

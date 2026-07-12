@@ -427,8 +427,18 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
             break;
           }
         }
+        if (fatal) {
+          // A fatal tool error becomes the terminal user-facing answer, so it
+          // gets the same final-response guard as a normal terminal turn —
+          // upstream error bodies can carry secrets. Guard BEFORE persisting
+          // so the session log gets the redacted copy too.
+          const guarded = await guardFinalResponse(fatal, guardrails, opts.manifestId);
+          messages[messages.length - 1] = guarded;
+          newMessages[newMessages.length - 1] = guarded;
+          persistAsync(session, newMessages);
+          return { messages, final: guarded };
+        }
         persistAsync(session, newMessages);
-        if (fatal) return { messages, final: fatal };
       }
       const fallback: ChatMessage = {
         role: 'assistant',
@@ -581,16 +591,24 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
         for (const call of result.message.tool_calls ?? []) {
           yield { event: 'on_tool_start', data: { name: call.name, input: call.args } };
           const dispatched = await dispatchToolCall(call, input.threadId, originatingInput);
+          if (dispatched.kind === 'fatal') {
+            // A fatal tool error becomes the terminal user-facing answer, so
+            // it gets the same final-response guard as a normal terminal turn
+            // — upstream error bodies can carry secrets. Guard BEFORE the
+            // on_tool_end yield and the persist so neither the stream nor the
+            // session log sees the raw error.
+            fatal = await guardFinalResponse(dispatched.message, guardrails, opts.manifestId);
+            messages.push(fatal);
+            newMessages.push(fatal);
+            yield { event: 'on_tool_end', data: { name: call.name, output: fatal.content } };
+            break;
+          }
           messages.push(dispatched.message);
           newMessages.push(dispatched.message);
           yield {
             event: 'on_tool_end',
             data: { name: call.name, output: dispatched.message.content },
           };
-          if (dispatched.kind === 'fatal') {
-            fatal = dispatched.message;
-            break;
-          }
         }
         persistAsync(session, newMessages);
         if (fatal) {

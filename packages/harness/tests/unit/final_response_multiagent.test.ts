@@ -1,8 +1,10 @@
 /**
  * The final-response guard applied at the parent level of multi-agent
  * patterns: parallel guards the aggregator's synthesized answer; groupchat
- * guards the returned (last speaker's) answer. router is a pass-through and
- * delegates to the chosen sub-agent's own guard — not covered here.
+ * filters every speaker turn (all of them are returned to the caller and
+ * persisted) and runs the full guard on the final turn before persisting.
+ * router is a pass-through and delegates to the chosen sub-agent's own
+ * guard — not covered here.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -14,6 +16,7 @@ import { buildGroupchatAgent } from '../../src/patterns/groupchat';
 import * as modelModule from '../../src/patterns/model';
 import { buildParallelAgent } from '../../src/patterns/parallel';
 import type { Agent, ChatMessage } from '../../src/patterns/types';
+import type { AppendableEvent, SessionStore } from '../../src/session/types';
 
 function ctx(): RequestContext {
   return { env: {} as Env, auth: ANONYMOUS, limitState: newLimitState() };
@@ -106,5 +109,56 @@ describe('groupchat: guards the returned answer', () => {
     expect(result.final.content).toContain('[REDACTED:email]');
     // The returned transcript tail matches the guarded final.
     expect(result.messages[result.messages.length - 1]!.content).toContain('[REDACTED:email]');
+  });
+
+  it('multi-turn: filters every speaker turn and persists guarded copies', async () => {
+    const appended: AppendableEvent[] = [];
+    const store: SessionStore = {
+      open: (id) => ({
+        id,
+        async append(e) {
+          appended.push(e);
+        },
+        async appendBatch(events) {
+          appended.push(...events);
+        },
+        async getEvents() {
+          return [];
+        },
+        async head() {
+          return { seq: appended.length };
+        },
+        async reset() {},
+        async wake() {
+          throw new Error('unused in this test');
+        },
+      }),
+    };
+    const agent = buildGroupchatAgent({
+      env: {} as Env,
+      modelSpec: { id: null } as never,
+      subAgents: { a: fixedAgent(SECRET), b: fixedAgent(`speaker b says ${SECRET}`) },
+      moderatorPrompt: 'mod',
+      maxTurns: 2,
+      manifestId: 'm',
+      manifestVersion: '1.0.0',
+      sessionStore: store,
+      guardrails: FINAL_GUARD,
+    });
+    const result = await runWithContext(ctx(), () =>
+      agent.invoke({
+        threadId: 'default:gc-thread',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    );
+    // No raw PII anywhere in the returned transcript — including the
+    // non-final speaker turn (it ships to the caller in `messages`).
+    const returned = result.messages.map((m) => String(m.content)).join('\n');
+    expect(returned).not.toContain('jane@example.com');
+    // The persisted session events carry the guarded copies, not the raw
+    // text (guard-then-persist, matching react's ordering).
+    const persisted = appended.map((e) => String(e.content)).join('\n');
+    expect(persisted).not.toContain('jane@example.com');
+    expect(persisted).toContain('[REDACTED:email]');
   });
 });
