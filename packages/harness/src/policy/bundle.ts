@@ -127,7 +127,6 @@ export function mergeWithManifest(
   for (const p of activeBundle.policies) policies.set(p.id, p); // bundle wins
   const approvals = new Map<string, ApprovalRule>();
   for (const a of manifestApprovals) approvals.set(a.id, a);
-  // Bundle approvals are unknown shape (z.unknown()) in PolicyBundleSchema —
-  // skip cross-merge until the federation schema for approvals is tightened.
+  for (const a of activeBundle.approvals) approvals.set(a.id, a); // bundle wins
   return { policies: [...policies.values()], approvals: [...approvals.values()] };
 }

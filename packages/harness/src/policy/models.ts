@@ -1,4 +1,5 @@
 import { z } from '@hono/zod-openapi';
+import { ApprovalRuleSchema } from '../approvals/models';
 
 export const PolicySchema = z
   .object({
@@ -35,9 +36,14 @@ export const PolicyBundleSchema = z
     version: z.string().min(1).openapi({ description: 'Bundle version (free-form).' }),
     issuer: z.string().min(1).openapi({ description: 'Bundle issuer identifier.' }),
     policies: z.array(PolicySchema).default([]).openapi({ description: 'Bundle policies.' }),
-    approvals: z.array(z.unknown()).default([]).openapi({
-      description: 'Reserved for federation-distributed approval rules.',
-    }),
+    approvals: z
+      .array(ApprovalRuleSchema)
+      .default([])
+      .openapi({
+        description:
+          'Federation-distributed approval rules. Merged with manifest approvals and win on ' +
+          'id collision, so a central approval gate cannot be silently disabled by a manifest.',
+      }),
     signature: z
       .string()
       .optional()

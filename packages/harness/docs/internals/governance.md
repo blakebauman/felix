@@ -384,7 +384,7 @@ A central authority ships a signed `PolicyBundle` to R2:
 
 - Manifest's policies and approvals are loaded first into a `Map` by id.
 - Bundle policies are loaded second; **bundle wins on id collision** — a central revocation cannot be silently disabled by a manifest authoring a policy with the same id.
-- Bundle-side approvals have a passthrough (`z.unknown()`) shape today, so they are **not cross-merged** with manifest approvals — only the manifest's approval rules survive into the wrapped tool stack.
+- Bundle-side approvals are typed as full `ApprovalRule`s (`PolicyBundleSchema.approvals: ApprovalRule[]`) and are **cross-merged the same way** — loaded second into the id `Map` so **bundle wins on id collision**. A bundle-contributed approval rule gates the matching tool through `applyApprovals` exactly like a manifest rule, so a central authority can distribute approval gates fleet-wide and a manifest cannot silently disable one.
 
 ## Wrapping summary
 
