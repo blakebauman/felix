@@ -21,7 +21,12 @@
 
 import { env, SELF } from 'cloudflare:test';
 import { ANONYMOUS } from '@felix/harness/auth/context';
-import { newLimitState, type RequestContext, runWithContext } from '@felix/harness/context';
+import {
+  disposeContextDb,
+  newLimitState,
+  type RequestContext,
+  runWithContext,
+} from '@felix/harness/context';
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { conversationStub } from '@felix/harness/memory/conversation-do';
@@ -95,6 +100,7 @@ describe('queue transport end-to-end', () => {
     const stub = await runWithContext(ctx, async () =>
       exec.execute({ payload: 'work' }, { toolCallId }),
     );
+    disposeContextDb(ctx);
     expect(String(stub)).toContain('job_id=job-e2e-1');
     expect(String(stub)).toContain('tasks/resubscribe');
 

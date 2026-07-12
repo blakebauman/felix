@@ -18,7 +18,7 @@ import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { ManifestSchema } from '@felix/harness/manifests/schema';
 import { createVersion } from '@felix/harness/manifests/store';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { applyMigrations, withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -150,7 +150,7 @@ describe('runAnomalyScan', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find(
       (f) =>
         f.tenant_id === 'acme' &&
@@ -186,7 +186,7 @@ describe('runAnomalyScan', () => {
       status: 'ok',
       ts: now,
     });
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find((f) => f.manifest_id === 'anomaly_test_b' && f.tool === 'rare');
     expect(hit).toBeUndefined();
   });
@@ -238,7 +238,7 @@ describe('runAnomalyScan', () => {
         ts: now - 60_000 - i * 60_000,
       });
     }
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find(
       (f) => f.manifest_id === 'anomaly_test_c' && f.tool === 'flaky',
     );
@@ -252,7 +252,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(false);
   });
 
@@ -264,7 +264,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(false);
   });
 
@@ -276,7 +276,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(true);
   });
 });

@@ -14,9 +14,10 @@ services:
   db:
     image: pgvector/pgvector:pg17
     container_name: felix-pg
-    # Headroom for the vitest workers project: test-runner-context clients
-    # hold their connections until the run ends.
-    command: ['postgres', '-c', 'max_connections=500']
+    # Deliberately the stock max_connections (100) — same as the CI service
+    # container, so a connection leak fails locally before it fails in CI.
+    # Request-scoped clients are closed by disposeContextDb; direct store
+    # calls in tests go through withPgContext (tests/integration/setup.ts).
     ports:
       - '5432:5432'
     environment:

@@ -8,6 +8,13 @@
  * inlined at bundle time — workerd has no filesystem in tests.
  */
 
+import {
+  buildAnonymousContext,
+  disposeContextDb,
+  disposeLimitState,
+  runWithContext,
+} from '@felix/harness/context';
+import type { Env as AppEnv } from '@felix/harness/env';
 // @ts-expect-error — vite's ?raw imports are typed by `vite/client` which we
 // don't pull in for tests; the type is `string`.
 import initSql from '../../migrations/0001_init.sql?raw';
@@ -66,5 +73,24 @@ function loadStatements(): string[] {
 export async function applyMigrations(db: D1Database): Promise<void> {
   for (const stmt of loadStatements()) {
     await db.prepare(stmt).run();
+  }
+}
+
+/**
+ * Run `fn` under a disposable anonymous RequestContext so `getDb(env)`
+ * caches ONE Postgres client for the whole call and closes it afterwards.
+ * Use this around direct calls to job/store functions (runAnomalyScan,
+ * store CRUD, …) — without it every store call inside creates its own
+ * unmanaged client, and the test runner's long-lived context accumulates
+ * their connections until the server's max_connections is exhausted
+ * (exactly what CI's default-100 Postgres service surfaced).
+ */
+export async function withPgContext<T>(env: AppEnv, fn: () => Promise<T>): Promise<T> {
+  const ctx = buildAnonymousContext(env);
+  try {
+    return await runWithContext(ctx, fn);
+  } finally {
+    disposeLimitState(ctx.limitState);
+    disposeContextDb(ctx);
   }
 }

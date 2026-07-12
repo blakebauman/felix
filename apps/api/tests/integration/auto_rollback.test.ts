@@ -22,7 +22,7 @@ import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { ManifestSchema } from '@felix/harness/manifests/schema';
 import { clearCanary, createVersion, getActive, setCanary } from '@felix/harness/manifests/store';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { applyMigrations, withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -135,7 +135,7 @@ describe('auto-rollback on anomaly', () => {
     expect(before?.canary_weight).toBe(50);
     expect(before?.canary_version).toBe(canary);
 
-    await runAnomalyScan(testEnv, now);
+    await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
 
     const after = await getActive(testEnv, tenantId, name);
     expect(after?.canary_weight).toBe(0);
@@ -175,7 +175,7 @@ describe('auto-rollback on anomaly', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     // The stable spike is still surfaced as an alert...
     const hit = result.flagged.find((f) => f.manifest_id === name && f.variant === 'stable');
     expect(hit).toBeDefined();
@@ -216,7 +216,7 @@ describe('auto-rollback on anomaly', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(true);
 
     const after = await getActive(testEnv, tenantId, name);
@@ -252,7 +252,7 @@ describe('auto-rollback on anomaly', () => {
     }
     // Should not throw; the auto-rollback path skips cleanly when there's
     // no active canary.
-    await expect(runAnomalyScan(testEnv, now)).resolves.toBeDefined();
+    await expect(withPgContext(testEnv, () => runAnomalyScan(testEnv, now))).resolves.toBeDefined();
     const after = await getActive(testEnv, tenantId, name);
     expect(after?.canary_weight).toBe(0);
   });
