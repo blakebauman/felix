@@ -17,6 +17,7 @@
     "@scalar/hono-api-reference": "^0.10.14",
     "hono": "^4.12.18",
     "jose": "^6.2.3",
+    "postgres": "^3.4.9",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -35,8 +35,17 @@ export default defineConfig({
             // declares. Tests bind D1 / KV / R2 / DOs explicitly and stub
             // the AI binding via a service worker.
             miniflare: {
-              compatibilityDate: '2024-12-30',
+              // Matches wrangler.jsonc — postgres.js over the Hyperdrive
+              // binding needs a current compat date alongside nodejs_compat.
+              compatibilityDate: '2026-05-01',
               compatibilityFlags: ['nodejs_compat'],
+              // Real Postgres (Docker locally, service container in CI);
+              // global-setup.ts re-creates the schema before each run.
+              hyperdrives: {
+                HYPERDRIVE:
+                  process.env.TEST_DATABASE_URL ??
+                  'postgresql://postgres:postgres@localhost:5432/felix_test',
+              },
               d1Databases: ['DB'],
               kvNamespaces: ['CACHE'],
               r2Buckets: ['BUNDLES'],
@@ -68,6 +77,9 @@ export default defineConfig({
         test: {
           name: 'workers',
           include: ['apps/api/tests/integration/**/*.test.ts'],
+          // Node-side: waits for Postgres, resets the felix_test schema, and
+          // applies apps/api/migrations-pg via node-pg-migrate.
+          globalSetup: ['./apps/api/tests/integration/global-setup.ts'],
         },
       }),
     ],

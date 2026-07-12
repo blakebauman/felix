@@ -56,6 +56,22 @@
     "JWT_VERIFIERS": ""
   },
 
+  // --- Hyperdrive (Neon Postgres) ------------------------------------------
+  // Relational store (replacing D1). Create the config against the Neon
+  // branch's DIRECT endpoint (no `-pooler` suffix — Hyperdrive owns pooling)
+  // with caching disabled (Felix depends on read-after-write everywhere):
+  //   wrangler hyperdrive create felix-hyperdrive-dev \
+  //     --connection-string='postgresql://…direct…/felixdb' --caching-disabled
+  // Local dev never touches the real config: wrangler dev routes the binding
+  // through localConnectionString (Docker Postgres — `pnpm db:up`).
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_AFTER_wrangler_hyperdrive_create",
+      "localConnectionString": "postgresql://postgres:postgres@localhost:5432/felix"
+    }
+  ],
+
   // --- D1 (audit, plans, jobs, approvals, skill_activation) ---------------
   "d1_databases": [
     {
@@ -202,6 +218,12 @@
       // a deploy.
       "placement": { "mode": "smart" },
       "routes": [{ "pattern": "staging-make.felix.run", "custom_domain": true }],
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
+        }
+      ],
       "d1_databases": [
         {
           "binding": "DB",
@@ -283,6 +305,12 @@
         "logs": { "invocation_logs": true }
       },
       "routes": [{ "pattern": "make.felix.run", "custom_domain": true }],
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "REPLACE_AFTER_wrangler_hyperdrive_create"
+        }
+      ],
       "d1_databases": [
         {
           "binding": "DB",

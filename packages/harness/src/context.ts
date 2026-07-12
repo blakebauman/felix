@@ -12,6 +12,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type postgres from 'postgres';
 import { ANONYMOUS, type AuthContext } from './auth/context';
 import type { Env } from './env';
 
@@ -64,6 +65,12 @@ export interface RequestContext {
    * those rows and the sampler's WHERE clause excludes them.
    */
   replay?: boolean;
+  /**
+   * Per-request Postgres client, lazily created by `getDb` (db/client.ts) on
+   * first use and reused by every store for the rest of the request. Never
+   * closed explicitly — Hyperdrive owns connection lifecycle.
+   */
+  db?: postgres.Sql;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();
