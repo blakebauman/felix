@@ -169,6 +169,12 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
         const variantField = reqCtx?.manifestVariant
           ? { manifest_variant: reqCtx.manifestVariant }
           : {};
+        // Continuous-eval replay marker. When this loop runs inside a replay
+        // context (jobs/continuous-eval.ts), the incidental tool_call rows are
+        // stamped `replay: true` so the sampler excludes them from future ticks
+        // — without this, replaying under the canary's own tenant would feed
+        // the replay's inputs back into the next sample (an infinite loop).
+        const replayField = reqCtx?.replay ? { replay: true as const } : {};
 
         const tool = toolMap.get(call.name);
         if (!tool) {
@@ -190,6 +196,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
               duration_ms: Date.now() - startedAt,
               ...userInputField,
               ...variantField,
+              ...replayField,
             },
           });
           recordCounter('orchestrator_tool_calls', {
@@ -265,6 +272,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
                   duration_ms: Date.now() - startedAt,
                   ...userInputField,
                   ...variantField,
+                  ...replayField,
                 },
               });
               recordCounter('orchestrator_tool_calls', {
@@ -289,6 +297,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
                   duration_ms: Date.now() - startedAt,
                   ...userInputField,
                   ...variantField,
+                  ...replayField,
                 },
               });
               recordCounter('orchestrator_tool_calls', {
@@ -328,6 +337,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
               duration_ms: Date.now() - startedAt,
               ...userInputField,
               ...variantField,
+              ...replayField,
             },
           });
           recordCounter('orchestrator_tool_calls', {
