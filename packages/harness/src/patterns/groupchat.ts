@@ -14,6 +14,8 @@
 
 import { requireContext } from '../context';
 import type { Env } from '../env';
+import { guardFinalResponse, guardFinalResponseText } from '../guardrails/final-response';
+import type { Guardrails } from '../guardrails/models';
 import type { Model } from '../manifests/schema';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
 import { fullReplaySessionStrategy } from '../session/strategies';
@@ -40,6 +42,10 @@ export interface BuildGroupchatOptions {
   sessionStore?: SessionStore | null;
   /** Resolved at build time from `manifest.spec.session.strategy`. */
   sessionStrategy?: SessionStrategy | null;
+  /** Parent guardrails — every speaker turn lands in the returned `messages`
+   *  array and the persisted session log, so each gets the content filters;
+   *  the final turn gets the full final-response guard, before persisting. */
+  guardrails?: Guardrails | null;
 }
 
 export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
@@ -100,6 +106,22 @@ export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
           ],
         });
         last = { ...reply.final, name: speaker };
+        if (turn === opts.maxTurns - 1) {
+          // Full final-response guard on the answer — BEFORE persisting, so
+          // the session log (and the next thread render) sees the redacted
+          // copy, matching react's guard-then-persist ordering.
+          last = await guardFinalResponse(last, opts.guardrails ?? undefined, opts.manifestId);
+        } else if (typeof last.content === 'string' && last.content.length > 0) {
+          // Intermediate speaker turns are NOT internal: they're returned to
+          // the caller in `messages` and persisted to the session log, so
+          // they get the content filters too (guard-then-persist).
+          const filtered = await guardFinalResponseText(
+            last.content,
+            opts.guardrails ?? undefined,
+            opts.manifestId,
+          );
+          if (filtered !== last.content) last = { ...last, content: filtered };
+        }
         transcript.push(last);
         persist(session, [last]);
       }
@@ -127,6 +149,7 @@ registerPattern(
       manifestVersion: ctx.manifestVersion,
       sessionStore: ctx.sessionStore ?? null,
       sessionStrategy: ctx.sessionStrategy ?? null,
+      guardrails: ctx.manifest.spec.guardrails,
     }),
   { kind: 'multi-agent' },
 );
