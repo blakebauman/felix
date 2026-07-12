@@ -121,6 +121,21 @@ export function disposeLimitState(state: LimitState): void {
   }
 }
 
+/**
+ * Close the per-request Postgres client, if `getDb` created one. Best-effort
+ * and fire-and-forget: production Workers tear request sockets down anyway,
+ * but long-lived local runtimes (wrangler dev, the vitest workers pool) reuse
+ * the isolate across many requests and would otherwise accumulate one
+ * client's connections per request until the server's max_connections is
+ * exhausted. Fakes without an `end` (unit-test doubles) are skipped.
+ */
+export function disposeContextDb(ctx: RequestContext): void {
+  const db = ctx.db;
+  if (!db || typeof db.end !== 'function') return;
+  ctx.db = undefined;
+  void db.end({ timeout: 5 }).catch(() => {});
+}
+
 export function buildAnonymousContext(env: Env, execCtx?: ExecutionContext): RequestContext {
   return {
     env,

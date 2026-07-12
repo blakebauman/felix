@@ -47,6 +47,7 @@
 import { recordEventDetached } from '../audit/store';
 import {
   buildAnonymousContext,
+  disposeContextDb,
   disposeLimitState,
   type RequestContext,
   runWithContext,
@@ -217,6 +218,7 @@ async function replayAndJudge(
     });
   } finally {
     disposeLimitState(ctx.limitState);
+    disposeContextDb(ctx);
   }
 }
 

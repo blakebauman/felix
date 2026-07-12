@@ -11,7 +11,12 @@
 import { createApp } from '@felix/harness/app';
 import type { AuditEvent } from '@felix/harness/audit/models';
 import { persistBatch } from '@felix/harness/audit/store';
-import { buildAnonymousContext, disposeLimitState, runWithContext } from '@felix/harness/context';
+import {
+  buildAnonymousContext,
+  disposeContextDb,
+  disposeLimitState,
+  runWithContext,
+} from '@felix/harness/context';
 import type { Env } from '@felix/harness/env';
 import { runAnomalyScan } from '@felix/harness/jobs/anomaly-detector';
 import { drainAuditDlq } from '@felix/harness/jobs/audit-dlq';
@@ -135,6 +140,7 @@ export default {
           }
         } finally {
           disposeLimitState(reqCtx.limitState);
+          disposeContextDb(reqCtx);
         }
       }),
     );
@@ -191,6 +197,7 @@ export default {
       });
     } finally {
       disposeLimitState(reqCtx.limitState);
+      disposeContextDb(reqCtx);
     }
   },
 } satisfies ExportedHandler<Env, AuditEvent>;
