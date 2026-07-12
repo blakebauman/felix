@@ -20,7 +20,18 @@ export interface CreateOrFetchInput {
   callSignature: string;
   args: Record<string, unknown>;
   principalSubject: string;
+  /**
+   * The matching rule's `ttl_seconds`, stamped on the pending row so the DECIDE
+   * transition can compute `expires_at` without knowing the rule. Null / omitted
+   * means the eventual grant never expires.
+   */
+  ttlSeconds?: number | null;
 }
+
+// Only these statuses represent a "live" decision. `consumed` / `expired` rows
+// are archived history — a lookup must ignore them so a spent or stale grant is
+// treated as absent (re-request), and a fresh row can reuse the signature.
+const ACTIVE_STATUSES = "('pending', 'approved', 'denied')";
 
 export async function createOrFetchRequest(
   env: Env,
@@ -29,6 +40,7 @@ export async function createOrFetchRequest(
   const existing = await env.DB.prepare(
     `SELECT * FROM approvals
        WHERE tenant_id = ? AND manifest_id = ? AND tool_name = ? AND call_signature = ?
+         AND status IN ${ACTIVE_STATUSES}
        LIMIT 1`,
   )
     .bind(input.tenantId, input.manifestId, input.toolName, input.callSignature)
@@ -38,6 +50,7 @@ export async function createOrFetchRequest(
 
   const now = Date.now();
   const id = crypto.randomUUID();
+  const ttlSeconds = input.ttlSeconds ?? null;
   // Redact secret-shaped values before persistence — `args_json` is
   // returned by `/approvals/:id` so an operator (or a leak of the row)
   // shouldn't see raw bearer tokens or API keys that happened to be
@@ -46,8 +59,8 @@ export async function createOrFetchRequest(
   await env.DB.prepare(
     `INSERT INTO approvals
        (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
-        principal_subj, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+        principal_subj, status, created_at, ttl_seconds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
   )
     .bind(
       id,
@@ -58,6 +71,7 @@ export async function createOrFetchRequest(
       JSON.stringify(storedArgs),
       input.principalSubject,
       now,
+      ttlSeconds,
     )
     .run();
 
@@ -75,6 +89,7 @@ export async function createOrFetchRequest(
     decided_by: '',
     decision_note: '',
     edited_args: null,
+    expires_at: null,
   });
 }
 
@@ -112,9 +127,17 @@ export async function decideRequest(
   // its `edited_args`. Without this, any principal with `approvals:decide`
   // could re-decide a resolved request and mutate the args the tool re-runs
   // on retry.
+  // Compute `expires_at` here (not at request-creation) because the grant clock
+  // starts when the operator decides, not when the agent asked. `ttl_seconds`
+  // was stamped on the row at creation from the matching rule; on approval with
+  // a TTL, expiry = decided_at + ttl_seconds*1000. Denials never expire (null).
   const res = await env.DB.prepare(
     `UPDATE approvals
-       SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?, edited_args_json = ?
+       SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?, edited_args_json = ?,
+           expires_at = CASE
+             WHEN ? = 'approved' AND ttl_seconds IS NOT NULL THEN ? + (ttl_seconds * 1000)
+             ELSE NULL
+           END
        WHERE tenant_id = ? AND id = ? AND status = 'pending'`,
   )
     .bind(
@@ -123,6 +146,8 @@ export async function decideRequest(
       decision.decidedBy,
       decision.note ?? '',
       decision.editedArgs ? JSON.stringify(decision.editedArgs) : null,
+      decision.status,
+      now,
       tenantId,
       id,
     )
@@ -176,11 +201,37 @@ export async function findBySignature(
   const row = await env.DB.prepare(
     `SELECT * FROM approvals
        WHERE tenant_id = ? AND manifest_id = ? AND tool_name = ? AND call_signature = ?
+         AND status IN ${ACTIVE_STATUSES}
        LIMIT 1`,
   )
     .bind(tenantId, manifestId, toolName, callSignature)
     .first<ApprovalRow>();
   return row ? rowToRequest(row) : null;
+}
+
+/**
+ * Terminal transition of an approved grant to `consumed` (one-shot claim) or
+ * `expired` (TTL elapsed). Guarded by `status = 'approved'` so it's a one-way
+ * move that only the FIRST caller wins — this is the double-execute guard for
+ * one-shot grants: serialized through ApprovalsDO, exactly one concurrent retry
+ * flips `approved → consumed` (changes = 1) and proceeds; the loser sees
+ * `changes = 0` and re-requests. Returns true when this call performed the
+ * transition.
+ */
+export async function supersedeGrant(
+  env: Env,
+  tenantId: string,
+  id: string,
+  toStatus: 'consumed' | 'expired',
+): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE approvals
+       SET status = ?
+       WHERE tenant_id = ? AND id = ? AND status = 'approved'`,
+  )
+    .bind(toStatus, tenantId, id)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
 }
 
 interface ApprovalRow {
@@ -197,6 +248,8 @@ interface ApprovalRow {
   decided_by: string;
   decision_note: string;
   edited_args_json: string | null;
+  ttl_seconds: number | null;
+  expires_at: number | null;
 }
 
 function rowToRequest(row: ApprovalRow): ApprovalRequest {
@@ -214,6 +267,7 @@ function rowToRequest(row: ApprovalRow): ApprovalRequest {
     decided_by: row.decided_by,
     decision_note: row.decision_note,
     edited_args: row.edited_args_json ? safeJson(row.edited_args_json) : null,
+    expires_at: row.expires_at ?? null,
   });
 }
 
