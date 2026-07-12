@@ -61,6 +61,7 @@ const baseGuardrails: Guardrails = {
       threshold: 0.7,
       model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
       target_tools: [],
+      final_response: false,
     },
   ],
 };
@@ -102,6 +103,7 @@ describe('applyJudges', () => {
         {
           ...baseGuardrails.judges[0]!,
           target_tools: ['some_other_tool'],
+          final_response: false,
         },
       ],
     };
@@ -109,6 +111,24 @@ describe('applyJudges', () => {
     const env = { AI: ai } as unknown as Env;
     const out = await runWithContext(makeCtx(env), () => wrapped[0]!.executor.execute({}));
     expect(out).toBe('untouched');
+    expect(ai.run).not.toHaveBeenCalled();
+  });
+
+  it('does NOT run a final_response judge as a tool judge', async () => {
+    // A judge flagged `final_response` scores the model's answer, not tool
+    // results — the tool-side wrapper must not invoke it (the final-response
+    // guard does). applyJudges should leave the tool unwrapped.
+    const ai = fakeAi('{"score": 0.0, "reasoning": "should not run"}');
+    const tool = fakeTool(async () => 'tool output');
+    const g: Guardrails = {
+      ...baseGuardrails,
+      judges: [{ ...baseGuardrails.judges[0]!, final_response: true }],
+    };
+    const wrapped = applyJudges([tool], g, 'm');
+    expect(wrapped[0]).toBe(tool); // unwrapped — no applicable tool judges
+    const env = { AI: ai } as unknown as Env;
+    const out = await runWithContext(makeCtx(env), () => wrapped[0]!.executor.execute({}));
+    expect(out).toBe('tool output');
     expect(ai.run).not.toHaveBeenCalled();
   });
 

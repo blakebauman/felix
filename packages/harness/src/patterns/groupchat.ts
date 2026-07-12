@@ -114,11 +114,13 @@ export function buildGroupchatAgent(opts: BuildGroupchatOptions): Agent {
         } else if (typeof last.content === 'string' && last.content.length > 0) {
           // Intermediate speaker turns are NOT internal: they're returned to
           // the caller in `messages` and persisted to the session log, so
-          // they get the content filters too (guard-then-persist).
+          // they get the content filters too (guard-then-persist). Judges
+          // score only the actual answer — the final turn above.
           const filtered = await guardFinalResponseText(
             last.content,
             opts.guardrails ?? undefined,
             opts.manifestId,
+            { judges: false },
           );
           if (filtered !== last.content) last = { ...last, content: filtered };
         }

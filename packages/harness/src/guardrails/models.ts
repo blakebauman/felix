@@ -42,7 +42,19 @@ export const JudgeRuleSchema = z
         description:
           'When empty, the judge scores every tool result. When non-empty, only tools whose ' +
           '`name` is in this list are scored — useful for narrow judges that only apply to a ' +
-          'few high-stakes tools.',
+          'few high-stakes tools. Ignored when `final_response` is true.',
+      }),
+    final_response: z
+      .boolean()
+      .default(false)
+      .openapi({
+        description:
+          "When true, this judge scores the model's FINAL user-facing answer instead of tool " +
+          'results (and `guardrails.targets` must include `final_response`). A below-threshold ' +
+          'score replaces the answer with a notice. Because a judge needs the complete answer, ' +
+          'it can only BLOCK on the non-streaming path and streaming `buffer` mode; under ' +
+          'streaming `passthrough` the bytes have already been sent, so the judge scores the ' +
+          'persisted message but cannot retract streamed output.',
       }),
   })
   .strict()
@@ -164,10 +176,17 @@ export function judgesEnabled(g: Guardrails): boolean {
   return g.judges.length > 0;
 }
 
+/** Judges that score the final answer (not tool results). */
+export function finalResponseJudges(g: Guardrails): JudgeRule[] {
+  return g.judges.filter((j) => j.final_response);
+}
+
 /**
  * True when the final-response guard should run: the caller opted `final_response`
- * into `targets` AND there is at least one filter provider to run over the answer.
+ * into `targets` AND there's something to run over the answer — a content-filter
+ * provider or a judge flagged `final_response`.
  */
 export function finalResponseGuardEnabled(g: Guardrails): boolean {
-  return g.targets.includes('final_response') && g.providers.length > 0;
+  if (!g.targets.includes('final_response')) return false;
+  return g.providers.length > 0 || finalResponseJudges(g).length > 0;
 }

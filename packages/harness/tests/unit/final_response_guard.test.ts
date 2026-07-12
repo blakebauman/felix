@@ -21,8 +21,25 @@ function ctx(): RequestContext {
   return { env: {} as unknown as Env, auth: ANONYMOUS, limitState: newLimitState() };
 }
 
+/** Context with a Workers-AI stub for the judge path. */
+function ctxWithAi(reply: string): RequestContext {
+  const env = { AI: { run: async () => ({ response: reply }) } } as unknown as Env;
+  return { env, auth: ANONYMOUS, limitState: newLimitState() };
+}
+
 function guardrails(over: Partial<Guardrails>): Guardrails {
   return { ...DEFAULT_GUARDRAILS, ...over };
+}
+
+function finalJudge(threshold = 0.7): Guardrails['judges'][number] {
+  return {
+    name: 'answer_quality',
+    criteria: 'the answer is on-topic and safe',
+    threshold,
+    model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    target_tools: [],
+    final_response: true,
+  };
 }
 
 const PII_ANSWER = 'Sure — email me at jane@example.com and my SSN is 123-45-6789.';
@@ -115,5 +132,50 @@ describe('guardFinalResponseText (streaming buffer path)', () => {
     const g = guardrails({ providers: ['pii'], targets: ['output'] });
     const out = await runWithContext(ctx(), () => guardFinalResponseText(PII_ANSWER, g, 'm'));
     expect(out).toBe(PII_ANSWER);
+  });
+});
+
+describe('final-response judges', () => {
+  it('runs a judges-only guard (no content-filter provider needed)', async () => {
+    const msg: ChatMessage = { role: 'assistant', content: 'the answer' };
+    const g = guardrails({ providers: [], targets: ['final_response'], judges: [finalJudge()] });
+    const out = await runWithContext(ctxWithAi('{"score": 0.9, "reasoning": "good"}'), () =>
+      guardFinalResponse(msg, g, 'm'),
+    );
+    // Passing judge → answer unchanged.
+    expect(out.content).toBe('the answer');
+  });
+
+  it('blocks the answer when a final-response judge scores below threshold', async () => {
+    const msg: ChatMessage = { role: 'assistant', content: 'off-mission ramble' };
+    const g = guardrails({ providers: [], targets: ['final_response'], judges: [finalJudge()] });
+    const out = await runWithContext(ctxWithAi('{"score": 0.2, "reasoning": "off-topic"}'), () =>
+      guardFinalResponse(msg, g, 'm'),
+    );
+    expect(out.content).toBe('[response withheld by output policy]');
+  });
+
+  it('emits a judge_score audit with source=final_response', async () => {
+    const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+    vi.spyOn(auditStore, 'recordEvent').mockImplementation((opts) => {
+      events.push({ eventType: opts.eventType, payload: opts.payload });
+      return { id: 'x' } as never;
+    });
+    const msg: ChatMessage = { role: 'assistant', content: 'the answer' };
+    const g = guardrails({ providers: [], targets: ['final_response'], judges: [finalJudge()] });
+    await runWithContext(ctxWithAi('{"score": 0.9, "reasoning": "good"}'), () =>
+      guardFinalResponse(msg, g, 'm'),
+    );
+    const score = events.find((e) => e.eventType === 'judge_score');
+    expect(score?.payload?.source).toBe('final_response');
+    vi.restoreAllMocks();
+  });
+
+  it('skips the judge (does not block) when the AI binding is absent', async () => {
+    const msg: ChatMessage = { role: 'assistant', content: 'the answer' };
+    const g = guardrails({ providers: [], targets: ['final_response'], judges: [finalJudge()] });
+    // ctx() has no env.AI → judgeOne returns null → skipped, answer stands.
+    const out = await runWithContext(ctx(), () => guardFinalResponse(msg, g, 'm'));
+    expect(out.content).toBe('the answer');
   });
 });

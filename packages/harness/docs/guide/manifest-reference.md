@@ -500,9 +500,12 @@ guardrails:
       threshold: 0.7                                  # default: 0.7
       model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"  # default
       target_tools: []                                # default: []; empty = all tools
+      final_response: false                           # default: false; see below
 ```
 
 The `llm_judge` wrapper composes *after* the regex-style guardrails: a tool result that escapes the `pii` filter can still be denied for being off-topic or hallucinated. Each rule emits a `judge_score` audit event per call. Skipped on outputs already flagged by `denyOutput` (other wrappers) or `toolErrorOutput` (transport error) — judging a deny string is wasted compute. When `env.AI` is absent the judge short-circuits to pass in `development`, but **fails closed (denies)** in any other environment — a declared judge that can't run is a misconfiguration, not a reason to ship unjudged output (the skip is counted via `orchestrator_judge_skipped`).
+
+Set **`final_response: true`** to make a judge score the model's **final answer** instead of tool results (requires `final_response` in `targets`; `target_tools` is ignored). A below-threshold score replaces the answer with `[response withheld by output policy]` and emits `judge_score { source: 'final_response' }`. Because a judge needs the complete answer, it can only block on the non-streaming path and streaming `buffer` mode — under `passthrough` the bytes have already streamed, so the judge scores the persisted message but can't retract sent output. A judge with no AI binding is skipped (never silently blocks).
 
 ## spec.approvals
 

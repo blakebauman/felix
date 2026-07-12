@@ -3,11 +3,11 @@
  *
  * The `applyGuardrails` / `applyJudges` wrappers only scan tool traffic — they
  * hang off the tool-executor seam. The assistant's final response (the text the
- * react loop returns / streams to the caller) is never a tool call, so it needs
- * a separate interception point. `guardFinalResponse` runs the same filter
- * pipeline (`runFilters` / the `pii` provider) over the answer's `content`,
- * OUTSIDE the wrapper chain, so it never touches the `denyOutput` / wrapper-deny
- * contract.
+ * loop returns / streams to the caller) is never a tool call, so it needs a
+ * separate interception point. This module runs, OUTSIDE the wrapper chain and
+ * on the answer's `content`:
+ *   1. the same content-filter pipeline (`runFilters` / the `pii` provider), and
+ *   2. any judge flagged `final_response` (a Workers-AI scorer over the answer).
  *
  * Only consulted when a manifest opts `final_response` into `guardrails.targets`
  * (see `finalResponseGuardEnabled`). Off by default — enabling it is explicit.
@@ -17,12 +17,14 @@ import { recordEvent } from '../audit/store';
 import { currentTenantSubject } from '../limits/state';
 import { recordCounter } from '../observability/metrics';
 import type { ChatMessage } from '../patterns/types';
-import { finalResponseGuardEnabled, type Guardrails } from './models';
+import { judgeOne } from './judge-wrap';
+import { finalResponseGuardEnabled, finalResponseJudges, type Guardrails } from './models';
 import { runFilters } from './pipeline';
 
 const BLOCKED_NOTICE = '[response withheld by output policy]';
+const FINAL_JUDGE_TOOL = '<final_response>';
 
-function recordFinalBlock(
+function recordFilterBlock(
   manifestId: string,
   matches: { provider: string; fingerprint: string }[],
 ): void {
@@ -44,12 +46,79 @@ function recordFinalBlock(
   });
 }
 
+function recordFinalJudge(
+  manifestId: string,
+  judge: string,
+  outcome: { score: number; passed: boolean; reasoning: string },
+): void {
+  const { tenantId, subject } = currentTenantSubject();
+  recordEvent({
+    tenantId,
+    eventType: 'judge_score',
+    principalSubject: subject,
+    manifestId,
+    status: outcome.passed ? 'pass' : 'fail',
+    payload: {
+      source: 'final_response',
+      judge,
+      score: outcome.score,
+      reasoning: outcome.reasoning.slice(0, 500),
+    },
+  });
+  recordCounter('orchestrator_judge_scores', {
+    judge,
+    verdict: outcome.passed ? 'pass' : 'fail',
+    manifest_id: manifestId,
+  });
+}
+
 /**
- * Filter the final assistant message per the manifest's `final_response`
- * config. Returns the (possibly new) message; returns the input unchanged when
- * the guard is disabled, the content is empty, or nothing matched. Only
- * `content` is touched — `thinking` / `tool_calls` / other fields are preserved
- * so Anthropic round-tripping isn't broken.
+ * Run the content filters + final-response judges over an answer string.
+ * Returns the resulting content (redacted / blocked / unchanged). Emits the
+ * audit + counters. Shared by `guardFinalResponse` and `guardFinalResponseText`.
+ */
+async function applyFinalGuards(
+  content: string,
+  g: Guardrails,
+  manifestId: string,
+  opts: { judges?: boolean } = {},
+): Promise<string> {
+  let result = content;
+
+  // 1. Content filters (pii). Redact or block on a match.
+  if (g.providers.length > 0) {
+    const { filtered, matches } = await runFilters(g.providers, result);
+    if (matches.length > 0) {
+      recordFilterBlock(manifestId, matches);
+      if (g.final_response.on_match === 'block') return BLOCKED_NOTICE;
+      result = filtered;
+    }
+  }
+
+  // 2. Final-response judges. Score the (filtered) answer; a below-threshold
+  //    judge blocks. A judge that can't run (no AI binding) is skipped — a
+  //    missing binding must not silently block every answer. Callers guarding
+  //    non-final text (groupchat intermediate turns) opt out via
+  //    `judges: false` so judges score only the actual answer.
+  if (opts.judges !== false) {
+    const judges = finalResponseJudges(g);
+    for (const rule of judges) {
+      const outcome = await judgeOne(rule, FINAL_JUDGE_TOOL, {}, result, manifestId);
+      if (outcome === null) continue;
+      recordFinalJudge(manifestId, rule.name, outcome);
+      if (!outcome.passed) return BLOCKED_NOTICE;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Guard the final assistant message per the manifest's `final_response` config.
+ * Returns the (possibly new) message; returns the input unchanged when the
+ * guard is disabled, the content is empty, or nothing fired. Only `content` is
+ * touched — `thinking` / `tool_calls` / other fields are preserved so Anthropic
+ * round-tripping isn't broken.
  */
 export async function guardFinalResponse(
   message: ChatMessage,
@@ -58,28 +127,21 @@ export async function guardFinalResponse(
 ): Promise<ChatMessage> {
   if (!g || !finalResponseGuardEnabled(g)) return message;
   if (typeof message.content !== 'string' || message.content.length === 0) return message;
-
-  const { filtered, matches } = await runFilters(g.providers, message.content);
-  if (matches.length === 0) return message; // clean — no audit noise, no copy
-
-  recordFinalBlock(manifestId, matches);
-  const content = g.final_response.on_match === 'block' ? BLOCKED_NOTICE : filtered;
-  return { ...message, content };
+  const guarded = await applyFinalGuards(message.content, g, manifestId);
+  if (guarded === message.content) return message; // unchanged — no copy
+  return { ...message, content: guarded };
 }
 
 /**
- * Filter a raw final-answer string (the streaming `buffer` path accumulates
- * deltas into a string rather than a full `ChatMessage`). Returns the guarded
- * text. Emits the same audit/counter as `guardFinalResponse` on a match.
+ * Guard a raw final-answer string (the streaming `buffer` path accumulates
+ * deltas into a string rather than a full `ChatMessage`).
  */
 export async function guardFinalResponseText(
   text: string,
   g: Guardrails | undefined,
   manifestId: string,
+  opts: { judges?: boolean } = {},
 ): Promise<string> {
   if (!g || !finalResponseGuardEnabled(g) || text.length === 0) return text;
-  const { filtered, matches } = await runFilters(g.providers, text);
-  if (matches.length === 0) return text;
-  recordFinalBlock(manifestId, matches);
-  return g.final_response.on_match === 'block' ? BLOCKED_NOTICE : filtered;
+  return applyFinalGuards(text, g, manifestId, opts);
 }
