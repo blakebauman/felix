@@ -56,6 +56,7 @@ import '../patterns/router';
 import { getPattern, listPatterns } from '../patterns/registry';
 import type { Agent, InvokeInput, InvokeResult, StreamEvent } from '../patterns/types';
 import { mergeWithManifest } from '../policy/bundle';
+import { ensureFederationSynced } from '../policy/federation-do';
 import { applyPolicies } from '../policy/wrap';
 import { getSessionStore } from '../session/do-session';
 import { getSessionStrategy } from '../session/strategies';
@@ -261,6 +262,12 @@ export async function buildAgent(
     // -------------------------------------------------------------------
     // Governance pipeline: policies → limits → guardrails → approvals
     // -------------------------------------------------------------------
+    // Mirror the FederationDO's active bundle into this isolate before
+    // merging so centrally-distributed policies actually apply. Without this
+    // the module-level `activeBundle` stays null in every request isolate and
+    // `mergeWithManifest` enforces nothing. TTL-throttled — cheap to call per
+    // build.
+    await ensureFederationSynced(deps.env);
     const merged = mergeWithManifest(manifest.spec.policies, manifest.spec.approvals);
 
     if (merged.policies.length) {

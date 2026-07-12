@@ -25,6 +25,8 @@ import { buildAgent } from '../manifests/builder';
 import { listManifests } from '../manifests/loader';
 import { type ResolvedManifest, resolveManifest } from '../manifests/resolver';
 import type { Agent, ChatMessage } from '../patterns/types';
+import { getActiveBundleVersion } from '../policy/bundle';
+import { ensureFederationSynced } from '../policy/federation-do';
 import type { ToolProvider } from '../tools/provider';
 import { MAX_MESSAGE_CHARS, MAX_MESSAGES } from './openapi-shared';
 
@@ -299,11 +301,15 @@ export function buildOpenAIRouter(deps: { tools: ToolProvider }) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
   const cache = new Map<string, Promise<Agent>>();
 
-  function getAgent(env: Env, resolved: ResolvedManifest): Promise<Agent> {
-    let pending = cache.get(resolved.cacheKey);
+  async function getAgent(env: Env, resolved: ResolvedManifest): Promise<Agent> {
+    // See chat.ts:getAgent — fold the active federation bundle version into
+    // the cache key so a refresh invalidates stale-governance agents.
+    await ensureFederationSynced(env);
+    const key = `${resolved.cacheKey}#fb:${getActiveBundleVersion() ?? '-'}`;
+    let pending = cache.get(key);
     if (!pending) {
       pending = buildAgent(resolved.manifest, { env, tools: deps.tools });
-      cache.set(resolved.cacheKey, pending);
+      cache.set(key, pending);
     }
     return pending;
   }

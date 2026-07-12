@@ -30,6 +30,16 @@ export function getActiveBundle(): PolicyBundle | null {
   return activeBundle;
 }
 
+/**
+ * Identity of the active bundle for cache-key composition. Callers that cache
+ * built agents fold this into their key so a federation refresh invalidates
+ * agents whose governance was compiled against the previous bundle. `null`
+ * when no bundle is active.
+ */
+export function getActiveBundleVersion(): string | null {
+  return activeBundle?.version ?? null;
+}
+
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);

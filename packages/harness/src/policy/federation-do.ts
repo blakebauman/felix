@@ -56,3 +56,35 @@ export async function syncFederationCache(env: Env): Promise<void> {
   const data = (await resp.json()) as { bundle: PolicyBundle | null };
   setActiveBundle(data.bundle);
 }
+
+// Per-isolate throttle so the request path can lazily pull the active bundle
+// without a FederationDO round-trip on every build. The cron refresh writes
+// the DO; each isolate mirrors it into `activeBundle` at most once per TTL.
+let lastSyncAt = 0;
+const FEDERATION_SYNC_TTL_MS = 60_000;
+
+/**
+ * Ensure this isolate's `activeBundle` reflects the FederationDO, refreshing
+ * it at most once per {@link FEDERATION_SYNC_TTL_MS}. Called on the request
+ * path (via `buildAgent`) so centrally-distributed policies actually apply —
+ * without this, `activeBundle` stays `null` in every request isolate and
+ * `mergeWithManifest` silently enforces nothing. Failures keep the previous
+ * bundle rather than clearing it.
+ */
+export async function ensureFederationSynced(env: Env): Promise<void> {
+  const now = Date.now();
+  if (now - lastSyncAt < FEDERATION_SYNC_TTL_MS) return;
+  lastSyncAt = now;
+  try {
+    await syncFederationCache(env);
+  } catch (err) {
+    // Keep whatever bundle we already have; a transient DO error must not
+    // drop centrally-distributed policies.
+    console.warn('federation sync failed; keeping previous bundle', err);
+  }
+}
+
+/** Test-only: reset the per-isolate sync throttle. */
+export function _resetFederationSyncThrottle(): void {
+  lastSyncAt = 0;
+}
