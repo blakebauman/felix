@@ -13,6 +13,7 @@ import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
 import { recordCounter } from '../observability/metrics';
 import { wrapExecutor } from '../tools/executor';
+import { matchesAnyToolPattern } from '../tools/tool-match';
 import { denyOutput, type Tool } from '../tools/types';
 import type { Policy } from './models';
 
@@ -72,16 +73,11 @@ function wrapOne(inner: Tool, applicable: Policy[], manifestId: string): Tool {
 
 export function applyPolicies(tools: Tool[], policies: Policy[], manifestId: string): Tool[] {
   if (policies.length === 0) return [...tools];
-  const byTool = new Map<string, Policy[]>();
-  for (const p of policies) {
-    for (const t of p.tools) {
-      const cur = byTool.get(t) ?? [];
-      cur.push(p);
-      byTool.set(t, cur);
-    }
-  }
   return tools.map((t) => {
-    const applicable = byTool.get(t.name);
-    return applicable?.length ? wrapOne(t, applicable, manifestId) : t;
+    // A policy applies when any of its `tools` patterns matches — exact name or
+    // a trailing-`*` prefix (`stripe__*` gates a whole MCP server regardless of
+    // the server-chosen tool-name suffix).
+    const applicable = policies.filter((p) => matchesAnyToolPattern(t.name, p.tools));
+    return applicable.length ? wrapOne(t, applicable, manifestId) : t;
   });
 }

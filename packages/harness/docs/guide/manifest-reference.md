@@ -427,10 +427,12 @@ policies:
   - id: write-paths             # required
     description: ""             # default: ""
     required_scopes: ["data:write"]  # AND-checked against principal.scopes
-    tools: ["update_record"]    # which tools this policy gates
+    tools: ["update_record", "stripe__*"]  # which tools this policy gates (exact name or server__* glob)
 ```
 
-Tools listed in multiple policies must satisfy **all** policies (AND logic). Federation bundle policies merge with these and win on id collision. See [internals/governance.md](../internals/governance.md).
+Tools listed in multiple policies must satisfy **all** policies (AND logic). Federation bundle policies merge with these and win on id collision.
+
+**Targeting MCP-server tools — use a `server__*` glob.** A `tools` entry matches by exact name or a **trailing-`*` prefix**. MCP tools are named `${serverName}__${remoteToolName}` where the *remote server* chooses the suffix — so gating individual names (`stripe__create_charge`) lets a malicious/compromised server dodge the policy by renaming its tools. Gate the whole server with the manifest-controlled prefix `stripe__*` (the `serverName` comes from your `mcp_servers[].name`, which the server can't change). The same glob applies to `approvals[].tools` and `judges[].target_tools`. See [internals/governance.md](../internals/governance.md).
 
 ## spec.limits
 
@@ -499,7 +501,7 @@ guardrails:
       criteria: "tool result is on-topic for the user's question"  # required; verifier prompt
       threshold: 0.7                                  # default: 0.7
       model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"  # default
-      target_tools: []                                # default: []; empty = all tools
+      target_tools: []                                # default: []; empty = all tools. Exact name or server__* glob.
       final_response: false                           # default: false; see below
 ```
 
@@ -513,10 +515,10 @@ Set **`final_response: true`** to make a judge score the model's **final answer*
 approvals:
   - id: production-writes      # required
     description: ""            # default: ""
-    tools: ["update_record"]   # which tools require human approval before invocation
+    tools: ["update_record", "stripe__*"]  # exact name or server__* glob (see spec.policies)
 ```
 
-When a tool listed under an approval rule is called, the wrapper synthesizes a deterministic call signature, persists an `approval_request` row, and returns a deny string to the model. The approver decides through `POST /approvals/:id/decide`; the next retry with the same arguments goes through. ApprovalsDO serializes concurrent decisions.
+When a tool listed under an approval rule is called, the wrapper synthesizes a deterministic call signature, persists an `approval_request` row, and returns a deny string to the model. The approver decides through `POST /approvals/:id/decide`; the next retry with the same arguments goes through. ApprovalsDO serializes concurrent decisions. `tools` matches by exact name or a trailing-`*` prefix — gate MCP servers with `serverName__*` so a server can't dodge approval by renaming its tools (see [spec.policies](#specpolicies)).
 
 ## spec.recursion_limit
 

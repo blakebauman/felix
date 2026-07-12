@@ -23,6 +23,7 @@ import { currentTenantSubject } from '../limits/state';
 import { recordCounter } from '../observability/metrics';
 import { readToolErrorCode } from '../tools/errors';
 import { wrapExecutor } from '../tools/executor';
+import { matchesAnyToolPattern } from '../tools/tool-match';
 import {
   denyOutput,
   isWrapperDeny,
@@ -139,7 +140,9 @@ function appliesTo(rule: JudgeRule, toolName: string): boolean {
   // results — the final-response guard runs them; skip them here.
   if (rule.final_response) return false;
   if (rule.target_tools.length === 0) return true;
-  return rule.target_tools.includes(toolName);
+  // Match exact name or a trailing-`*` prefix (`stripe__*` scores every tool
+  // from the `stripe` MCP server regardless of the server-chosen suffix).
+  return matchesAnyToolPattern(toolName, rule.target_tools);
 }
 
 /**

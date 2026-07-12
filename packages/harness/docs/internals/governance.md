@@ -103,6 +103,8 @@ if missing.length: emit policy_decision audit (denied), return deny string
 
 When a tool appears in multiple policies, **all** must pass.
 
+**Tool targeting matches by glob, not just exact name** (`src/tools/tool-match.ts`, shared by policies, approvals, and judges). A `tools` / `target_tools` entry is either an exact name, a trailing-`*` prefix (`stripe__*`), or a bare `*` (all tools). This closes an MCP gap: MCP tools are named `${serverName}__${remoteToolName}` where the remote server chooses the suffix, so exact-name targeting let a malicious server dodge a policy/approval/judge by renaming its tools. The `serverName` prefix comes from the manifest's `mcp_servers[].name` (server-proof), so `stripe__*` gates the entire server regardless of what it names its tools.
+
 Audit event:
 ```json
 { "event_type": "policy_decision", "status": "denied",

@@ -14,6 +14,7 @@ import { getContext } from '../context';
 import { currentTenantSubject } from '../limits/state';
 import { recordCounter } from '../observability/metrics';
 import { wrapExecutor } from '../tools/executor';
+import { matchesAnyToolPattern } from '../tools/tool-match';
 import { denyOutput, type Tool, type ToolInput } from '../tools/types';
 import type { ApprovalRule } from './models';
 import { createOrFetchRequest, findBySignature } from './store';
@@ -143,9 +144,9 @@ function wrapOne(inner: Tool, manifestId: string): Tool {
 
 export function applyApprovals(tools: Tool[], rules: ApprovalRule[], manifestId: string): Tool[] {
   if (rules.length === 0) return [...tools];
-  const gated = new Set<string>();
-  for (const r of rules) {
-    for (const t of r.tools) gated.add(t);
-  }
-  return tools.map((t) => (gated.has(t.name) ? wrapOne(t, manifestId) : t));
+  const patterns = rules.flatMap((r) => r.tools);
+  // A tool is gated when any rule's `tools` pattern matches — exact name or a
+  // trailing-`*` prefix (`stripe__*` gates a whole MCP server regardless of the
+  // server-chosen tool-name suffix).
+  return tools.map((t) => (matchesAnyToolPattern(t.name, patterns) ? wrapOne(t, manifestId) : t));
 }
