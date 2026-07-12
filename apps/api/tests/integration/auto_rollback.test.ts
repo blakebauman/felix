@@ -15,15 +15,24 @@
  */
 
 import { env } from 'cloudflare:test';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { runAnomalyScan } from '@felix/harness/jobs/anomaly-detector';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { ManifestSchema } from '@felix/harness/manifests/schema';
 import { clearCanary, createVersion, getActive, setCanary } from '@felix/harness/manifests/store';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { applyMigrations, withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
+
+// One shared Postgres client for the whole file — the vitest runner context
+// is long-lived, so a per-call client would leak a socket per seed row.
+let _sql: ReturnType<typeof getDb> | undefined;
+const testSql = () => {
+  _sql ??= getDb(testEnv);
+  return _sql;
+};
 
 beforeAll(async () => {
   await applyMigrations(testEnv.DB);
@@ -56,20 +65,12 @@ async function seedToolCall(opts: {
   };
   if (opts.errorCode) payload.error_code = opts.errorCode;
   if (opts.variant) payload.manifest_variant = opts.variant;
-  await testEnv.DB.prepare(
-    `INSERT INTO audit_events
-       (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-       VALUES (?, ?, ?, 'tool_call', ?, '', ?, ?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      opts.tenantId,
-      opts.ts,
-      opts.manifestId,
-      opts.status,
-      JSON.stringify(payload),
-    )
-    .run();
+  await testSql()`
+    INSERT INTO audit_events
+      (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+      VALUES (${crypto.randomUUID()}, ${opts.tenantId}, ${opts.ts}, 'tool_call',
+              ${opts.manifestId}, '', ${opts.status}, ${payload})
+  `;
 }
 
 async function seedManifestWithCanary(
@@ -134,7 +135,7 @@ describe('auto-rollback on anomaly', () => {
     expect(before?.canary_weight).toBe(50);
     expect(before?.canary_version).toBe(canary);
 
-    await runAnomalyScan(testEnv, now);
+    await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
 
     const after = await getActive(testEnv, tenantId, name);
     expect(after?.canary_weight).toBe(0);
@@ -174,7 +175,7 @@ describe('auto-rollback on anomaly', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     // The stable spike is still surfaced as an alert...
     const hit = result.flagged.find((f) => f.manifest_id === name && f.variant === 'stable');
     expect(hit).toBeDefined();
@@ -215,7 +216,7 @@ describe('auto-rollback on anomaly', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(true);
 
     const after = await getActive(testEnv, tenantId, name);
@@ -251,7 +252,7 @@ describe('auto-rollback on anomaly', () => {
     }
     // Should not throw; the auto-rollback path skips cleanly when there's
     // no active canary.
-    await expect(runAnomalyScan(testEnv, now)).resolves.toBeDefined();
+    await expect(withPgContext(testEnv, () => runAnomalyScan(testEnv, now))).resolves.toBeDefined();
     const after = await getActive(testEnv, tenantId, name);
     expect(after?.canary_weight).toBe(0);
   });

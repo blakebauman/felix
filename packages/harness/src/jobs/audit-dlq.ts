@@ -38,9 +38,9 @@ export async function drainAuditDlq(env: Env, events: AuditEvent[]): Promise<Aud
 
   recordCounterDetached(env, 'orchestrator_audit_dlq_received', {}, events.length);
 
-  if (!env.DB) {
-    // No D1 to recover into (unit stub / misconfig): log so the events aren't
-    // lost without a trace, and report them all as failed.
+  if (!env.HYPERDRIVE) {
+    // No database to recover into (unit stub / misconfig): log so the events
+    // aren't lost without a trace, and report them all as failed.
     for (const e of events) console.log(JSON.stringify({ audit_dlq_unrecovered: e }));
     result.failed_ids = events.map((e) => e.id);
     return result;

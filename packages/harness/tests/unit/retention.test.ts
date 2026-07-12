@@ -4,7 +4,7 @@
  * Pins the GC contract: `runRetentionSweep` prunes audit_events older than
  * the retention window and expired plans, in BOUNDED batches, while
  * retaining recent rows — and emits an observable summary. The DB is stubbed
- * as an in-memory model so the test stays decoupled from D1.
+ * as an in-memory model so the test stays decoupled from Postgres.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ import {
   parseAuditRetentionDays,
   runRetentionSweep,
 } from '../../src/jobs/retention';
+import { makeFakeSql, withFakeDb } from '../helpers/fake-sql';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -28,45 +29,37 @@ interface PlanRow {
 }
 
 /**
- * In-memory D1 stub that understands only the two bounded-delete queries the
- * sweep issues. It parses the LIMIT bind and the cutoff bind, applies the
- * predicate, deletes up to LIMIT matching rows, and reports `meta.changes`.
+ * In-memory Postgres stub that understands only the two bounded-delete
+ * queries the sweep issues. It applies the cutoff + LIMIT params to the
+ * in-memory rows, deletes up to LIMIT matching rows, and reports the
+ * deleted count (mirrors a real DELETE result's `.count`).
  */
-function fakeEnv(audit: AuditRow[], plans: PlanRow[], sink: AuditEvent[]): Env {
-  return {
-    DB: {
-      prepare(sql: string) {
-        const isAudit = sql.includes('audit_events');
-        return {
-          bind(cutoff: number, limit: number) {
-            return {
-              async run() {
-                let changes = 0;
-                if (isAudit) {
-                  const survivors: AuditRow[] = [];
-                  for (const r of audit) {
-                    if (r.ts < cutoff && changes < limit) changes += 1;
-                    else survivors.push(r);
-                  }
-                  audit.length = 0;
-                  audit.push(...survivors);
-                } else {
-                  const survivors: PlanRow[] = [];
-                  for (const r of plans) {
-                    if (r.expires_at !== null && r.expires_at < cutoff && changes < limit)
-                      changes += 1;
-                    else survivors.push(r);
-                  }
-                  plans.length = 0;
-                  plans.push(...survivors);
-                }
-                return { meta: { changes } };
-              },
-            };
-          },
-        };
-      },
-    },
+function fakeEnv(audit: AuditRow[], plans: PlanRow[], sink: AuditEvent[]) {
+  const { sql } = makeFakeSql((q) => {
+    const isAudit = q.text.includes('audit_events');
+    const [cutoff, limit] = q.params as [number, number];
+    let changes = 0;
+    if (isAudit) {
+      const survivors: AuditRow[] = [];
+      for (const r of audit) {
+        if (r.ts < cutoff && changes < limit) changes += 1;
+        else survivors.push(r);
+      }
+      audit.length = 0;
+      audit.push(...survivors);
+    } else {
+      const survivors: PlanRow[] = [];
+      for (const r of plans) {
+        if (r.expires_at !== null && r.expires_at < cutoff && changes < limit) changes += 1;
+        else survivors.push(r);
+      }
+      plans.length = 0;
+      plans.push(...survivors);
+    }
+    return changes;
+  });
+  const env = {
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
     AUDIT_QUEUE: {
       send: (e: AuditEvent) => {
         sink.push(e);
@@ -74,6 +67,7 @@ function fakeEnv(audit: AuditRow[], plans: PlanRow[], sink: AuditEvent[]): Env {
       },
     },
   } as unknown as Env;
+  return { env, sql };
 }
 
 describe('runRetentionSweep', () => {
@@ -90,7 +84,8 @@ describe('runRetentionSweep', () => {
     ];
     const sink: AuditEvent[] = [];
 
-    const result = await runRetentionSweep(fakeEnv(audit, plans, sink), NOW);
+    const { env, sql } = fakeEnv(audit, plans, sink);
+    const result = await withFakeDb(env, sql, () => runRetentionSweep(env, NOW));
 
     expect(result.audit_deleted).toBe(2);
     expect(result.plans_deleted).toBe(1);
@@ -114,7 +109,8 @@ describe('runRetentionSweep', () => {
     const audit: AuditRow[] = Array.from({ length: 5001 }, () => ({ ts: oldTs }));
     const sink: AuditEvent[] = [];
 
-    const result = await runRetentionSweep(fakeEnv(audit, [], sink), NOW);
+    const { env, sql } = fakeEnv(audit, [], sink);
+    const result = await withFakeDb(env, sql, () => runRetentionSweep(env, NOW));
 
     expect(result.audit_deleted).toBe(5000);
     expect(result.audit_capped).toBe(true);

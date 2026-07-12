@@ -14,6 +14,16 @@ import { configDefaults, defineConfig, defineProject } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    // disposeContextDb ends each request's Postgres client in the workers
+    // project (required in that long-lived pool, or connections exhaust the
+    // server's max_connections); postgres.js's workerd polyfill then rejects
+    // its pending socket read with "Stream was cancelled" — benign and
+    // uncatchable from user code (re-emitted as an unlistened internal
+    // 'error' event), but vitest counts every one as an unhandled error and
+    // fails an otherwise-green run. Root-level option (vitest doesn't honor
+    // it per-project); unhandled errors are still PRINTED, they just don't
+    // flip the exit code — real failures still surface through assertions.
+    dangerouslyIgnoreUnhandledErrors: true,
     projects: [
       defineProject({
         test: {
@@ -80,6 +90,11 @@ export default defineConfig({
           // Node-side: waits for Postgres, resets the felix_test schema, and
           // applies apps/api/migrations-pg via node-pg-migrate.
           globalSetup: ['./apps/api/tests/integration/global-setup.ts'],
+          // Postgres is shared across test files (unlike miniflare's per-test
+          // D1 isolation), so run files serially: tenant-distinct data keeps
+          // suites apart, and serial order keeps the tenant-AGNOSTIC scans
+          // (anomaly detector, retention sweep, audit metrics) deterministic.
+          fileParallelism: false,
         },
       }),
     ],

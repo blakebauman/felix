@@ -17,7 +17,13 @@
  */
 
 import type { Context, Next } from 'hono';
-import { disposeLimitState, newLimitState, type RequestContext, runWithContext } from '../context';
+import {
+  disposeContextDb,
+  disposeLimitState,
+  newLimitState,
+  type RequestContext,
+  runWithContext,
+} from '../context';
 import type { Env } from '../env';
 import type { Manifest } from '../manifests/schema';
 import { recordCounterDetached } from '../observability/metrics';
@@ -149,6 +155,7 @@ export function authMiddleware(opts: AuthMiddlewareOptions = {}) {
         if (!disposed) {
           disposed = true;
           disposeLimitState(ctx.limitState);
+          disposeContextDb(ctx);
         }
       };
       try {

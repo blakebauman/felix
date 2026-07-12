@@ -24,6 +24,7 @@ import { _clearResolverCache } from '../../src/manifests/resolver';
 import type { Manifest } from '../../src/manifests/schema';
 import type { SessionEvent } from '../../src/session/types';
 import { InMemoryToolProvider } from '../../src/tools/provider';
+import { makeFakeSql, withFakeDb } from '../helpers/fake-sql';
 
 interface TaskState {
   taskId: string;
@@ -37,49 +38,31 @@ interface TaskState {
 }
 
 /**
- * Minimal D1 stub serving the tenant-D1 manifest resolution path
+ * Minimal Postgres stub serving the tenant manifest resolution path
  * (`manifest_active` pointer + `manifests` version blob) for a small,
- * name-keyed set of seeded manifests. Names not in the map fall through
- * (returns null), so the resolver drops to the bundled layer — that's how
- * the existing `quick` (allow_anonymous) manifest keeps resolving.
+ * name-keyed set of seeded manifests. Names not in the map miss (empty
+ * result), so the resolver drops to the bundled layer — that's how the
+ * existing `quick` (allow_anonymous) manifest keeps resolving.
  */
-function fakeDb(manifests: Map<string, Manifest>): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind(...args: unknown[]) {
-          return {
-            async first<T>(): Promise<T | null> {
-              if (sql.includes('FROM manifest_active')) {
-                const name = args[1] as string;
-                if (!manifests.has(name)) return null;
-                return {
-                  version: 1,
-                  canary_version: null,
-                  canary_weight: 0,
-                  updated_at: 0,
-                  updated_by: 'test',
-                } as T;
-              }
-              if (sql.includes('FROM manifests')) {
-                const name = args[1] as string;
-                const version = args[2] as number;
-                const m = manifests.get(name);
-                if (!m || version !== 1) return null;
-                return {
-                  manifest_json: JSON.stringify(m),
-                  created_at: 0,
-                  created_by: 'test',
-                  comment: '',
-                } as T;
-              }
-              return null;
-            },
-          };
-        },
-      };
-    },
-  } as unknown as D1Database;
+function fakeManifestSql(manifests: Map<string, Manifest>) {
+  return makeFakeSql((q) => {
+    if (q.text.includes('FROM manifest_active')) {
+      const name = q.params[1] as string;
+      if (!manifests.has(name)) return [];
+      return [
+        { version: 1, canary_version: null, canary_weight: 0, updated_at: 0, updated_by: 'test' },
+      ];
+    }
+    if (q.text.includes('FROM manifests')) {
+      const name = q.params[1] as string;
+      const version = q.params[2] as number;
+      const m = manifests.get(name);
+      if (!m || version !== 1) return [];
+      // jsonb round-trips as an object, not a JSON string.
+      return [{ manifest_json: m, created_at: 0, created_by: 'test', comment: '' }];
+    }
+    return [];
+  });
 }
 
 function fakeEnv(
@@ -88,7 +71,7 @@ function fakeEnv(
     events?: Map<string, SessionEvent[]>;
     manifests?: Map<string, Manifest>;
   } = {},
-): Env {
+) {
   const tasks = seed.tasks ?? new Map<string, TaskState>();
   const events = seed.events ?? new Map<string, SessionEvent[]>();
   const manifests = seed.manifests ?? new Map<string, Manifest>();
@@ -124,7 +107,9 @@ function fakeEnv(
     },
   });
 
-  return {
+  const { sql } = fakeManifestSql(manifests);
+
+  const env = {
     A2A_TASK_DO: {
       idFromName: (name: string) => name,
       get: (id: unknown) => taskStub(String(id)),
@@ -133,11 +118,12 @@ function fakeEnv(
       idFromName: (name: string) => name,
       get: (id: unknown) => eventStub(String(id)),
     },
-    DB: fakeDb(manifests),
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
     // No R2 overrides in these tests — force the resolver past the tenant/
-    // global R2 layers to D1 (seeded) or bundled.
+    // global R2 layers to the seeded Postgres rows or bundled.
     BUNDLES: { get: async () => null },
   } as unknown as Env;
+  return { env, sql };
 }
 
 function authedTenant(tenantId: string): AuthContext {
@@ -181,21 +167,23 @@ beforeEach(() => _clearResolverCache());
 
 describe('a2a tasks/resubscribe', () => {
   it('returns an error SSE event when the task does not exist', async () => {
-    const env = fakeEnv();
+    const { env, sql } = fakeEnv();
     const auth = authedTenant('acme');
     const app = await bootApp(auth);
-    const resp = await app.fetch(
-      new Request('https://t/a2a', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tasks/resubscribe',
-          params: { id: 'ghost-task' },
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(
+        new Request('https://t/a2a', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tasks/resubscribe',
+            params: { id: 'ghost-task' },
+          }),
         }),
-      }),
-      env,
+        env,
+      ),
     );
     expect(resp.headers.get('content-type')).toMatch(/text\/event-stream/);
     const events = await readSse(resp);
@@ -230,21 +218,23 @@ describe('a2a tasks/resubscribe', () => {
         ],
       ],
     ]);
-    const env = fakeEnv({ tasks, events });
+    const { env, sql } = fakeEnv({ tasks, events });
     const auth = authedTenant(tenantId);
     const app = await bootApp(auth);
-    const resp = await app.fetch(
-      new Request('https://t/a2a', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tasks/resubscribe',
-          params: { id: taskId },
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(
+        new Request('https://t/a2a', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tasks/resubscribe',
+            params: { id: taskId },
+          }),
         }),
-      }),
-      env,
+        env,
+      ),
     );
     const ssePayloads = await readSse(resp);
     // First event is the status preamble; then two replay events; then the terminal output.
@@ -291,21 +281,23 @@ describe('a2a tasks/resubscribe', () => {
         ],
       ],
     ]);
-    const env = fakeEnv({ tasks, events });
+    const { env, sql } = fakeEnv({ tasks, events });
     const auth = authedTenant(tenantId);
     const app = await bootApp(auth);
-    const resp = await app.fetch(
-      new Request('https://t/a2a', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tasks/resubscribe',
-          params: { id: taskId },
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(
+        new Request('https://t/a2a', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tasks/resubscribe',
+            params: { id: taskId },
+          }),
         }),
-      }),
-      env,
+        env,
+      ),
     );
     const ssePayloads = await readSse(resp);
     // Preamble should report a pending tool call detected by wake().
@@ -375,18 +367,22 @@ describe('a2a read-method auth gating', () => {
   }
 
   it('rejects an anonymous tasks/get against a non-anonymous manifest', async () => {
-    const env = fakeEnv(seedLockedTask('default', 'locked-task'));
+    const { env, sql } = fakeEnv(seedLockedTask('default', 'locked-task'));
     const app = await bootApp(ANONYMOUS);
-    const resp = await app.fetch(rpc('tasks/get', 'locked-task'), env);
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(rpc('tasks/get', 'locked-task'), env),
+    );
     expect(resp.status).toBe(401);
     const body = (await resp.json()) as { error?: string };
     expect(body.error).toBe('unauthorized');
   });
 
   it('rejects an anonymous tasks/resubscribe against a non-anonymous manifest', async () => {
-    const env = fakeEnv(seedLockedTask('default', 'locked-task'));
+    const { env, sql } = fakeEnv(seedLockedTask('default', 'locked-task'));
     const app = await bootApp(ANONYMOUS);
-    const resp = await app.fetch(rpc('tasks/resubscribe', 'locked-task'), env);
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(rpc('tasks/resubscribe', 'locked-task'), env),
+    );
     expect(resp.status).toBe(401);
     // Crucially, no replay of the private transcript leaks out.
     const text = await resp.text();
@@ -394,16 +390,20 @@ describe('a2a read-method auth gating', () => {
   });
 
   it('rejects an anonymous tasks/cancel against a non-anonymous manifest', async () => {
-    const env = fakeEnv(seedLockedTask('default', 'locked-task'));
+    const { env, sql } = fakeEnv(seedLockedTask('default', 'locked-task'));
     const app = await bootApp(ANONYMOUS);
-    const resp = await app.fetch(rpc('tasks/cancel', 'locked-task'), env);
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(rpc('tasks/cancel', 'locked-task'), env),
+    );
     expect(resp.status).toBe(401);
   });
 
   it('allows an authenticated same-tenant tasks/get against a non-anonymous manifest', async () => {
-    const env = fakeEnv(seedLockedTask('default', 'locked-task'));
+    const { env, sql } = fakeEnv(seedLockedTask('default', 'locked-task'));
     const app = await bootApp(authedTenant('default'));
-    const resp = await app.fetch(rpc('tasks/get', 'locked-task'), env);
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(rpc('tasks/get', 'locked-task'), env),
+    );
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { result?: { manifestName?: string; status?: string } };
     expect(body.result).toMatchObject({ manifestName: 'locked', status: 'completed' });
@@ -426,9 +426,9 @@ describe('a2a read-method auth gating', () => {
         },
       ],
     ]);
-    const env = fakeEnv({ tasks });
+    const { env, sql } = fakeEnv({ tasks });
     const app = await bootApp(ANONYMOUS);
-    const resp = await app.fetch(rpc('tasks/get', taskId), env);
+    const resp = await withFakeDb(env, sql, async () => app.fetch(rpc('tasks/get', taskId), env));
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { result?: { manifestName?: string } };
     expect(body.result).toMatchObject({ manifestName: 'quick' });
@@ -436,9 +436,11 @@ describe('a2a read-method auth gating', () => {
 
   it('does not leak existence of another tenant’s task (tasks/get → -32001)', async () => {
     // Task lives under tenant `acme`; a caller in tenant `other` misses the DO.
-    const env = fakeEnv(seedLockedTask('acme', 'locked-task'));
+    const { env, sql } = fakeEnv(seedLockedTask('acme', 'locked-task'));
     const app = await bootApp(authedTenant('other'));
-    const resp = await app.fetch(rpc('tasks/get', 'locked-task'), env);
+    const resp = await withFakeDb(env, sql, async () =>
+      app.fetch(rpc('tasks/get', 'locked-task'), env),
+    );
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { error?: { code: number; message: string } };
     expect(body.error).toMatchObject({ code: -32001, message: 'task not found' });

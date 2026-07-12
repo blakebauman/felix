@@ -3,14 +3,15 @@
  *
  * Hot path: `recordEvent` enqueues onto `AUDIT_QUEUE`. The queue consumer
  * (see `index.ts:queue`) batches up to 50 events per pull and writes them
- * to D1 in a single batched statement. This keeps the wrapper code free
- * of D1 round-trip latency on every tool call.
+ * to Postgres in a single multi-row INSERT. This keeps the wrapper code
+ * free of database round-trip latency on every tool call.
  *
  * When no queue is wired (unit tests with a stub Env, or when the binding
  * fails) we fall back to `execCtx.waitUntil` for a best-effort direct write.
  */
 
 import { getContext } from '../context';
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { recordCounter } from '../observability/metrics';
 import { redactSecrets } from '../security/redact';
@@ -123,10 +124,8 @@ function enqueueOrFallback(env: Env, event: AuditEvent, execCtx?: ExecutionConte
   if (queue) {
     // Happy path: enqueue and let the batched consumer persist. If the send
     // REJECTS (queue pressure / transient error) we must not silently drop the
-    // event — fall back to the same direct-D1 write the no-queue path uses so
+    // event — fall back to the same direct write the no-queue path uses so
     // the audit/compliance surface stays durable under load.
-    // NOTE: durable delivery for enqueue failures is best-effort D1 here; a
-    // dead-letter-queue consumer for the queue itself is a separate follow-up.
     const send = queue.send(event, { contentType: 'json' }).catch((err: unknown) => {
       console.error('audit enqueue failed', err);
       recordCounter('orchestrator_audit_enqueue_fallback', { manifest_id: event.manifest_id });
@@ -136,8 +135,9 @@ function enqueueOrFallback(env: Env, event: AuditEvent, execCtx?: ExecutionConte
     else void send;
     return;
   }
-  // No queue binding: write directly (or log if no DB either — unit tests with
-  // a stub env). Production envs always have either the queue or the DB wired.
+  // No queue binding: write directly (or log if no database either — unit
+  // tests with a stub env). Production envs always have either the queue or
+  // the Hyperdrive binding wired.
   const write = directWrite(env, event);
   if (execCtx) execCtx.waitUntil(write);
   else void write;
@@ -145,12 +145,12 @@ function enqueueOrFallback(env: Env, event: AuditEvent, execCtx?: ExecutionConte
 
 /**
  * Best-effort direct persistence used both when no queue is wired and as the
- * fallback when `AUDIT_QUEUE.send` rejects. Guarded on `env.DB`; if D1 is
- * absent (or the insert throws) the event is logged as a last resort so the
- * loss is at least observable.
+ * fallback when `AUDIT_QUEUE.send` rejects. Guarded on `env.HYPERDRIVE`; if
+ * Postgres is absent (or the insert throws) the event is logged as a last
+ * resort so the loss is at least observable.
  */
 async function directWrite(env: Env, event: AuditEvent): Promise<void> {
-  if (!env.DB) {
+  if (!env.HYPERDRIVE) {
     console.log(JSON.stringify({ audit: event }));
     return;
   }
@@ -163,49 +163,38 @@ async function directWrite(env: Env, event: AuditEvent): Promise<void> {
 }
 
 async function persistOne(env: Env, event: AuditEvent): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO audit_events
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO audit_events
         (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      event.id,
-      event.tenant_id,
-      event.ts,
-      event.event_type,
-      event.manifest_id,
-      event.principal_subject,
-      event.status,
-      JSON.stringify(event.payload),
-    )
-    .run();
+      VALUES (${event.id}, ${event.tenant_id}, ${event.ts}, ${event.event_type},
+              ${event.manifest_id}, ${event.principal_subject}, ${event.status},
+              ${event.payload as Record<string, unknown>})
+  `;
 }
 
 /**
- * Called by the queue consumer. Batches inserts into one D1 `batch()` call.
- * D1 supports up to ~100 statements per batch; we cap to 50 to match the
- * consumer's `max_batch_size` and leave headroom for retries.
+ * Called by the queue consumer. One multi-row INSERT per pull (≤50 rows —
+ * the consumer's `max_batch_size`), atomic by virtue of being a single
+ * statement.
  */
 export async function persistBatch(env: Env, events: AuditEvent[]): Promise<void> {
   if (events.length === 0) return;
-  const stmt = env.DB.prepare(
-    `INSERT INTO audit_events
-        (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const batch = events.map((e) =>
-    stmt.bind(
-      e.id,
-      e.tenant_id,
-      e.ts,
-      e.event_type,
-      e.manifest_id,
-      e.principal_subject,
-      e.status,
-      JSON.stringify(e.payload),
-    ),
-  );
-  await env.DB.batch(batch);
+  const sql = getDb(env);
+  // NOTE: jsonb values are passed as raw objects — postgres.js Describes the
+  // statement, sees the jsonb param type, and JSON-serializes once. A
+  // pre-stringified value would be double-encoded into a jsonb string scalar.
+  const rows = events.map((e) => ({
+    id: e.id,
+    tenant_id: e.tenant_id,
+    ts: e.ts,
+    event_type: e.event_type,
+    manifest_id: e.manifest_id,
+    principal_subj: e.principal_subject,
+    status: e.status,
+    payload_json: e.payload as Record<string, unknown>,
+  }));
+  await sql`INSERT INTO audit_events ${sql(rows)}`;
 }
 
 export interface ListOptions {
@@ -216,29 +205,25 @@ export interface ListOptions {
 
 export async function listEvents(env: Env, opts: ListOptions): Promise<AuditEvent[]> {
   const limit = Math.min(opts.limit ?? 100, 500);
-  const stmt = opts.status
-    ? env.DB.prepare(
-        `SELECT * FROM audit_events
-           WHERE tenant_id = ? AND status = ?
-           ORDER BY ts DESC LIMIT ?`,
-      ).bind(opts.tenantId, opts.status, limit)
-    : env.DB.prepare(
-        `SELECT * FROM audit_events
-           WHERE tenant_id = ?
-           ORDER BY ts DESC LIMIT ?`,
-      ).bind(opts.tenantId, limit);
-
-  const rows = await stmt.all<{
-    id: string;
-    tenant_id: string;
-    ts: number;
-    event_type: AuditEventType;
-    manifest_id: string;
-    principal_subj: string;
-    status: string;
-    payload_json: string;
-  }>();
-  return (rows.results ?? []).map((row) => ({
+  const sql = getDb(env);
+  const rows = await sql<
+    {
+      id: string;
+      tenant_id: string;
+      ts: number;
+      event_type: AuditEventType;
+      manifest_id: string;
+      principal_subj: string;
+      status: string;
+      payload_json: Record<string, unknown>;
+    }[]
+  >`
+    SELECT * FROM audit_events
+      WHERE tenant_id = ${opts.tenantId}
+      ${opts.status ? sql`AND status = ${opts.status}` : sql``}
+      ORDER BY ts DESC LIMIT ${limit}
+  `;
+  return rows.map((row) => ({
     id: row.id,
     tenant_id: row.tenant_id,
     ts: row.ts,
@@ -246,16 +231,8 @@ export async function listEvents(env: Env, opts: ListOptions): Promise<AuditEven
     manifest_id: row.manifest_id,
     principal_subject: row.principal_subj,
     status: row.status,
-    payload: safeJson(row.payload_json),
+    payload: row.payload_json ?? {},
   }));
-}
-
-function safeJson(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -286,11 +263,11 @@ export interface QueueDispatchState {
 
 /**
  * Reconstruct the {@link QueueDispatchState} for one `tool_call_id` from the
- * tenant's queue-lifecycle audit rows. Tenant-scoped, prepared statement,
- * matched on `tool_call_id` via SQLite's `json_extract`.
+ * tenant's queue-lifecycle audit rows. Tenant-scoped, parameterized, matched
+ * on `tool_call_id` via the jsonb `->>` operator.
  *
  * NOTE (eventual consistency): `queue_dispatch` / `queue_complete` rows are
- * emitted through `AUDIT_QUEUE` and batched into D1 by the audit consumer,
+ * emitted through `AUDIT_QUEUE` and batched into Postgres by the audit consumer,
  * so there is a short window (bounded by the audit batch timeout) where a
  * just-emitted row is not yet visible here. A legitimate consumer that
  * completes faster than that window should treat the resulting rejection as
@@ -302,26 +279,27 @@ export async function findQueueDispatchState(
   tenantId: string,
   toolCallId: string,
 ): Promise<QueueDispatchState> {
-  const rows = await env.DB.prepare(
-    `SELECT event_type, manifest_id,
-            json_extract(payload_json, '$.thread_id') AS thread_id,
-            json_extract(payload_json, '$.job_id') AS job_id
-       FROM audit_events
-       WHERE tenant_id = ?
-         AND event_type IN ('queue_dispatch', 'queue_complete', 'queue_expired')
-         AND json_extract(payload_json, '$.tool_call_id') = ?`,
-  )
-    .bind(tenantId, toolCallId)
-    .all<{
+  const sql = getDb(env);
+  const rows = await sql<
+    {
       event_type: string;
       manifest_id: string;
       thread_id: string | null;
       job_id: string | null;
-    }>();
+    }[]
+  >`
+    SELECT event_type, manifest_id,
+           payload_json->>'thread_id' AS thread_id,
+           payload_json->>'job_id' AS job_id
+      FROM audit_events
+      WHERE tenant_id = ${tenantId}
+        AND event_type IN ('queue_dispatch', 'queue_complete', 'queue_expired')
+        AND payload_json->>'tool_call_id' = ${toolCallId}
+  `;
 
   let dispatch: QueueDispatchState['dispatch'];
   let resolved = false;
-  for (const row of rows.results ?? []) {
+  for (const row of rows) {
     if (row.event_type === 'queue_dispatch') {
       dispatch = {
         threadId: row.thread_id ?? '',

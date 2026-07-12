@@ -11,15 +11,24 @@
  */
 
 import { env } from 'cloudflare:test';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { runAnomalyScan } from '@felix/harness/jobs/anomaly-detector';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { ManifestSchema } from '@felix/harness/manifests/schema';
 import { createVersion } from '@felix/harness/manifests/store';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { applyMigrations, withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
+
+// One shared Postgres client for the whole file — the vitest runner context
+// is long-lived, so a per-call client would leak a socket per seed row.
+let _sql: ReturnType<typeof getDb> | undefined;
+const testSql = () => {
+  _sql ??= getDb(testEnv);
+  return _sql;
+};
 
 beforeAll(async () => {
   await applyMigrations(testEnv.DB);
@@ -84,20 +93,12 @@ async function seedToolCall(opts: {
     duration_ms: 5,
   };
   if (opts.errorCode) payload.error_code = opts.errorCode;
-  await testEnv.DB.prepare(
-    `INSERT INTO audit_events
-       (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-       VALUES (?, ?, ?, 'tool_call', ?, '', ?, ?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      opts.tenantId,
-      opts.ts,
-      opts.manifestId,
-      opts.status,
-      JSON.stringify(payload),
-    )
-    .run();
+  await testSql()`
+    INSERT INTO audit_events
+      (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+      VALUES (${crypto.randomUUID()}, ${opts.tenantId}, ${opts.ts}, 'tool_call',
+              ${opts.manifestId}, '', ${opts.status}, ${payload})
+  `;
 }
 
 describe('runAnomalyScan', () => {
@@ -149,7 +150,7 @@ describe('runAnomalyScan', () => {
       });
     }
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find(
       (f) =>
         f.tenant_id === 'acme' &&
@@ -185,7 +186,7 @@ describe('runAnomalyScan', () => {
       status: 'ok',
       ts: now,
     });
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find((f) => f.manifest_id === 'anomaly_test_b' && f.tool === 'rare');
     expect(hit).toBeUndefined();
   });
@@ -237,7 +238,7 @@ describe('runAnomalyScan', () => {
         ts: now - 60_000 - i * 60_000,
       });
     }
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     const hit = result.flagged.find(
       (f) => f.manifest_id === 'anomaly_test_c' && f.tool === 'flaky',
     );
@@ -251,7 +252,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(false);
   });
 
@@ -263,7 +264,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(false);
   });
 
@@ -275,7 +276,7 @@ describe('runAnomalyScan', () => {
     const now = Date.now();
     await seedSpike(tenantId, name, now);
 
-    const result = await runAnomalyScan(testEnv, now);
+    const result = await withPgContext(testEnv, () => runAnomalyScan(testEnv, now));
     expect(result.flagged.some((f) => f.manifest_id === name)).toBe(true);
   });
 });

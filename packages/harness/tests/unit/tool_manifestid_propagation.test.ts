@@ -24,6 +24,7 @@ import { ANONYMOUS } from '../../src/auth/context';
 import { newLimitState, type RequestContext, runWithContext } from '../../src/context';
 import type { Env } from '../../src/env';
 import { planUpdateStep } from '../../src/plans/tools';
+import { makeFakeSql } from '../helpers/fake-sql';
 
 function reqCtxNoManifest(): RequestContext {
   // Deliberately no `manifestId` on RequestContext — that's the
@@ -37,24 +38,17 @@ function reqCtxNoManifest(): RequestContext {
     updated_at: 0,
     steps: [{ id: 's1', description: 'first step', status: 'pending', result: '' }],
   };
+  const { sql } = makeFakeSql((q) => {
+    // updatePlanStep first calls getPlan, which expects `plan_json` — the
+    // jsonb column round-trips as an object now, not a JSON string.
+    if (q.text.includes('SELECT plan_json')) return [{ plan_json: stubPlan }];
+    return 1; // the UPDATE that follows
+  });
   return {
-    env: {
-      DB: {
-        prepare: (_sql: string) => ({
-          bind: () => ({
-            async first<T>(): Promise<T | null> {
-              // updatePlanStep first calls getPlan which expects `plan_json`.
-              return { plan_json: JSON.stringify(stubPlan) } as unknown as T;
-            },
-            async run() {
-              return { success: true };
-            },
-          }),
-        }),
-      },
-    } as unknown as Env,
+    env: { HYPERDRIVE: { connectionString: 'postgresql://fake' } } as unknown as Env,
     auth: { ...ANONYMOUS, principal: { ...ANONYMOUS.principal, tenantId: 'acme' } },
     limitState: newLimitState(),
+    db: sql,
   };
 }
 

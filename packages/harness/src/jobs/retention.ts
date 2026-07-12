@@ -1,7 +1,7 @@
 /**
  * Retention / garbage-collection sweep.
  *
- * Day-2 cost control: several D1 tables grow without bound. This cron task
+ * Day-2 cost control: several tables grow without bound. This cron task
  * prunes the clearly-safe, highest-value deletions each tick:
  *
  *   1. `audit_events` older than a configurable retention window
@@ -12,14 +12,14 @@
  *      (default 30) — an R2 `list` + bounded `delete`.
  *
  * Every delete is BOUNDED per tick (`MAX_DELETES_PER_TABLE`) so one sweep
- * can't exceed D1/R2 subrequest/time limits — if more qualifies it rolls off
- * on the next tick. SQLite/D1 doesn't support `DELETE ... LIMIT`, so the D1
- * deletes bound via a `rowid IN (SELECT ... LIMIT ?)` subquery, which stays
- * indexed on the scanned column (`ts` for audit, `expires_at` for plans — see
- * the `0021_retention_index.sql` migration). The R2 sweep bounds itself by
- * capping both the number of objects deleted and the number of `list` pages
- * scanned per tick (artifact keys carry no time ordering, so old objects can
- * only be found by scanning).
+ * can't exceed query-duration/R2 subrequest limits — if more qualifies it
+ * rolls off on the next tick. Postgres `DELETE` has no `LIMIT`, so the
+ * deletes bound via a primary-key `(tenant_id, id) IN (SELECT ... LIMIT $n)`
+ * subquery, which stays indexed on the scanned column (`ts` for audit,
+ * `expires_at` for plans — the `idx_audit_ts` / `idx_plans_expires` indexes).
+ * The R2 sweep bounds itself by capping both the number of objects deleted
+ * and the number of `list` pages scanned per tick (artifact keys carry no
+ * time ordering, so old objects can only be found by scanning).
  *
  * Out of scope (deliberately): Vectorize GC — tracked as a follow-up.
  *
@@ -30,6 +30,7 @@
  */
 
 import { recordEventDetached } from '../audit/store';
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { recordCounterDetached } from '../observability/metrics';
 
@@ -108,20 +109,29 @@ export interface RetentionSweepResult {
   errors: string[];
 }
 
-/** Bounded delete via `rowid IN (SELECT ... LIMIT ?)`; returns rows deleted. */
+/** Bounded delete via a PK `(tenant_id, id) IN (SELECT ... LIMIT n)` subquery. */
 async function boundedDelete(
   env: Env,
   table: 'audit_events' | 'plans',
-  where: string,
   cutoff: number,
 ): Promise<number> {
-  const res = await env.DB.prepare(
-    `DELETE FROM ${table}
-       WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${where} LIMIT ?)`,
-  )
-    .bind(cutoff, MAX_DELETES_PER_TABLE)
-    .run();
-  return res.meta?.changes ?? 0;
+  const sql = getDb(env);
+  const res =
+    table === 'audit_events'
+      ? await sql`
+          DELETE FROM audit_events
+            WHERE (tenant_id, id) IN (
+              SELECT tenant_id, id FROM audit_events
+                WHERE ts < ${cutoff} LIMIT ${MAX_DELETES_PER_TABLE})
+        `
+      : await sql`
+          DELETE FROM plans
+            WHERE (tenant_id, id) IN (
+              SELECT tenant_id, id FROM plans
+                WHERE expires_at IS NOT NULL AND expires_at < ${cutoff}
+                LIMIT ${MAX_DELETES_PER_TABLE})
+        `;
+  return res.count;
 }
 
 /**
@@ -193,11 +203,12 @@ export async function runRetentionSweep(
   const retentionDays = parseAuditRetentionDays(env);
   const auditCutoff = now - retentionDays * DAY_MS;
 
-  // D1 deletes only run when the database is bound; the R2 artifact sweep below
-  // is independent so it still runs when only the bucket is wired.
-  if (env.DB) {
+  // Postgres deletes only run when the Hyperdrive binding is wired; the R2
+  // artifact sweep below is independent so it still runs when only the bucket
+  // is bound.
+  if (env.HYPERDRIVE) {
     try {
-      result.audit_deleted = await boundedDelete(env, 'audit_events', 'ts < ?', auditCutoff);
+      result.audit_deleted = await boundedDelete(env, 'audit_events', auditCutoff);
       result.audit_capped = result.audit_deleted >= MAX_DELETES_PER_TABLE;
     } catch (err) {
       result.errors.push(`audit_events: ${(err as Error).message ?? String(err)}`);
@@ -205,12 +216,7 @@ export async function runRetentionSweep(
     }
 
     try {
-      result.plans_deleted = await boundedDelete(
-        env,
-        'plans',
-        'expires_at IS NOT NULL AND expires_at < ?',
-        now,
-      );
+      result.plans_deleted = await boundedDelete(env, 'plans', now);
       result.plans_capped = result.plans_deleted >= MAX_DELETES_PER_TABLE;
     } catch (err) {
       result.errors.push(`plans: ${(err as Error).message ?? String(err)}`);

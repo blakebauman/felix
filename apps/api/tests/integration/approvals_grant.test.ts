@@ -17,12 +17,18 @@ import type { ApprovalRule } from '@felix/harness/approvals/models';
 import { decideRequest, getRequest } from '@felix/harness/approvals/store';
 import { applyApprovals } from '@felix/harness/approvals/wrap';
 import type { AuthContext } from '@felix/harness/auth/context';
-import { newLimitState, type RequestContext, runWithContext } from '@felix/harness/context';
+import {
+  disposeContextDb,
+  newLimitState,
+  type RequestContext,
+  runWithContext,
+} from '@felix/harness/context';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { defineTool, isWrapperDeny, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { applyMigrations } from './setup';
+import { applyMigrations, withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const TENANT = 'default';
@@ -62,17 +68,28 @@ function approvalIdOf(out: ToolOutput): string | undefined {
   return content(out).match(/approval_id=([0-9a-f-]+)/)?.[1];
 }
 
-function run(wrapped: Tool, args: Record<string, unknown>, subject: string): Promise<ToolOutput> {
-  return runWithContext(ctxFor(subject), () => wrapped.executor.execute(args));
+async function run(
+  wrapped: Tool,
+  args: Record<string, unknown>,
+  subject: string,
+): Promise<ToolOutput> {
+  const ctx = ctxFor(subject);
+  try {
+    return await runWithContext(ctx, () => wrapped.executor.execute(args));
+  } finally {
+    disposeContextDb(ctx);
+  }
 }
 
 async function approve(id: string): Promise<void> {
-  const res = await decideRequest(testEnv, TENANT, id, { status: 'approved', decidedBy: 'op' });
+  const res = await withPgContext(testEnv, () =>
+    decideRequest(testEnv, TENANT, id, { status: 'approved', decidedBy: 'op' }),
+  );
   expect(res.outcome).toBe('decided');
 }
 
 async function statusOf(id: string): Promise<string | undefined> {
-  return (await getRequest(testEnv, TENANT, id))?.status;
+  return (await withPgContext(testEnv, () => getRequest(testEnv, TENANT, id)))?.status;
 }
 
 describe('one_shot approval grants', () => {
@@ -115,7 +132,7 @@ describe('TTL (expiring) approval grants', () => {
     const id1 = approvalIdOf(first)!;
     await approve(id1);
 
-    const row = await getRequest(testEnv, TENANT, id1);
+    const row = await withPgContext(testEnv, () => getRequest(testEnv, TENANT, id1));
     expect(row).not.toBeNull();
     expect(row?.expires_at).not.toBeNull();
     expect((row?.expires_at ?? 0) - (row?.decided_at ?? 0)).toBe(3600 * 1000);
@@ -132,9 +149,10 @@ describe('TTL (expiring) approval grants', () => {
     await approve(id1);
 
     // Force the grant into the past — deterministic vs. sleeping on a real TTL.
-    await testEnv.DB.prepare('UPDATE approvals SET expires_at = ? WHERE tenant_id = ? AND id = ?')
-      .bind(Date.now() - 1000, TENANT, id1)
-      .run();
+    await getDb(testEnv)`
+      UPDATE approvals SET expires_at = ${Date.now() - 1000}
+        WHERE tenant_id = ${TENANT} AND id = ${id1}
+    `;
 
     const second = await run(wrapped, args, 'alice');
     expect(isWrapperDeny(second)).toBe(true); // expired -> re-request

@@ -19,6 +19,7 @@
 
 import { env, SELF } from 'cloudflare:test';
 import { approvalsDoStub } from '@felix/harness/approvals/approvals-do';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { applyMigrations } from './setup';
@@ -31,17 +32,17 @@ beforeAll(async () => {
 
 describe('/jobs cross-tenant scoping', () => {
   it("hides another tenant's jobs from the anonymous (default) caller", async () => {
-    // Seed a job owned by `other-tenant` directly via D1 — bypasses the
+    // Seed a job owned by `other-tenant` directly in Postgres — bypasses the
     // route's auth-derived tenant_id so we can stage cross-tenant data.
-    await testEnv.DB.prepare(
-      `INSERT INTO jobs
-         (tenant_id, name, schedule, manifest_id, last_run_at, next_run_at,
-          last_status, last_error, created_at, payload_json)
-         VALUES ('other-tenant', 'other-only', '0 0 * * *', 'quick', NULL, NULL,
-                 '', '', ?, '{}')`,
-    )
-      .bind(Date.now())
-      .run();
+    const sql = getDb(testEnv);
+    await sql`
+      INSERT INTO jobs
+        (tenant_id, name, schedule, manifest_id, last_run_at, next_run_at,
+         last_status, last_error, created_at, payload_json)
+        VALUES ('other-tenant', 'other-only', '0 0 * * *', 'quick', NULL, NULL,
+                '', '', ${Date.now()}, '{}')
+        ON CONFLICT (tenant_id, name) DO NOTHING
+    `;
 
     // Create one under the default tenant via the route, to verify the
     // list filter doesn't accidentally hide the caller's own data.
@@ -71,11 +72,11 @@ describe('/jobs cross-tenant scoping', () => {
     });
     expect(run.status).toBe(404);
 
-    // The other tenant's row is untouched in D1.
-    const stillThere = await testEnv.DB.prepare(
-      "SELECT name FROM jobs WHERE tenant_id = 'other-tenant' AND name = 'other-only'",
-    ).first<{ name: string }>();
-    expect(stillThere?.name).toBe('other-only');
+    // The other tenant's row is untouched in Postgres.
+    const stillThere = await sql<{ name: string }[]>`
+      SELECT name FROM jobs WHERE tenant_id = 'other-tenant' AND name = 'other-only'
+    `;
+    expect(stillThere[0]?.name).toBe('other-only');
   });
 });
 
@@ -127,20 +128,14 @@ describe('ApprovalsDO tenant prefix', () => {
     const now = Date.now();
     // Seed two approvals sharing the same `id` but different tenants —
     // the composite (tenant_id, id) PK allows it.
-    await testEnv.DB.batch([
-      testEnv.DB.prepare(
-        `INSERT INTO approvals
-           (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
-            principal_subj, status, created_at)
-           VALUES (?, 'tenant-a', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
-      ).bind(sharedId, `sig-a-${sharedId}`, now),
-      testEnv.DB.prepare(
-        `INSERT INTO approvals
-           (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
-            principal_subj, status, created_at)
-           VALUES (?, 'tenant-b', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
-      ).bind(sharedId, `sig-b-${sharedId}`, now),
-    ]);
+    const sql = getDb(testEnv);
+    await sql`
+      INSERT INTO approvals
+        (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
+         principal_subj, status, created_at)
+        VALUES (${sharedId}, 'tenant-a', 'quick', 'echo', ${`sig-a-${sharedId}`}, '{}', '', 'pending', ${now}),
+               (${sharedId}, 'tenant-b', 'quick', 'echo', ${`sig-b-${sharedId}`}, '{}', '', 'pending', ${now})
+    `;
 
     // Decide on tenant-a's approval via the tenant-keyed DO stub.
     const stubA = approvalsDoStub(testEnv, 'tenant-a', sharedId);
@@ -156,22 +151,18 @@ describe('ApprovalsDO tenant prefix', () => {
     expect(decideResp.status).toBe(200);
 
     // tenant-a's row is decided.
-    const rowA = await testEnv.DB.prepare(
-      'SELECT status, decided_by FROM approvals WHERE tenant_id = ? AND id = ?',
-    )
-      .bind('tenant-a', sharedId)
-      .first<{ status: string; decided_by: string }>();
-    expect(rowA?.status).toBe('approved');
-    expect(rowA?.decided_by).toBe('operator-a');
+    const rowsA = await sql<{ status: string; decided_by: string }[]>`
+      SELECT status, decided_by FROM approvals WHERE tenant_id = 'tenant-a' AND id = ${sharedId}
+    `;
+    expect(rowsA[0]?.status).toBe('approved');
+    expect(rowsA[0]?.decided_by).toBe('operator-a');
 
     // tenant-b's row, sharing the id, is untouched.
-    const rowB = await testEnv.DB.prepare(
-      'SELECT status, decided_by FROM approvals WHERE tenant_id = ? AND id = ?',
-    )
-      .bind('tenant-b', sharedId)
-      .first<{ status: string; decided_by: string }>();
-    expect(rowB?.status).toBe('pending');
-    expect(rowB?.decided_by).toBe('');
+    const rowsB = await sql<{ status: string; decided_by: string }[]>`
+      SELECT status, decided_by FROM approvals WHERE tenant_id = 'tenant-b' AND id = ${sharedId}
+    `;
+    expect(rowsB[0]?.status).toBe('pending');
+    expect(rowsB[0]?.decided_by).toBe('');
 
     // The DO stubs themselves are different instances (different storage
     // namespaces). They share an id only by accident.
@@ -188,14 +179,13 @@ describe('ApprovalsDO tenant prefix', () => {
 describe('approval decision finality', () => {
   it('rejects re-deciding a resolved request and leaves the original decision intact', async () => {
     const id = `final-${crypto.randomUUID()}`;
-    await testEnv.DB.prepare(
-      `INSERT INTO approvals
-         (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
-          principal_subj, status, created_at)
-         VALUES (?, 'tenant-f', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
-    )
-      .bind(id, `sig-f-${id}`, Date.now())
-      .run();
+    const sql = getDb(testEnv);
+    await sql`
+      INSERT INTO approvals
+        (id, tenant_id, manifest_id, tool_name, call_signature, args_json,
+         principal_subj, status, created_at)
+        VALUES (${id}, 'tenant-f', 'quick', 'echo', ${`sig-f-${id}`}, '{}', '', 'pending', ${Date.now()})
+    `;
 
     const stub = approvalsDoStub(testEnv, 'tenant-f', id);
     // First decision approves with edited_args.
@@ -227,14 +217,15 @@ describe('approval decision finality', () => {
 
     // The stored decision is unchanged: still approved, original decider,
     // original edited_args.
-    const row = await testEnv.DB.prepare(
-      'SELECT status, decided_by, edited_args_json FROM approvals WHERE tenant_id = ? AND id = ?',
-    )
-      .bind('tenant-f', id)
-      .first<{ status: string; decided_by: string; edited_args_json: string | null }>();
-    expect(row?.status).toBe('approved');
-    expect(row?.decided_by).toBe('operator-first');
-    expect(row?.edited_args_json).toBe(JSON.stringify({ text: 'approved-args' }));
+    const rows = await sql<
+      { status: string; decided_by: string; edited_args_json: Record<string, unknown> | null }[]
+    >`
+      SELECT status, decided_by, edited_args_json FROM approvals
+        WHERE tenant_id = 'tenant-f' AND id = ${id}
+    `;
+    expect(rows[0]?.status).toBe('approved');
+    expect(rows[0]?.decided_by).toBe('operator-first');
+    expect(rows[0]?.edited_args_json).toEqual({ text: 'approved-args' });
   });
 });
 
@@ -285,14 +276,13 @@ describe('/audit cross-tenant scoping', () => {
     const tenants = ['default', 'other-tenant'] as const;
     const now = Date.now();
     // One event per tenant.
+    const sql = getDb(testEnv);
     for (const t of tenants) {
-      await testEnv.DB.prepare(
-        `INSERT INTO audit_events
-           (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-           VALUES (?, ?, ?, 'tool_call', 'quick', '', '', '{}')`,
-      )
-        .bind(`evt-${t}-${now}`, t, now)
-        .run();
+      await sql`
+        INSERT INTO audit_events
+          (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+          VALUES (${`evt-${t}-${now}`}, ${t}, ${now}, 'tool_call', 'quick', '', '', '{}')
+      `;
     }
     const resp = await SELF.fetch('https://orchestrator.test/audit');
     const { events } = (await resp.json()) as {

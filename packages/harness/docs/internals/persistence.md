@@ -30,7 +30,7 @@ CREATE INDEX idx_audit_tenant_ts        ON audit_events (tenant_id, ts DESC);
 CREATE INDEX idx_audit_tenant_status_ts ON audit_events (tenant_id, status, ts DESC);
 ```
 
-Append-only. Producer writes through `AUDIT_QUEUE`; the queue consumer batches up to 50 events per `DB.batch()` insert. Payloads are passed through `redactSecrets` before persistence.
+Append-only. Producer writes through `AUDIT_QUEUE`; the queue consumer lands up to 50 events per pull in one multi-row INSERT. Payloads are passed through `redactSecrets` before persistence.
 
 Query patterns:
 - `WHERE tenant_id = ? ORDER BY ts DESC LIMIT ?` (list)
@@ -193,7 +193,7 @@ CREATE TABLE manifest_active (
 );
 ```
 
-`manifests` is append-only — every `POST /manifests/:name` allocates the next version and inserts a row; rollback flips the `manifest_active` pointer in a `DB.batch()` together with the version insert. Reads go through `resolveManifest` (`src/manifests/resolver.ts`), which caches the active pointer per isolate for 30s and the immutable version blobs forever.
+`manifests` is append-only — every `POST /manifests/:name` allocates the next version and inserts a row; rollback flips the `manifest_active` pointer in one transaction together with the version insert. Reads go through `resolveManifest` (`src/manifests/resolver.ts`), which caches the active pointer per isolate for 30s and the immutable version blobs forever.
 
 ### manifest_active — canary columns
 
@@ -314,9 +314,9 @@ Consumer: `apps/api/src/index.ts:queue` handler. Bound in `wrangler.jsonc`:
 }
 ```
 
-The consumer tries a single `DB.batch()` insert for the whole batch; on failure it falls back to per-row inserts so a single poison event can't starve audit writes for every tenant.
+The consumer tries a single multi-row INSERT for the whole batch; on failure it falls back to per-row inserts so a single poison event can't starve audit writes for every tenant.
 
-**Dead-letter drain.** In staging/production the main audit consumer sets `max_retries: 5` + `dead_letter_queue: felix-audit-dlq-<env>`; an event that exhausts its retries lands on the DLQ. The same `queue()` handler consumes those queues too — it branches on the `-dlq` queue name and calls `drainAuditDlq(env, events)` (`src/jobs/audit-dlq.ts`), which emits an `orchestrator_audit_dlq_received` counter and makes a best-effort direct-D1 re-write (batch, then per-row fallback) so the audit record survives, then acks the messages unconditionally (a DLQ has no further dead-letter, so retrying would only loop). Declared as a second consumer entry alongside the main one in `wrangler.example.jsonc` (staging/prod only; dev's `felix-audit` queue has no DLQ).
+**Dead-letter drain.** In staging/production the main audit consumer sets `max_retries: 5` + `dead_letter_queue: felix-audit-dlq-<env>`; an event that exhausts its retries lands on the DLQ. The same `queue()` handler consumes those queues too — it branches on the `-dlq` queue name and calls `drainAuditDlq(env, events)` (`src/jobs/audit-dlq.ts`), which emits an `orchestrator_audit_dlq_received` counter and makes a best-effort direct database re-write (batch, then per-row fallback) so the audit record survives, then acks the messages unconditionally (a DLQ has no further dead-letter, so retrying would only loop). Declared as a second consumer entry alongside the main one in `wrangler.example.jsonc` (staging/prod only; dev's `felix-audit` queue has no DLQ).
 
 Per-request audit cap: 200 events (tracked on `LimitState.auditCount`). When exceeded, the producer emits one `audit_truncated` marker (and an `orchestrator_audit_dropped` counter) and silently drops the rest.
 

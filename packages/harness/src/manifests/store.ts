@@ -1,5 +1,5 @@
 /**
- * D1 store for tenant-managed manifests.
+ * Postgres store for tenant-managed manifests.
  *
  * Storage shape:
  *   - `manifests`        — append-only version log, PK (tenant_id, name, version)
@@ -7,12 +7,12 @@
  *
  * The version column is a per-(tenant_id, name) monotonic integer that we
  * allocate by reading the current MAX(version) and inserting MAX+1 in the
- * same `DB.batch()` that flips the active pointer. SQLite serialises batch
- * execution on a single replica so the two statements are atomic relative
- * to other batches; cross-batch races on the same (tenant, name) can
- * collide on the PRIMARY KEY and surface as a 5xx — callers may retry.
+ * same transaction that flips the active pointer. Concurrent creates on the
+ * same (tenant, name) can collide on the PRIMARY KEY and surface as a 5xx —
+ * callers may retry.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { type Manifest, ManifestSchema } from './schema';
 
@@ -54,12 +54,11 @@ interface ActiveSummary {
 }
 
 export async function nextVersionFor(env: Env, tenantId: string, name: string): Promise<number> {
-  const row = await env.DB.prepare(
-    'SELECT MAX(version) AS v FROM manifests WHERE tenant_id = ? AND name = ?',
-  )
-    .bind(tenantId, name)
-    .first<{ v: number | null }>();
-  return (row?.v ?? 0) + 1;
+  const sql = getDb(env);
+  const rows = await sql<{ v: number | null }[]>`
+    SELECT MAX(version) AS v FROM manifests WHERE tenant_id = ${tenantId} AND name = ${name}
+  `;
+  return (rows[0]?.v ?? 0) + 1;
 }
 
 export async function createVersion(
@@ -75,31 +74,30 @@ export async function createVersion(
 ): Promise<ManifestVersionRow> {
   const version = await nextVersionFor(env, input.tenantId, input.name);
   const now = Date.now();
-  const json = JSON.stringify(input.manifest);
   const comment = input.comment ?? '';
+  const sql = getDb(env);
 
-  const stmts = [
-    env.DB.prepare(
-      `INSERT INTO manifests
-         (tenant_id, name, version, manifest_json, created_at, created_by, comment)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(input.tenantId, input.name, version, json, now, input.createdBy, comment),
-  ];
-
-  if (input.activate ?? true) {
-    stmts.push(
-      env.DB.prepare(
-        `INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (tenant_id, name) DO UPDATE SET
-           version = excluded.version,
-           updated_at = excluded.updated_at,
-           updated_by = excluded.updated_by`,
-      ).bind(input.tenantId, input.name, version, now, input.createdBy),
-    );
-  }
-
-  await env.DB.batch(stmts);
+  // Version insert + active-pointer flip are one transaction so a reader
+  // never sees a pointer to a version that isn't durably written.
+  await sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO manifests
+        (tenant_id, name, version, manifest_json, created_at, created_by, comment)
+        VALUES (${input.tenantId}, ${input.name}, ${version},
+                ${input.manifest as unknown as Record<string, unknown>}, ${now},
+                ${input.createdBy}, ${comment})
+    `;
+    if (input.activate ?? true) {
+      await tx`
+        INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
+          VALUES (${input.tenantId}, ${input.name}, ${version}, ${now}, ${input.createdBy})
+          ON CONFLICT (tenant_id, name) DO UPDATE SET
+            version = excluded.version,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by
+      `;
+    }
+  });
   return {
     tenant_id: input.tenantId,
     name: input.name,
@@ -118,16 +116,15 @@ export async function activateVersion(
   const exists = await getVersion(env, input.tenantId, input.name, input.version);
   if (!exists) return null;
   const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, name) DO UPDATE SET
-       version = excluded.version,
-       updated_at = excluded.updated_at,
-       updated_by = excluded.updated_by`,
-  )
-    .bind(input.tenantId, input.name, input.version, now, input.updatedBy)
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
+      VALUES (${input.tenantId}, ${input.name}, ${input.version}, ${now}, ${input.updatedBy})
+      ON CONFLICT (tenant_id, name) DO UPDATE SET
+        version = excluded.version,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+  `;
   return {
     tenant_id: input.tenantId,
     name: input.name,
@@ -144,18 +141,20 @@ export async function getActive(
   tenantId: string,
   name: string,
 ): Promise<ActiveRow | null> {
-  const row = await env.DB.prepare(
-    `SELECT version, canary_version, canary_weight, updated_at, updated_by
-       FROM manifest_active WHERE tenant_id = ? AND name = ? LIMIT 1`,
-  )
-    .bind(tenantId, name)
-    .first<{
+  const sql = getDb(env);
+  const rows = await sql<
+    {
       version: number;
       canary_version: number | null;
       canary_weight: number;
       updated_at: number;
       updated_by: string;
-    }>();
+    }[]
+  >`
+    SELECT version, canary_version, canary_weight, updated_at, updated_by
+      FROM manifest_active WHERE tenant_id = ${tenantId} AND name = ${name} LIMIT 1
+  `;
+  const row = rows[0];
   if (!row) return null;
   return {
     tenant_id: tenantId,
@@ -201,13 +200,13 @@ export async function setCanary(
   }
   const weight = Math.max(0, Math.min(100, Math.floor(input.canaryWeight)));
   const now = Date.now();
-  await env.DB.prepare(
-    `UPDATE manifest_active
-        SET canary_version = ?, canary_weight = ?, updated_at = ?, updated_by = ?
-        WHERE tenant_id = ? AND name = ?`,
-  )
-    .bind(input.canaryVersion, weight, now, input.updatedBy, input.tenantId, input.name)
-    .run();
+  const sql = getDb(env);
+  await sql`
+    UPDATE manifest_active
+      SET canary_version = ${input.canaryVersion}, canary_weight = ${weight},
+          updated_at = ${now}, updated_by = ${input.updatedBy}
+      WHERE tenant_id = ${input.tenantId} AND name = ${input.name}
+  `;
   return {
     ...stable,
     canary_version: input.canaryVersion,
@@ -229,14 +228,14 @@ export async function clearCanary(
   const stable = await getActive(env, input.tenantId, input.name);
   if (!stable) return null;
   const now = Date.now();
+  const sql = getDb(env);
   if (input.clearVersion) {
-    await env.DB.prepare(
-      `UPDATE manifest_active
-          SET canary_version = NULL, canary_weight = 0, updated_at = ?, updated_by = ?
-          WHERE tenant_id = ? AND name = ?`,
-    )
-      .bind(now, input.updatedBy, input.tenantId, input.name)
-      .run();
+    await sql`
+      UPDATE manifest_active
+        SET canary_version = NULL, canary_weight = 0,
+            updated_at = ${now}, updated_by = ${input.updatedBy}
+        WHERE tenant_id = ${input.tenantId} AND name = ${input.name}
+    `;
     return {
       ...stable,
       canary_version: null,
@@ -245,13 +244,11 @@ export async function clearCanary(
       updated_by: input.updatedBy,
     };
   }
-  await env.DB.prepare(
-    `UPDATE manifest_active
-        SET canary_weight = 0, updated_at = ?, updated_by = ?
-        WHERE tenant_id = ? AND name = ?`,
-  )
-    .bind(now, input.updatedBy, input.tenantId, input.name)
-    .run();
+  await sql`
+    UPDATE manifest_active
+      SET canary_weight = 0, updated_at = ${now}, updated_by = ${input.updatedBy}
+      WHERE tenant_id = ${input.tenantId} AND name = ${input.name}
+  `;
   return { ...stable, canary_weight: 0, updated_at: now, updated_by: input.updatedBy };
 }
 
@@ -261,25 +258,27 @@ export async function getVersion(
   name: string,
   version: number,
 ): Promise<ManifestVersionRow | null> {
-  const row = await env.DB.prepare(
-    `SELECT manifest_json, created_at, created_by, comment
-       FROM manifests
-       WHERE tenant_id = ? AND name = ? AND version = ?
-       LIMIT 1`,
-  )
-    .bind(tenantId, name, version)
-    .first<{
-      manifest_json: string;
+  const sql = getDb(env);
+  const rows = await sql<
+    {
+      manifest_json: unknown;
       created_at: number;
       created_by: string;
       comment: string;
-    }>();
+    }[]
+  >`
+    SELECT manifest_json, created_at, created_by, comment
+      FROM manifests
+      WHERE tenant_id = ${tenantId} AND name = ${name} AND version = ${version}
+      LIMIT 1
+  `;
+  const row = rows[0];
   if (!row) return null;
   return {
     tenant_id: tenantId,
     name,
     version,
-    manifest: ManifestSchema.parse(JSON.parse(row.manifest_json)),
+    manifest: ManifestSchema.parse(row.manifest_json),
     created_at: row.created_at,
     created_by: row.created_by,
     comment: row.comment,
@@ -292,16 +291,17 @@ export async function listVersions(
   name: string,
   limit = 100,
 ): Promise<Array<Omit<ManifestVersionRow, 'manifest'>>> {
-  const rows = await env.DB.prepare(
-    `SELECT version, created_at, created_by, comment
-       FROM manifests
-       WHERE tenant_id = ? AND name = ?
-       ORDER BY version DESC
-       LIMIT ?`,
-  )
-    .bind(tenantId, name, Math.min(limit, 500))
-    .all<{ version: number; created_at: number; created_by: string; comment: string }>();
-  return (rows.results ?? []).map((r) => ({
+  const sql = getDb(env);
+  const rows = await sql<
+    { version: number; created_at: number; created_by: string; comment: string }[]
+  >`
+    SELECT version, created_at, created_by, comment
+      FROM manifests
+      WHERE tenant_id = ${tenantId} AND name = ${name}
+      ORDER BY version DESC
+      LIMIT ${Math.min(limit, 500)}
+  `;
+  return rows.map((r) => ({
     tenant_id: tenantId,
     name,
     version: r.version,
@@ -316,21 +316,22 @@ export async function listActive(
   tenantId: string,
   limit = 100,
 ): Promise<ActiveSummary[]> {
-  const rows = await env.DB.prepare(
-    `SELECT name, version, canary_version, canary_weight, updated_at FROM manifest_active
-       WHERE tenant_id = ?
-       ORDER BY updated_at DESC
-       LIMIT ?`,
-  )
-    .bind(tenantId, Math.min(limit, 500))
-    .all<{
+  const sql = getDb(env);
+  const rows = await sql<
+    {
       name: string;
       version: number;
       canary_version: number | null;
       canary_weight: number;
       updated_at: number;
-    }>();
-  return (rows.results ?? []).map((r) => ({
+    }[]
+  >`
+    SELECT name, version, canary_version, canary_weight, updated_at FROM manifest_active
+      WHERE tenant_id = ${tenantId}
+      ORDER BY updated_at DESC
+      LIMIT ${Math.min(limit, 500)}
+  `;
+  return rows.map((r) => ({
     name: r.name,
     active_version: r.version,
     canary_version: r.canary_version,
@@ -359,22 +360,23 @@ export interface ActiveCanary {
  * (continuous-eval replays run under the anonymous cron context).
  */
 export async function listActiveCanaries(env: Env, limit = 500): Promise<ActiveCanary[]> {
-  const rows = await env.DB.prepare(
-    `SELECT tenant_id, name, version, canary_version, canary_weight
-       FROM manifest_active
-       WHERE canary_version IS NOT NULL AND canary_weight > 0 AND tenant_id != 'default'
-       ORDER BY updated_at DESC
-       LIMIT ?`,
-  )
-    .bind(Math.min(limit, 1000))
-    .all<{
+  const sql = getDb(env);
+  const rows = await sql<
+    {
       tenant_id: string;
       name: string;
       version: number;
       canary_version: number;
       canary_weight: number;
-    }>();
-  return (rows.results ?? []).map((r) => ({
+    }[]
+  >`
+    SELECT tenant_id, name, version, canary_version, canary_weight
+      FROM manifest_active
+      WHERE canary_version IS NOT NULL AND canary_weight > 0 AND tenant_id != 'default'
+      ORDER BY updated_at DESC
+      LIMIT ${Math.min(limit, 1000)}
+  `;
+  return rows.map((r) => ({
     tenant_id: r.tenant_id,
     name: r.name,
     version: r.version,
@@ -384,25 +386,21 @@ export async function listActiveCanaries(env: Env, limit = 500): Promise<ActiveC
 }
 
 export async function deleteName(env: Env, tenantId: string, name: string): Promise<boolean> {
+  const sql = getDb(env);
   // Only report success if there was something to delete.
-  const existing = await env.DB.prepare(
-    'SELECT 1 AS hit FROM manifest_active WHERE tenant_id = ? AND name = ? LIMIT 1',
-  )
-    .bind(tenantId, name)
-    .first<{ hit: number }>();
-  const anyVersion = await env.DB.prepare(
-    'SELECT 1 AS hit FROM manifests WHERE tenant_id = ? AND name = ? LIMIT 1',
-  )
-    .bind(tenantId, name)
-    .first<{ hit: number }>();
-  if (!existing && !anyVersion) return false;
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM manifest_active WHERE tenant_id = ? AND name = ?').bind(
-      tenantId,
-      name,
-    ),
-    env.DB.prepare('DELETE FROM manifests WHERE tenant_id = ? AND name = ?').bind(tenantId, name),
-  ]);
+  const existing = await sql<{ hit: number }[]>`
+    SELECT 1 AS hit FROM manifest_active WHERE tenant_id = ${tenantId} AND name = ${name} LIMIT 1
+  `;
+  const anyVersion = await sql<{ hit: number }[]>`
+    SELECT 1 AS hit FROM manifests WHERE tenant_id = ${tenantId} AND name = ${name} LIMIT 1
+  `;
+  if (!existing[0] && !anyVersion[0]) return false;
+  // Pointer + version log removed atomically so a resolver never sees an
+  // active pointer to a purged name.
+  await sql.begin(async (tx) => {
+    await tx`DELETE FROM manifest_active WHERE tenant_id = ${tenantId} AND name = ${name}`;
+    await tx`DELETE FROM manifests WHERE tenant_id = ${tenantId} AND name = ${name}`;
+  });
   return true;
 }
 
@@ -414,12 +412,11 @@ export async function deleteVersion(
 ): Promise<{ status: 'deleted' } | { status: 'not_found' } | { status: 'active' }> {
   const active = await getActive(env, tenantId, name);
   if (active?.version === version) return { status: 'active' };
-  const result = await env.DB.prepare(
-    'DELETE FROM manifests WHERE tenant_id = ? AND name = ? AND version = ?',
-  )
-    .bind(tenantId, name, version)
-    .run();
-  const meta = result.meta as { changes?: number } | undefined;
-  if (!meta?.changes) return { status: 'not_found' };
+  const sql = getDb(env);
+  const result = await sql`
+    DELETE FROM manifests
+      WHERE tenant_id = ${tenantId} AND name = ${name} AND version = ${version}
+  `;
+  if (result.count === 0) return { status: 'not_found' };
   return { status: 'deleted' };
 }

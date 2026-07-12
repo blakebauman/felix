@@ -2,11 +2,13 @@
  * Validation behaviour of the activate_skill / deactivate_skill / list_skills
  * tools wired in composition.ts. These tests cover the rejection paths
  * (unknown manifest, missing manifest_id, skill not declared) — the
- * handlers short-circuit before touching D1, so the env stub never has
- * to implement a real DB.
+ * handlers short-circuit before touching the database, so the env stub
+ * never has to implement a real one; a fake sql client (empty on every
+ * query) is injected via RequestContext.db so the resolver's tenant
+ * Postgres layer cleanly misses and falls through to the bundled layer.
  *
  * The happy-path (activate → persist → read back) is covered in the
- * integration suite where miniflare provides a real D1.
+ * integration suite where miniflare provides a real Postgres (Hyperdrive).
  */
 
 import { ANONYMOUS } from '@felix/harness/auth/context';
@@ -14,21 +16,18 @@ import { newLimitState, type RequestContext, runWithContext } from '@felix/harne
 import type { Env } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { makeFakeSql } from '../../../../packages/harness/tests/helpers/fake-sql';
 import { compose } from '../../src/composition';
 
 /**
- * Minimal env stub: the resolver reaches for `env.DB` (active-pointer
- * lookup) and `env.BUNDLES` (R2 override). Both are stubbed to "miss" so
- * resolution falls through to the bundled layer, matching the pre-resolver
- * behaviour these tests were written against.
+ * Minimal env stub: the resolver reaches for a Postgres client (injected
+ * per call via RequestContext.db in `ctx()` below) and `env.BUNDLES` (R2
+ * override). Both are stubbed to "miss" so resolution falls through to the
+ * bundled layer, matching the pre-resolver behaviour these tests were
+ * written against.
  */
 function fakeEnv(): Env {
   return {
-    DB: {
-      prepare: () => ({
-        bind: () => ({ first: async () => null, all: async () => ({ results: [] }) }),
-      }),
-    },
     BUNDLES: { get: async () => null },
   } as unknown as Env;
 }
@@ -38,10 +37,12 @@ beforeEach(() => {
 });
 
 function ctx(overrides: Partial<RequestContext> = {}): RequestContext {
+  const { sql } = makeFakeSql(() => []);
   return {
     env: fakeEnv(),
     auth: { ...ANONYMOUS, principal: { ...ANONYMOUS.principal, tenantId: 't1' } },
     limitState: newLimitState(),
+    db: sql,
     ...overrides,
   };
 }

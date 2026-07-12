@@ -5,7 +5,7 @@
  * recent production inputs (captured as `user_input` on `tool_call` audit
  * rows) sampled, replayed through the canary version, judged, and surfaced
  * as `judge_score` events tagged `source: 'continuous'`. The store + agent
- * builder + judge are stubbed so the test stays decoupled from D1 / AI.
+ * builder + judge are stubbed so the test stays decoupled from Postgres / AI.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +26,7 @@ import type { ManifestVersionRow } from '../../src/manifests/store';
 import * as storeModule from '../../src/manifests/store';
 import type { Agent, ChatMessage, InvokeInput, InvokeResult } from '../../src/patterns/types';
 import type { ToolProvider } from '../../src/tools/provider';
+import { makeFakeSql, withFakeDb } from '../helpers/fake-sql';
 
 const toolsStub = { resolve: () => [] } as unknown as ToolProvider;
 
@@ -47,23 +48,19 @@ function fakeAgent(reply: (input: string) => string): Agent {
   };
 }
 
-/** Env whose DB returns `inputRows` for the sample query and collects audit sends. */
+/** Env whose database returns `inputRows` for the sample query and collects audit sends. */
 function fakeEnv(
   inputRows: Array<{ user_input: string; last_ts: number }>,
   sink: AuditEvent[],
   sqlSink?: string[],
-): Env {
-  return {
-    DB: {
-      prepare: (sql: string) => {
-        sqlSink?.push(sql);
-        return {
-          bind: () => ({
-            all: async () => ({ results: inputRows }),
-          }),
-        };
-      },
-    },
+) {
+  const { sql } = makeFakeSql((q) => {
+    sqlSink?.push(q.text);
+    if (q.text.includes("event_type = 'tool_call'")) return inputRows;
+    return [];
+  });
+  const env = {
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
     AUDIT_QUEUE: {
       send: (e: AuditEvent) => {
         sink.push(e);
@@ -71,6 +68,7 @@ function fakeEnv(
       },
     },
   } as unknown as Env;
+  return { env, sql };
 }
 
 /**
@@ -141,7 +139,7 @@ describe('continuous eval — canary online benchmarking', () => {
       { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
     ]);
     const sink: AuditEvent[] = [];
-    const env = fakeEnv(
+    const { env, sql } = fakeEnv(
       [
         { user_input: 'reset my password', last_ts: 200 },
         { user_input: 'cancel my plan', last_ts: 100 },
@@ -149,7 +147,9 @@ describe('continuous eval — canary online benchmarking', () => {
       sink,
     );
 
-    const result = await runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000);
+    const result = await withFakeDb(env, sql, () =>
+      runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000),
+    );
 
     expect(result.canaries).toBe(1);
     expect(result.sampled).toBe(2);
@@ -170,7 +170,10 @@ describe('continuous eval — canary online benchmarking', () => {
   it('is a no-op when no canaries are in flight', async () => {
     vi.spyOn(storeModule, 'listActiveCanaries').mockResolvedValue([]);
     const sink: AuditEvent[] = [];
-    const result = await runContinuousEvalTick(fakeEnv([], sink), toolsStub, OPTS, 1_000_000);
+    const { env, sql } = fakeEnv([], sink);
+    const result = await withFakeDb(env, sql, () =>
+      runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000),
+    );
     expect(result).toEqual({ canaries: 0, sampled: 0, replayed: 0, passed: 0, failed: 0 });
     expect(sink).toHaveLength(0);
   });
@@ -206,15 +209,12 @@ describe('continuous eval — canary online benchmarking', () => {
       { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
     ]);
     const sink: AuditEvent[] = [];
-    const env = fakeEnv(
+    const { env, sql } = fakeEnv(
       Array.from({ length: 5 }, (_, i) => ({ user_input: `q${i}`, last_ts: i })),
       sink,
     );
-    const result = await runContinuousEvalTick(
-      env,
-      toolsStub,
-      { ...OPTS, max_replays_per_tick: 3 },
-      1_000_000,
+    const result = await withFakeDb(env, sql, () =>
+      runContinuousEvalTick(env, toolsStub, { ...OPTS, max_replays_per_tick: 3 }, 1_000_000),
     );
     expect(result.replayed).toBe(3);
     expect(sink.filter((e) => e.event_type === 'judge_score')).toHaveLength(3);
@@ -227,9 +227,9 @@ describe('continuous eval — canary online benchmarking', () => {
       { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
     ]);
     const sink: AuditEvent[] = [];
-    const env = fakeEnv([{ user_input: 'my SSN is 123-45-6789', last_ts: 200 }], sink);
+    const { env, sql } = fakeEnv([{ user_input: 'my SSN is 123-45-6789', last_ts: 200 }], sink);
 
-    await runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000);
+    await withFakeDb(env, sql, () => runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000));
 
     const toolCalls = sink.filter((e) => e.event_type === 'tool_call');
     expect(toolCalls).toHaveLength(1);
@@ -248,13 +248,17 @@ describe('continuous eval — canary online benchmarking', () => {
       { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
     ]);
     const sink: AuditEvent[] = [];
-    const sql: string[] = [];
-    const env = fakeEnv([{ user_input: 'reset my password', last_ts: 200 }], sink, sql);
+    const seenSql: string[] = [];
+    const { env, sql } = fakeEnv(
+      [{ user_input: 'reset my password', last_ts: 200 }],
+      sink,
+      seenSql,
+    );
 
-    await runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000);
+    await withFakeDb(env, sql, () => runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000));
 
-    const sampleSql = sql.find((s) => s.includes("event_type = 'tool_call'"));
+    const sampleSql = seenSql.find((s) => s.includes("event_type = 'tool_call'"));
     expect(sampleSql).toBeDefined();
-    expect(sampleSql).toContain("json_extract(payload_json, '$.replay') IS NULL");
+    expect(sampleSql).toContain("payload_json->>'replay' IS NULL");
   });
 });

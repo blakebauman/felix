@@ -21,7 +21,13 @@
 
 import { env, SELF } from 'cloudflare:test';
 import { ANONYMOUS } from '@felix/harness/auth/context';
-import { newLimitState, type RequestContext, runWithContext } from '@felix/harness/context';
+import {
+  disposeContextDb,
+  newLimitState,
+  type RequestContext,
+  runWithContext,
+} from '@felix/harness/context';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { conversationStub } from '@felix/harness/memory/conversation-do';
 import { analyzeWake, type SessionEvent } from '@felix/harness/session/types';
@@ -94,6 +100,7 @@ describe('queue transport end-to-end', () => {
     const stub = await runWithContext(ctx, async () =>
       exec.execute({ payload: 'work' }, { toolCallId }),
     );
+    disposeContextDb(ctx);
     expect(String(stub)).toContain('job_id=job-e2e-1');
     expect(String(stub)).toContain('tasks/resubscribe');
 
@@ -103,22 +110,18 @@ describe('queue transport end-to-end', () => {
     // in production it is long settled by the time a long-running job
     // completes. Land it synchronously here so the dispatch-pairing check
     // sees it (simulates the audit consumer having flushed the dispatch row).
-    await testEnv.DB.prepare(
-      `INSERT INTO audit_events
-         (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-         VALUES (?, 'acme', ?, 'queue_dispatch', 'researcher', '', 'enqueued', ?)`,
-    )
-      .bind(
-        crypto.randomUUID(),
-        Date.now(),
-        JSON.stringify({
-          job_id: 'job-e2e-1',
-          tool: 'long_research',
-          tool_call_id: toolCallId,
-          thread_id: threadId,
-        }),
-      )
-      .run();
+    await getDb(testEnv)`
+      INSERT INTO audit_events
+        (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+        VALUES (${crypto.randomUUID()}, 'acme', ${Date.now()}, 'queue_dispatch', 'researcher', '',
+                'enqueued',
+                ${{
+                  job_id: 'job-e2e-1',
+                  tool: 'long_research',
+                  tool_call_id: toolCallId,
+                  thread_id: threadId,
+                }})
+    `;
 
     // 3. Consumer arrives — POST the `tool_result` through the internal
     // endpoint with the shared secret. This is exactly what the

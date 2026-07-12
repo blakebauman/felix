@@ -10,6 +10,7 @@
  * the manifest didn't declare. Enforced at the call site in builder.ts.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 
 export async function getActivated(
@@ -18,18 +19,14 @@ export async function getActivated(
   manifestId: string,
 ): Promise<string[] | null> {
   if (!tenantId) return null;
-  const row = await env.DB.prepare(
-    'SELECT active_skills FROM skill_activation WHERE tenant_id = ? AND manifest_id = ? LIMIT 1',
-  )
-    .bind(tenantId, manifestId)
-    .first<{ active_skills: string }>();
-  if (!row) return null;
-  try {
-    const parsed = JSON.parse(row.active_skills);
-    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : null;
-  } catch {
-    return null;
-  }
+  const sql = getDb(env);
+  const rows = await sql<{ active_skills: unknown }[]>`
+    SELECT active_skills FROM skill_activation
+      WHERE tenant_id = ${tenantId} AND manifest_id = ${manifestId} LIMIT 1
+  `;
+  if (!rows[0]) return null;
+  const parsed = rows[0].active_skills;
+  return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : null;
 }
 
 export async function setActivated(
@@ -39,11 +36,11 @@ export async function setActivated(
   skills: string[],
 ): Promise<void> {
   const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO skill_activation (tenant_id, manifest_id, active_skills, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (tenant_id, manifest_id) DO UPDATE SET active_skills = excluded.active_skills, updated_at = excluded.updated_at`,
-  )
-    .bind(tenantId, manifestId, JSON.stringify(skills), now)
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO skill_activation (tenant_id, manifest_id, active_skills, updated_at)
+      VALUES (${tenantId}, ${manifestId}, ${skills}, ${now})
+      ON CONFLICT (tenant_id, manifest_id) DO UPDATE SET
+        active_skills = excluded.active_skills, updated_at = excluded.updated_at
+  `;
 }

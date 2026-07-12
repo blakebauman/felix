@@ -3,7 +3,7 @@
  *
  * Phase-5 framing (Cursor's "weekly anomaly review"): the Phase-1 error
  * taxonomy gives every failure a stable code, and the Phase-1 metrics
- * sink writes structured rows to D1. This job runs every cron tick,
+ * sink writes structured rows to Postgres. This job runs every cron tick,
  * compares the most recent error rate to a longer-window baseline per
  * `(tenant_id, manifest_id, variant, tool)`, and emits an
  * `anomaly_detected` audit event when the recent rate is sharply
@@ -28,6 +28,7 @@
  */
 
 import { recordEventDetached } from '../audit/store';
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { resolveManifest } from '../manifests/resolver';
 import { type AnomalyConfig, DEFAULT_ANOMALY_CONFIG } from '../manifests/schema';
@@ -82,20 +83,20 @@ interface ErrorCodeBreakdown {
  * error_code is looked up separately by `loadErrorBreakdown`.
  */
 async function loadRecent(env: Env, sinceMs: number): Promise<RecentRow[]> {
-  const sql = `
+  const sql = getDb(env);
+  const rows = await sql<RecentRow[]>`
     SELECT
       tenant_id,
       manifest_id,
-      COALESCE(json_extract(payload_json, '$.manifest_variant'), '') AS variant,
-      COALESCE(json_extract(payload_json, '$.tool'), '') AS tool,
+      COALESCE(payload_json->>'manifest_variant', '') AS variant,
+      COALESCE(payload_json->>'tool', '') AS tool,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
       COUNT(*) AS total
     FROM audit_events
-    WHERE event_type = 'tool_call' AND ts >= ?
+    WHERE event_type = 'tool_call' AND ts >= ${sinceMs}
     GROUP BY tenant_id, manifest_id, variant, tool
   `;
-  const rows = await env.DB.prepare(sql).bind(sinceMs).all<RecentRow>();
-  return rows.results ?? [];
+  return [...rows];
 }
 
 /**
@@ -108,21 +109,21 @@ async function loadErrorBreakdown(
   env: Env,
   sinceMs: number,
 ): Promise<Map<string, Array<{ error_code: string | null; count: number }>>> {
-  const sql = `
+  const sql = getDb(env);
+  const rows = await sql<ErrorCodeBreakdown[]>`
     SELECT
       tenant_id,
       manifest_id,
-      COALESCE(json_extract(payload_json, '$.manifest_variant'), '') AS variant,
-      COALESCE(json_extract(payload_json, '$.tool'), '') AS tool,
-      json_extract(payload_json, '$.error_code') AS error_code,
+      COALESCE(payload_json->>'manifest_variant', '') AS variant,
+      COALESCE(payload_json->>'tool', '') AS tool,
+      payload_json->>'error_code' AS error_code,
       COUNT(*) AS count
     FROM audit_events
-    WHERE event_type = 'tool_call' AND ts >= ? AND status = 'error'
+    WHERE event_type = 'tool_call' AND ts >= ${sinceMs} AND status = 'error'
     GROUP BY tenant_id, manifest_id, variant, tool, error_code
   `;
-  const rows = await env.DB.prepare(sql).bind(sinceMs).all<ErrorCodeBreakdown>();
   const out = new Map<string, Array<{ error_code: string | null; count: number }>>();
-  for (const row of rows.results ?? []) {
+  for (const row of rows) {
     const key = `${row.tenant_id}|${row.manifest_id}|${row.variant}|${row.tool}`;
     const list = out.get(key) ?? [];
     list.push({ error_code: row.error_code, count: row.count });
@@ -141,28 +142,30 @@ async function loadBaseline(
   baselineStartMs: number,
   recentStartMs: number,
 ): Promise<Map<string, { errors: number; total: number }>> {
-  const sql = `
+  const sql = getDb(env);
+  const rows = await sql<
+    {
+      tenant_id: string;
+      manifest_id: string;
+      variant: string;
+      tool: string;
+      errors: number;
+      total: number;
+    }[]
+  >`
     SELECT
       tenant_id,
       manifest_id,
-      COALESCE(json_extract(payload_json, '$.manifest_variant'), '') AS variant,
-      COALESCE(json_extract(payload_json, '$.tool'), '') AS tool,
+      COALESCE(payload_json->>'manifest_variant', '') AS variant,
+      COALESCE(payload_json->>'tool', '') AS tool,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
       COUNT(*) AS total
     FROM audit_events
-    WHERE event_type = 'tool_call' AND ts >= ? AND ts < ?
+    WHERE event_type = 'tool_call' AND ts >= ${baselineStartMs} AND ts < ${recentStartMs}
     GROUP BY tenant_id, manifest_id, variant, tool
   `;
-  const rows = await env.DB.prepare(sql).bind(baselineStartMs, recentStartMs).all<{
-    tenant_id: string;
-    manifest_id: string;
-    variant: string;
-    tool: string;
-    errors: number;
-    total: number;
-  }>();
   const out = new Map<string, { errors: number; total: number }>();
-  for (const row of rows.results ?? []) {
+  for (const row of rows) {
     out.set(`${row.tenant_id}|${row.manifest_id}|${row.variant}|${row.tool}`, {
       errors: row.errors,
       total: row.total,
