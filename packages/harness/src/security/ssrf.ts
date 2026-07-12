@@ -265,6 +265,19 @@ export function assertSafeOutboundUrlForEnv(rawUrl: string, env: Env): URL {
 }
 
 /**
+ * True when a `fetch(..., { redirect: 'manual' })` response is a redirect the
+ * caller must NOT follow. The SSRF guard only validates the *initial* URL, so
+ * a 3xx to an internal address (IMDS / RFC1918 / `.internal`) would bypass it
+ * if followed. In the Workers runtime `redirect: 'manual'` surfaces the raw
+ * 3xx (status + Location intact) rather than a browser-style opaque-redirect,
+ * so a status-range check is sufficient. Callers that expect no redirects
+ * (JSON-RPC / gateway POST endpoints) throw on a hit.
+ */
+export function isRedirect(resp: Response): boolean {
+  return resp.status >= 300 && resp.status < 400;
+}
+
+/**
  * Convenience predicate used by `outboundAuthHeader` so we never attach a
  * bearer to a non-allowlisted (or private) host.
  */

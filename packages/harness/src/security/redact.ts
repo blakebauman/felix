@@ -32,8 +32,16 @@ const SECRET_VALUE_PATTERNS = [
   /^sk-ant-[A-Za-z0-9_-]{16,}$/, // anthropic
   /^pk_(test|live)_[A-Za-z0-9]{16,}$/, // stripe pub
   /^rk_(test|live)_[A-Za-z0-9]{16,}$/, // stripe restricted
+  /^sk_(test|live)_[A-Za-z0-9]{16,}$/, // stripe secret
   /^Bearer\s+\S+$/i,
   /^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, // JWT
+  /^AKIA[0-9A-Z]{16}$/, // AWS access key id
+  /^ASIA[0-9A-Z]{16}$/, // AWS temporary access key id
+  /^AIza[0-9A-Za-z_-]{35}$/, // Google API key
+  /^gh[posru]_[A-Za-z0-9]{20,}$/, // GitHub PAT / OAuth / server / user / refresh
+  /^github_pat_[A-Za-z0-9_]{20,}$/, // GitHub fine-grained PAT
+  /^xox[baprs]-[A-Za-z0-9-]{10,}$/, // Slack token
+  /^glpat-[A-Za-z0-9_-]{20,}$/, // GitLab PAT
 ];
 
 const MAX_DEPTH = 6;

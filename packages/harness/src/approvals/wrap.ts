@@ -35,9 +35,22 @@ function wrapOne(inner: Tool, manifestId: string): Tool {
     executor: wrapExecutor(inner.executor, async (args, ctx) => {
       const requestCtx = getContext();
       if (!requestCtx) {
-        // Approval wrappers require env to persist. Tests that need to skip
-        // approvals can omit the wrap.
-        return inner.executor.execute(args, ctx);
+        // The approval store needs `env` (and a tenant) to record/verify a
+        // decision. Without a RequestContext we can't confirm the call was
+        // approved — fail CLOSED (deny) rather than execute a human-gated tool
+        // unapproved. This path is unreachable via HTTP or the durable
+        // Workflow (both install a context); it only guards a future invoker
+        // that forgets `runWithContext`. Tests that need to skip approvals omit
+        // the wrap entirely.
+        recordCounter('orchestrator_approvals_no_context', {
+          tool: inner.name,
+          manifest_id: manifestId,
+        });
+        return denyOutput(
+          `[approval unavailable] tool '${inner.name}' is approval-gated but no request ` +
+            'context is present to verify a decision; denying to fail closed.',
+          'approvals',
+        );
       }
       const env = requestCtx.env;
       const { tenantId, subject } = currentTenantSubject();

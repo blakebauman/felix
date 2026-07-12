@@ -21,7 +21,7 @@ spec: { ... }                 # defaults to a minimal react agent
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `name` | string (1-128 chars) | required | Used as the manifest id, the OpenAI `model` value, and the audit `manifest_id`. |
+| `name` | string (1-128 chars, `[a-zA-Z0-9._-]`) | required | Used as the manifest id, the OpenAI `model` value, the audit `manifest_id`, and an R2 override object-key segment. Restricted to `[a-zA-Z0-9._-]` (no slashes or whitespace) so it can't escape its key prefix. |
 | `version` | string | `"1.0.0"` | Free-form. |
 | `description` | string | `""` | Surfaced in the A2A agent card. |
 | `tags` | string[] | `[]` | Free-form. |
@@ -105,7 +105,7 @@ mcp_servers:
     transport: sse                # default: sse; "http" | "sse" | "stdio"
 ```
 
-URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`.
+URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`. A remote server is a **trust boundary**: its tool `description` and `inputSchema` are injected into the model's tool definitions (a prompt-injection surface), so the description is length-capped, an oversized schema is dropped, and the build-time `tools/list` discovery call is bounded by a timeout.
 
 ## spec.peers
 

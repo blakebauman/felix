@@ -31,4 +31,20 @@ describe('redactSecrets', () => {
     const out = redactSecrets({ description: 'Bearer abcdefghijklmnop' });
     expect(out).toEqual({ description: REDACTED });
   });
+
+  it('masks common cloud/SaaS token shapes under benign keys', () => {
+    // These land under innocuous key names, so only the value-shape patterns
+    // catch them. Built from parts so no realistic secret literal is committed
+    // (avoids tripping upstream secret scanners on obviously-fake test data).
+    const digits = '0'.repeat(12);
+    const letters = 'a'.repeat(20);
+    const out = redactSecrets({
+      a: `AKIA${'0'.repeat(16)}`, // AWS access key id
+      b: `AIza${'B'.repeat(35)}`, // Google API key (AIza + 35 chars)
+      c: `ghp_${letters}${letters}`, // GitHub PAT (gh?_ + long tail)
+      d: `xoxb-${digits}-${letters}`, // Slack token
+      e: `sk_live_${letters}`, // Stripe secret
+    });
+    expect(out).toEqual({ a: REDACTED, b: REDACTED, c: REDACTED, d: REDACTED, e: REDACTED });
+  });
 });

@@ -128,6 +128,34 @@ export function clampLimit(value: number | null | undefined, ceiling: number): n
   return Math.min(value, ceiling);
 }
 
+/** Clamp a nullable cap to its ceiling, preserving `null` (no manifest cap). */
+function clampNullable(value: number | null | undefined, ceiling: number): number | null {
+  if (value == null) return null;
+  return Math.min(value, ceiling);
+}
+
+/**
+ * Return a copy of `limits` with every non-null cap clamped to its
+ * `ABSOLUTE_LIMITS` ceiling. The Zod schema already enforces these ceilings on
+ * the normal path, so this is a no-op there — but a caller that constructs a
+ * `Limits` / `Manifest` object WITHOUT going through Zod (a test harness, a
+ * future programmatic builder) can't turn `max_tool_calls: 1e9` into reality.
+ * `null` (no manifest cap) is preserved so the no-limits fast path is unchanged.
+ */
+export function clampLimits(limits: Limits): Limits {
+  return {
+    ...limits,
+    max_tool_calls: clampNullable(limits.max_tool_calls, ABSOLUTE_LIMITS.max_tool_calls),
+    max_wall_clock_seconds: clampNullable(
+      limits.max_wall_clock_seconds,
+      ABSOLUTE_LIMITS.max_wall_clock_seconds,
+    ),
+    max_peer_hops: clampNullable(limits.max_peer_hops, ABSOLUTE_LIMITS.max_peer_hops),
+    max_input_tokens: clampNullable(limits.max_input_tokens, ABSOLUTE_LIMITS.max_input_tokens),
+    max_output_tokens: clampNullable(limits.max_output_tokens, ABSOLUTE_LIMITS.max_output_tokens),
+  };
+}
+
 export const DEFAULT_LIMITS: Limits = {
   max_tool_calls: null,
   max_wall_clock_seconds: null,

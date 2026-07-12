@@ -7,7 +7,7 @@ import '../../src/patterns/groupchat';
 import '../../src/patterns/parallel';
 import '../../src/patterns/react';
 import '../../src/patterns/router';
-import { ManifestSchema } from '../../src/manifests/schema';
+import { assertValidManifestName, ManifestSchema } from '../../src/manifests/schema';
 import { ManifestValidationError, validateManifest } from '../../src/manifests/validate';
 
 describe('manifest schema', () => {
@@ -31,6 +31,21 @@ describe('manifest schema', () => {
         spec: { pattern: 'react', guardrails: { providers: ['pii'] } },
       }),
     ).not.toThrow();
+  });
+
+  it('rejects a manifest name containing a slash (R2 path confusion)', () => {
+    // A `/` in the name would let it escape its R2 key prefix
+    // (`manifests/<tenant>/<name>.json`) and reach another tenant's override.
+    expect(() =>
+      ManifestSchema.parse({
+        apiVersion: 'orchestrator/v1',
+        kind: 'Agent',
+        metadata: { name: 'victim/secret' },
+        spec: { pattern: 'react' },
+      }),
+    ).toThrow();
+    expect(() => assertValidManifestName('victim/secret')).toThrow();
+    expect(() => assertValidManifestName('ok.name_1-2')).not.toThrow();
   });
 
   it('parses the canonical quick manifest', () => {
