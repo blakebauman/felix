@@ -11,7 +11,9 @@ import { describe, expect, it } from 'vitest';
 import type { AuditEvent } from '../../src/audit/models';
 import type { Env } from '../../src/env';
 import {
+  DEFAULT_ARTIFACT_RETENTION_DAYS,
   DEFAULT_AUDIT_RETENTION_DAYS,
+  parseArtifactRetentionDays,
   parseAuditRetentionDays,
   runRetentionSweep,
 } from '../../src/jobs/retention';
@@ -120,13 +122,15 @@ describe('runRetentionSweep', () => {
     expect(audit).toHaveLength(1);
   });
 
-  it('is a no-op with no DB binding', async () => {
+  it('is a no-op with no DB or R2 binding', async () => {
     const result = await runRetentionSweep({} as unknown as Env, NOW);
     expect(result).toEqual({
       audit_deleted: 0,
       plans_deleted: 0,
+      artifacts_deleted: 0,
       audit_capped: false,
       plans_capped: false,
+      artifacts_capped: false,
       errors: [],
     });
   });
@@ -142,5 +146,100 @@ describe('runRetentionSweep', () => {
     expect(parseAuditRetentionDays(env('999999'))).toBe(3650);
     // Fractional floored.
     expect(parseAuditRetentionDays(env('45.9'))).toBe(45);
+  });
+
+  it('parseArtifactRetentionDays — default, override, clamp, and bad input', () => {
+    const env = (v?: string) => ({ ARTIFACT_RETENTION_DAYS: v }) as unknown as Env;
+    expect(parseArtifactRetentionDays(env())).toBe(DEFAULT_ARTIFACT_RETENTION_DAYS);
+    expect(parseArtifactRetentionDays(env('not-a-number'))).toBe(DEFAULT_ARTIFACT_RETENTION_DAYS);
+    expect(parseArtifactRetentionDays(env('14'))).toBe(14);
+    // Clamp: below floor (1) and above ceiling (3650).
+    expect(parseArtifactRetentionDays(env('0'))).toBe(1);
+    expect(parseArtifactRetentionDays(env('999999'))).toBe(3650);
+  });
+});
+
+interface FakeR2Object {
+  key: string;
+  uploaded: Date;
+}
+
+/**
+ * Minimal R2 bucket stub understanding the `list` (prefix + cursor + limit) and
+ * `delete` (array of keys) calls the artifact sweep issues. Paginates so the
+ * per-tick page/delete caps can be exercised.
+ */
+function fakeBundles(objects: FakeR2Object[], pageSize: number, deleted: string[]) {
+  return {
+    async list(opts: { prefix?: string; cursor?: string; limit?: number }) {
+      const matched = objects.filter((o) => o.key.startsWith(opts.prefix ?? ''));
+      const start = opts.cursor ? Number(opts.cursor) : 0;
+      const limit = opts.limit ?? pageSize;
+      const slice = matched.slice(start, start + limit);
+      const next = start + limit;
+      const truncated = next < matched.length;
+      return {
+        objects: slice,
+        truncated,
+        ...(truncated ? { cursor: String(next) } : {}),
+      };
+    },
+    async delete(keys: string | string[]) {
+      for (const k of Array.isArray(keys) ? keys : [keys]) deleted.push(k);
+    },
+  };
+}
+
+describe('runRetentionSweep — R2 artifact GC', () => {
+  const NOW = 1_000_000_000_000;
+
+  it('deletes artifact objects older than the window, retaining recent ones', async () => {
+    const oldTs = new Date(NOW - 60 * DAY_MS); // older than default 30d
+    const recentTs = new Date(NOW - 5 * DAY_MS); // within window
+    const objects: FakeR2Object[] = [
+      { key: 'artifacts/t1/th1/a.txt', uploaded: oldTs },
+      { key: 'artifacts/t1/th1/b.txt', uploaded: oldTs },
+      { key: 'artifacts/t2/th2/c.txt', uploaded: recentTs },
+    ];
+    const deleted: string[] = [];
+    const sink: AuditEvent[] = [];
+    const env = {
+      BUNDLES: fakeBundles(objects, 1000, deleted),
+      AUDIT_QUEUE: {
+        send: (e: AuditEvent) => {
+          sink.push(e);
+          return Promise.resolve();
+        },
+      },
+    } as unknown as Env;
+
+    const result = await runRetentionSweep(env, NOW);
+
+    expect(result.artifacts_deleted).toBe(2);
+    expect(result.artifacts_capped).toBe(false);
+    expect(deleted.sort()).toEqual(['artifacts/t1/th1/a.txt', 'artifacts/t1/th1/b.txt']);
+
+    const summary = sink.find((e) => e.event_type === 'retention_sweep');
+    expect(summary?.payload.artifacts_deleted).toBe(2);
+    expect(summary?.payload.artifact_retention_days).toBe(DEFAULT_ARTIFACT_RETENTION_DAYS);
+  });
+
+  it('caps deletes at 5000 per tick and flags capped', async () => {
+    const oldTs = new Date(NOW - 90 * DAY_MS);
+    // 5001 deletable objects, small page size so the sweep paginates.
+    const objects: FakeR2Object[] = Array.from({ length: 5001 }, (_, i) => ({
+      key: `artifacts/t/th/${i}.txt`,
+      uploaded: oldTs,
+    }));
+    const deleted: string[] = [];
+    const env = {
+      BUNDLES: fakeBundles(objects, 1000, deleted),
+    } as unknown as Env;
+
+    const result = await runRetentionSweep(env, NOW);
+
+    expect(result.artifacts_deleted).toBe(5000);
+    expect(result.artifacts_capped).toBe(true);
+    expect(deleted).toHaveLength(5000);
   });
 });

@@ -14,6 +14,7 @@ import { persistBatch } from '@felix/harness/audit/store';
 import { buildAnonymousContext, disposeLimitState, runWithContext } from '@felix/harness/context';
 import type { Env } from '@felix/harness/env';
 import { runAnomalyScan } from '@felix/harness/jobs/anomaly-detector';
+import { drainAuditDlq } from '@felix/harness/jobs/audit-dlq';
 import {
   parseContinuousEvalOpts,
   runContinuousEvalTick,
@@ -140,6 +141,23 @@ export default {
   },
 
   async queue(batch: MessageBatch<AuditEvent>, env: Env): Promise<void> {
+    // Dead-letter branch: the `felix-audit-dlq-*` queues collect audit events
+    // the main consumer exhausted its retries on. Drain them best-effort (log +
+    // counter + direct-D1 write) and ACK unconditionally — a DLQ has no further
+    // dead-letter, so retrying would only loop.
+    if (batch.queue.includes('-dlq')) {
+      try {
+        await drainAuditDlq(
+          env,
+          batch.messages.map((m) => m.body),
+        );
+      } catch (err) {
+        console.error('audit DLQ drain failed', err);
+        recordCounter('orchestrator_cron_task_failures', { task: 'audit_dlq_drain' });
+      }
+      for (const m of batch.messages) m.ack();
+      return;
+    }
     if (batch.queue !== 'felix-audit') return;
     // Fast path: try the batched insert. On whole-batch failure, fall back
     // to per-row inserts so we can ack successes and retry only the failures

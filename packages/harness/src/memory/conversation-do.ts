@@ -19,9 +19,16 @@
  * On read, storage written by earlier versions (under the `state.messages`
  * key) is migrated to events in memory; the migrated shape is persisted
  * on the next append.
+ *
+ * Idle TTL: every append sets/renews a Durable Object alarm for
+ * `now + CONVERSATION_IDLE_TTL_DAYS`. When the alarm fires and the thread
+ * has been idle ≥ TTL its whole storage is wiped (day-2 GC — otherwise a
+ * thread lives forever, only rolling off at `MAX_STORED_EVENTS`); if it was
+ * touched more recently the alarm reschedules to the exact expiry point.
  */
 
 import type { Env } from '../env';
+import { recordCounterDetached } from '../observability/metrics';
 import type { AppendableEvent, SessionEvent, SessionEventKind } from '../session/types';
 
 interface LegacyStoredMessage {
@@ -112,6 +119,29 @@ export const MAX_EVENTS = 1000;
 // unaffected — pruned seqs simply return no rows.
 export const MAX_STORED_EVENTS = 5000;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Idle-TTL default + clamp bounds for `CONVERSATION_IDLE_TTL_DAYS` (days). */
+export const DEFAULT_CONVERSATION_IDLE_TTL_DAYS = 90;
+const MIN_IDLE_TTL_DAYS = 1;
+const MAX_IDLE_TTL_DAYS = 3650; // ~10 years — an effective "keep forever" ceiling.
+
+/**
+ * Resolve the conversation idle-TTL (days) from the optional
+ * `CONVERSATION_IDLE_TTL_DAYS` env var. Parsed defensively (mirrors
+ * `parseAuditRetentionDays`): unset / non-numeric falls back to the default,
+ * and valid values are floored and clamped to `[MIN_IDLE_TTL_DAYS,
+ * MAX_IDLE_TTL_DAYS]` so a fat-fingered override can neither expire a thread
+ * on write (0 days) nor overflow.
+ */
+export function parseConversationIdleTtlDays(env: Env): number {
+  const raw = env.CONVERSATION_IDLE_TTL_DAYS;
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_CONVERSATION_IDLE_TTL_DAYS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_CONVERSATION_IDLE_TTL_DAYS;
+  return Math.max(MIN_IDLE_TTL_DAYS, Math.min(MAX_IDLE_TTL_DAYS, Math.floor(n)));
+}
+
 function isPinnedEvent(e: SessionEvent): boolean {
   return (e.metadata as { pinned?: unknown } | undefined)?.pinned === true;
 }
@@ -165,7 +195,7 @@ function sliceEvents(
 export class ConversationDO {
   constructor(
     private readonly state: DurableObjectState,
-    _env: Env,
+    private readonly env: Env,
   ) {}
 
   async fetch(req: Request): Promise<Response> {
@@ -227,8 +257,33 @@ export class ConversationDO {
       stored.events = rollOffEvents(stored.events);
       delete stored.messages; // shed legacy field once we've written events
       await this.state.storage.put('state', stored);
+      // Set/renew the idle-TTL alarm so an untouched thread's storage is
+      // eventually reclaimed instead of living forever behind MAX_STORED_EVENTS.
+      const ttlMs = parseConversationIdleTtlDays(this.env) * DAY_MS;
+      await this.state.storage.setAlarm(now + ttlMs);
       return Response.json({ ok: true, count: incoming.length, head: stored.nextSeq });
     });
+  }
+
+  /**
+   * Idle-TTL alarm. Fires at the last scheduled expiry point; if the thread
+   * has been idle for at least the (freshly re-read) TTL its whole storage is
+   * wiped, otherwise the alarm reschedules to the exact expiry so a write that
+   * landed after the alarm was set extends the lifetime correctly.
+   */
+  async alarm(): Promise<void> {
+    const stored = await this.state.storage.get<ConversationState>('state');
+    if (!stored) return; // already gone — nothing to expire.
+    const now = Date.now();
+    const ttlMs = parseConversationIdleTtlDays(this.env) * DAY_MS;
+    const updatedAt = stored.updatedAt ?? stored.createdAt ?? 0;
+    if (now - updatedAt >= ttlMs) {
+      await this.state.storage.deleteAll();
+      recordCounterDetached(this.env, 'orchestrator_conversation_idle_expired', {});
+      return;
+    }
+    // Touched more recently than the alarm assumed — reschedule to real expiry.
+    await this.state.storage.setAlarm(updatedAt + ttlMs);
   }
 }
 
