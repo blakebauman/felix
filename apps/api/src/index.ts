@@ -170,7 +170,12 @@ export default {
           for (const m of batch.messages) m.ack();
           return;
         }
-        if (batch.queue !== 'felix-audit') return;
+        // Env-suffixed names (felix-audit-staging / felix-audit-prod) must
+        // match too — an exact match on the dev name made every deployed
+        // env's events fall through unacked, cycle max_retries times, and
+        // land only via the DLQ drain (masked in the D1 era, exposed by the
+        // pg cutover's staging smoke test).
+        if (!batch.queue.startsWith('felix-audit')) return;
         // Fast path: try the batched insert. On whole-batch failure, fall back
         // to per-row inserts so we can ack successes and retry only the failures
         // — otherwise one poison row blocks the queue and starves audit writes
