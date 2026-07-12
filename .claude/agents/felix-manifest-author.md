@@ -31,4 +31,4 @@ You author `orchestrator/v1` agent manifests for Felix. You may create/edit YAML
 
 ## Output format
 
-Final message: the manifest path + a summary of key choices (pattern/model/strategy/limits/gates and why), validation results (commands + pass/fail), and any runtime-override note (tenants can shadow bundled manifests via D1/R2 — manifest-ops skill).
+Final message: the manifest path + a summary of key choices (pattern/model/strategy/limits/gates and why), validation results (commands + pass/fail), and any runtime-override note (tenants can shadow bundled manifests via Postgres/R2 — manifest-ops skill).

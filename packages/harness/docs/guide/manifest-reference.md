@@ -266,7 +266,7 @@ memory:
 ```
 
 - `checkpointer` controls the per-thread session event log backing (`ConversationDO`).
-- `store` controls long-term semantic memory in Vectorize.
+- `store` controls long-term semantic memory in the `memory_vectors` pgvector table.
 - When `store` resolves to `vectorize`, the builder auto-injects `memory_remember` and `memory_recall` tools.
 
 ## spec.session
@@ -367,7 +367,7 @@ Consumed by `pattern: plan_execute`. The planner emits a JSON plan, the executor
 
 `executor_recursion_limit` is the per-subtask react cap. Intentionally separate from the manifest's top-level `recursion_limit` so one rogue subtask cannot exhaust the whole budget.
 
-`planner_few_shots` (when `spec.procedural_memory.enabled`) prepends up to N past successful plans for this manifest, drawn from the same Vectorize index `recall_procedure` uses. 0 disables few-shots even when procedural memory is on.
+`planner_few_shots` (when `spec.procedural_memory.enabled`) prepends up to N past successful plans for this manifest, drawn from the same `memory_vectors` pool `recall_procedure` uses. 0 disables few-shots even when procedural memory is on.
 
 Cross-field validation: `plan_execute` requires at least one tool / peer / container — the planner's whole purpose is to drive tools. Bare-chat plan_execute is rejected.
 
@@ -382,7 +382,7 @@ procedural_memory:
   embedding_model: "@cf/baai/bge-base-en-v1.5"  # default
 ```
 
-After a successful run, distills `(user_intent, tool_call_sequence)` into a Vectorize vector and upserts under the `MEMORY_VEC` binding with `metadata.kind: 'procedural'`. The builder auto-injects a `recall_procedure(query)` tool the model can call BEFORE planning multi-step approaches to see what worked previously. Returns up to `top_k` past similar successes as few-shot examples.
+After a successful run, distills `(user_intent, tool_call_sequence)` into a vector and upserts it into the `memory_vectors` pgvector table with `kind: 'procedural'`. The builder auto-injects a `recall_procedure(query)` tool the model can call BEFORE planning multi-step approaches to see what worked previously. Returns up to `top_k` past similar successes as few-shot examples.
 
 Filter by `tenant_id` + `kind` so cross-tenant retrievals fail safe.
 

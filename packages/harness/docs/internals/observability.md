@@ -16,7 +16,7 @@ Felix has two emission paths:
 
 - **Counters / histograms** — `recordCounter(name, labels, value)` / `recordHistogram(name, value, labels)` in [`src/observability/metrics.ts`](../../src/observability/metrics.ts). In dev/tests these log structured JSON lines so `wrangler tail` shows them; in production they fan out via `env.METRICS.writeDataPoint({ blobs: [...labels], doubles: [value] })` to Workers Analytics Engine (dataset declared in `wrangler.jsonc` as `analytics_engine_datasets`). When the binding is absent the stdout fallback continues to fire so dev parity holds.
 - **Spans** — `withSpan(name, fn, attrs)` and `manifestSpan(name, version)` in [`src/observability/tracing.ts`](../../src/observability/tracing.ts). Spans wrap each tool dispatch and the outer `buildAgent`/`invoke` boundary, attaching `duration_ms`, `transport`, `manifest_id`, `status`, and on error `error_code`. Spans are kept in-process today (the export sink is a no-op); pair them with `wrangler tail` to see the structured span lines.
-- **Audit events** — `recordEvent(AuditEvent)` in [`src/audit/store.ts`](../../src/audit/store.ts) writes to the `AUDIT_QUEUE` queue. The queue consumer batches up to 50 events per pull and inserts into D1 (`audit_events` table, composite PK `(tenant_id, id)`). Failed batch inserts fall back to per-row inserts so one poison row doesn't starve the queue.
+- **Audit events** — `recordEvent(AuditEvent)` in [`src/audit/store.ts`](../../src/audit/store.ts) writes to the `AUDIT_QUEUE` queue. The queue consumer batches up to 50 events per pull and inserts into Postgres (`audit_events` table, composite PK `(tenant_id, id)`) in one multi-row INSERT. Failed batch inserts fall back to per-row inserts so one poison row doesn't starve the queue.
 
 Counters are the signal you alert on. Audit events are the trail you read once an alert fires.
 
@@ -44,8 +44,8 @@ Counters are the signal you alert on. Audit events are the trail you read once a
 | `orchestrator_model_switches` | `from`, `to`, `reason` | [`patterns/model.ts`](../../src/patterns/model.ts) | Fallback chain or confidence-routed escalation fired. `reason ∈ {provider_error, low_confidence}` — `provider_error` for fallback-chain switches, `low_confidence` for confidence-escalation switches. |
 | `orchestrator_unhandled_error` | `path`, `method`, `tenant_id` | [`src/app.ts`](../../src/app.ts) | The Hono `onError` boundary caught a non-`HTTPException`. **Should be zero.** |
 | `orchestrator_audit_dropped` | `manifest_id`, `event_type` | [`audit/store.ts`](../../src/audit/store.ts) | Events dropped after the per-request audit cap (200) was hit. Pairs with the `audit_truncated` status marker. |
-| `orchestrator_audit_dlq_received` | (none; value = events drained) | [`jobs/audit-dlq.ts`](../../src/jobs/audit-dlq.ts) | Audit events dead-lettered off `felix-audit-<env>` after exhausting retries, drained by the `-dlq` branch of the `queue()` handler (best-effort re-persisted to D1). **Non-zero means the main audit consumer is failing** — investigate D1 health. |
-| `orchestrator_retention_deleted` | `table` | [`jobs/retention.ts`](../../src/jobs/retention.ts) | Rows/objects pruned by the `retention_sweep` cron. `table ∈ {audit_events, plans, artifacts}`. |
+| `orchestrator_audit_dlq_received` | (none; value = events drained) | [`jobs/audit-dlq.ts`](../../src/jobs/audit-dlq.ts) | Audit events dead-lettered off `felix-audit-<env>` after exhausting retries, drained by the `-dlq` branch of the `queue()` handler (best-effort re-persisted to Postgres). **Non-zero means the main audit consumer is failing** — investigate Postgres/Hyperdrive health. |
+| `orchestrator_retention_deleted` | `table` | [`jobs/retention.ts`](../../src/jobs/retention.ts) | Rows/objects pruned by the `retention_sweep` cron. `table ∈ {audit_events, plans, artifacts, memory_vectors}` (`memory_vectors` only when `MEMORY_RETENTION_DAYS` is set — unset keeps memories forever). |
 | `orchestrator_conversation_idle_expired` | (none) | [`memory/conversation-do.ts`](../../src/memory/conversation-do.ts) | A `ConversationDO` thread's storage was wiped by its idle-TTL alarm after `CONVERSATION_IDLE_TTL_DAYS` of inactivity. |
 | `orchestrator_artifact_spill_failed` | `manifest_id` | [`tools/artifacts.ts`](../../src/tools/artifacts.ts) | An R2 artifact spill failed; the tool result was returned inline instead of as a stub. |
 | `orchestrator_semantic_retrieval_failed` | `manifest_id` | [`session/semantic-strategy.ts`](../../src/session/semantic-strategy.ts) | The `semantic:N` strategy's BGE retrieval errored and degraded to a fallback render. |
@@ -66,7 +66,7 @@ The labels in this table are the **emitted** set — they're what you'll see on 
 
 ## Audit event reference
 
-Audit events are persisted to D1 and queryable through `GET /audit?tenant=…&event_type=…`. Every event carries `id`, `tenant_id`, `ts`, `event_type`, `manifest_id`, `principal_subject`, `status`, and a `payload` JSON blob. The shape:
+Audit events are persisted to Postgres and queryable through `GET /audit?tenant=…&event_type=…`. Every event carries `id`, `tenant_id`, `ts`, `event_type`, `manifest_id`, `principal_subject`, `status`, and a `payload` JSON blob. The shape:
 
 | `event_type` | Emitted by | `status` values | Key `payload` fields |
 |---|---|---|---|

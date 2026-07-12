@@ -3,7 +3,7 @@
  *
  * Schema management moved out of workerd entirely: the vitest `workers`
  * project's globalSetup (global-setup.ts, Node-side) resets the felix_test
- * database and applies apps/api/migrations-pg with node-pg-migrate before
+ * database and applies apps/api/migrations with node-pg-migrate before
  * any test file runs. Tests isolate by distinct tenant ids, never by
  * truncating tables.
  */

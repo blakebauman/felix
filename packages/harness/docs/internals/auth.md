@@ -144,7 +144,7 @@ interface AuthContext {
 
 `src/auth/providers.ts` registers OAuth provider configs (loaded from a Worker secret) and exposes `outboundAuthHeader(env, target, principalSubject)`. `target.auth` is a string like `bearer:<literal>` or `oauth2:<provider>`. Bearer literals are emitted as-is; `oauth2:` triggers a client-credentials grant via `getClientCredentialsToken`.
 
-Tokens are cached in the `oauth_token_cache` D1 table keyed by `(provider:subject)`, encrypted at rest with `OAUTH_CACHE_KEY` (AES-256-GCM, fresh 96-bit IV per ciphertext, base64-encoded `iv || ciphertext_with_tag`; see `src/security/at-rest.ts`). Cached lifetime is capped at 1 hour regardless of the issuer's `expires_in` to bound exposure if a row leaks.
+Tokens are cached in the `oauth_token_cache` Postgres table keyed by `(provider:subject)`, encrypted at rest with `OAUTH_CACHE_KEY` (AES-256-GCM, fresh 96-bit IV per ciphertext, base64-encoded `iv || ciphertext_with_tag`; see `src/security/at-rest.ts`). Cached lifetime is capped at 1 hour regardless of the issuer's `expires_in` to bound exposure if a row leaks.
 
 Rotation is graceful — decryption failures are treated as cache misses and a fresh token is fetched. In staging/production, missing `OAUTH_CACHE_KEY` fails closed on encrypt/decrypt. In development it falls back to plaintext with a one-shot warning.
 

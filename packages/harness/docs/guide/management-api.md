@@ -117,7 +117,7 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 
 The runtime caps audit events at 200 per request (`PER_REQUEST_AUDIT_CAP` in `src/audit/store.ts`). When the cap is hit, the next call to `recordEvent` emits one marker — carrying the **original `event_type`** of whatever was being recorded and `status: 'audit_truncated'` with payload `{ reason: 'per_request_cap', cap: 200 }`. Subsequent calls during the same request return silently with `status: 'dropped_after_truncation'` and are not persisted. To find truncation events for a tenant, query `GET /audit?status=audit_truncated`.
 
-Audit events go through `AUDIT_QUEUE` and land in D1 via the batched `queue` consumer (≤50 per batch). Payloads are passed through `redactSecrets` before persistence — tokens, bearer headers, and similar are replaced with `[REDACTED]`.
+Audit events go through `AUDIT_QUEUE` and land in Postgres via the batched `queue` consumer (≤50 per batch, one multi-row INSERT). Payloads are passed through `redactSecrets` before persistence — tokens, bearer headers, and similar are replaced with `[REDACTED]`.
 
 ---
 
@@ -170,7 +170,7 @@ curl -s -H "Authorization: Bearer $JWT" \
 
 ### POST /approvals/:id/decide
 
-Approve or deny. The route pre-checks tenant ownership in D1 (returns 404 if not owned) and then routes the write through `ApprovalsDO` so concurrent decisions on the same id are serialized in a critical section.
+Approve or deny. The route pre-checks tenant ownership in Postgres (returns 404 if not owned) and then routes the write through `ApprovalsDO` so concurrent decisions on the same id are serialized in a critical section.
 
 **Body**
 
@@ -238,7 +238,7 @@ curl -s -H "Authorization: Bearer $JWT" \
   $BASE_URL/plans/<uuid> | jq
 ```
 
-Plans are written and updated by the deep-pattern auto-injected tools: `plan_create`, `plan_update_step`, `plan_get`. They live in the `plans` D1 table with a 30-day TTL.
+Plans are written and updated by the deep-pattern auto-injected tools: `plan_create`, `plan_update_step`, `plan_get`. They live in the `plans` Postgres table with a 30-day TTL.
 
 ---
 
@@ -315,7 +315,7 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 
 ## Manifests
 
-Tenants manage their own manifests through an append-only, version-pinned store. Each write inserts a new version row and (by default) flips the active pointer; rollback is a pointer flip, not a content rewrite. The request-path resolver walks tenant D1 → tenant R2 → global R2 → bundled, so a tenant manifest with the same name as a bundled one (e.g. `shopping`) shadows the bundled copy for that tenant only.
+Tenants manage their own manifests through an append-only, version-pinned store. Each write inserts a new version row and (by default) flips the active pointer; rollback is a pointer flip, not a content rewrite. The request-path resolver walks tenant Postgres → tenant R2 → global R2 → bundled, so a tenant manifest with the same name as a bundled one (e.g. `shopping`) shadows the bundled copy for that tenant only. (The resolver's internal `ManifestSource` value for the tenant-Postgres layer is still the string `'tenant_d1'` — a naming holdover from the D1 era, unchanged by the Postgres migration.)
 
 Reads require the `manifests:read` scope; writes require `manifests:write`. All queries are tenant-scoped via the caller's JWT. In `ENVIRONMENT=development` without verifiers configured, the gate falls open so local probes and integration tests work without minting tokens.
 
@@ -471,7 +471,7 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 }
 ```
 
-`canary_weight` is 0..100. Pass `canary_version: null` to clear the version pointer entirely (equivalent to `POST /rollback` with `clear_version: true`). The OpenAI-compatible surface (`/v1/chat/completions`, sync + stream) sets `x-manifest-variant: stable|canary` on every response that resolves through the tenant-D1 layer so an operator can verify the canary is reaching real traffic.
+`canary_weight` is 0..100. Pass `canary_version: null` to clear the version pointer entirely (equivalent to `POST /rollback` with `clear_version: true`). The OpenAI-compatible surface (`/v1/chat/completions`, sync + stream) sets `x-manifest-variant: stable|canary` on every response that resolves through the tenant Postgres layer so an operator can verify the canary is reaching real traffic.
 
 The same opt-in eval gate as `activate` applies: pass `eval_run_id` (and/or `require_eval: true`) to refuse pointing the canary at a version that has no passing run for it (`409 eval_gate_failed`). The gate is skipped when `canary_version` is `null` (clearing).
 
@@ -526,7 +526,7 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 
 ## Eval
 
-Golden-dataset evals backed by `eval_datasets` / `eval_dataset_items` / `eval_runs` D1 tables. Tenant-scoped; reads filter on `auth.principal.tenantId`. Reads require the `eval:read` scope; writes require `eval:write`.
+Golden-dataset evals backed by `eval_datasets` / `eval_dataset_items` / `eval_runs` Postgres tables. Tenant-scoped; reads filter on `auth.principal.tenantId`. Reads require the `eval:read` scope; writes require `eval:write`.
 
 ### POST /eval/datasets
 

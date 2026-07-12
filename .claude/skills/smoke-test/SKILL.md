@@ -37,7 +37,7 @@ curl -s $BASE/v1/chat/completions -H "content-type: application/json" \
 
 | Symptom | Likely cause |
 |---|---|
-| 404 `unknown_manifest` on ALL manifests | Unapplied D1 migrations on that env — run `pnpm migrate:<env>` (known prod gotcha) |
+| 404 `unknown_manifest` on ALL manifests | Unapplied Postgres migrations on that env — run `DATABASE_URL=<direct url> pnpm migrate:<env>` (known prod gotcha) |
 | 401 on scoped routes | `JWKS_PUBLIC` doesn't match the local signing key, or token expired — re-mint + `wrangler secret put JWKS_PUBLIC --env <env>` |
 | 403 on scoped routes | Token valid but missing the scope — re-mint with the right `--scope` |
 | 500 on chat | Check provider secrets (`ANTHROPIC_API_KEY`, `CF_AIG_TOKEN`) and `wrangler tail` (observability skill) |

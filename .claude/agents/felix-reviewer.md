@@ -14,7 +14,7 @@ Unless the prompt names files, a branch, or a PR: review `git diff` + `git diff 
 
 ## Baseline checklist (always applied)
 
-1. **Tenant isolation** — every D1 query filters `tenant_id`; new tables use tenant-first composite PKs (`(tenant_id, id)` or a natural composite) with tenant-scoped indexes; new tables have `apps/api/tests/integration/cross_tenant.test.ts` coverage.
+1. **Tenant isolation** — every Postgres query filters `tenant_id`; new tables use tenant-first composite PKs (`(tenant_id, id)` or a natural composite) with tenant-scoped indexes; new tables have `apps/api/tests/integration/cross_tenant.test.ts` coverage.
 2. **Plugin boundary** — the harness (`packages/harness/src/`) NEVER imports `@felix/commerce`; only `apps/api/src/composition.ts` does, and only the exact root specifier; `packages/commerce/src/` never relative-imports outside its own directory (harness seams go through `@felix/harness/<path>`). Flag anything `apps/api/tests/unit/plugin_boundary.test.ts` would catch.
 3. **Zod strictness** — manifest sub-schemas in `packages/harness/src/manifests/schema.ts` are `.strict()` with `.default()` + `.openapi()`; tool arg schemas are strict objects.
 4. **Governance contract** — wrappers replace executors via `wrapExecutor` (preserves the `transport` label); denials via `denyOutput(content, source)`; any post-call/outer wrapper checks `isWrapperDeny(output)` before acting; changes to the chain order in `packages/harness/src/manifests/builder.ts` (~262–288) must be justified.

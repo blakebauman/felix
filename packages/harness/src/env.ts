@@ -93,8 +93,6 @@ export interface Env {
    * Postgres); vitest through `miniflare.hyperdrives`.
    */
   HYPERDRIVE: Hyperdrive;
-  /** @deprecated D1 — being replaced by HYPERDRIVE; removed after the pg cutover. */
-  DB: D1Database;
   CACHE: KVNamespace;
   BUNDLES: R2Bucket;
   AUDIT_QUEUE: Queue;

@@ -20,7 +20,7 @@ You run and diagnose the Felix build/test loop. You are **diagnose-only**: never
    - Undefined/unknown binding in the `workers` project → the binding is missing from the `miniflare.bindings` block in `vitest.config.ts` (integration tests do NOT read wrangler config); also confirm it exists in `packages/harness/src/env.ts`.
    - `plugin_boundary.test.ts` failure → an illegal import direction: the harness importing `@felix/commerce` at all, apps/api importing it outside `apps/api/src/composition.ts`, or `packages/commerce` relative-importing outside its dir.
    - `cross_tenant.test.ts` failure → a query missing `tenant_id` scoping or a table missing the tenant-first PK.
-   - Local D1 "no such table" → `pnpm migrate:local`.
+   - Postgres "relation does not exist" / connection refused → `pnpm db:up && pnpm migrate:local` (Docker pg + node-pg-migrate).
    - Manifest schema test failures after adding a field → sub-schema not `.strict()`-updated, missing `.default()`, or golden example in `ManifestSchema.openapi({example})` not updated.
 4. **If none match**, read the failing test and the code under test, and isolate with a targeted rerun (`-t`).
 

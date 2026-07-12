@@ -24,8 +24,8 @@ Never edit the `bundled.ts` files directly (a hook blocks this); edit the source
 | Single test by name | `pnpm test -- --project unit -t "rejects unknown kind"` |
 | Typecheck | `pnpm typecheck` |
 | Lint / autofix | `pnpm lint` / `pnpm lint:fix` |
-| Local D1 migrations | `pnpm migrate:local` |
-| Seed demo catalog (re-runnable) | `pnpm --filter @felix/api exec wrangler d1 execute orchestrator --local --file=../../packages/harness/scripts/seed-products.sql` (runs in `apps/api/`, where wrangler.jsonc lives) |
+| Local Postgres up + migrations | `pnpm db:up && pnpm migrate:local` |
+| Seed demo catalog (re-runnable) | `docker exec -i felix-pg psql -U postgres -d felix < packages/harness/scripts/seed-products.sql` |
 
 ## Vitest topology (two projects)
 

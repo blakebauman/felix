@@ -102,8 +102,8 @@
       "Bash(pnpm format)",
       "Bash(pnpm migrate:local)",
       "Bash(pnpm tsx apps/api/scripts/mint-jwt.ts *)",
-      "Bash(wrangler d1 migrations list *)",
-      "Bash(wrangler d1 execute * --local *)"
+      "Bash(docker exec felix-pg psql *)",
+      "Bash(docker compose up *)"
     ],
     "ask": [
       "Bash(pnpm deploy)",
@@ -117,7 +117,7 @@
       "Bash(pnpm --filter * migrate:staging)",
       "Bash(pnpm --filter * migrate:production)",
       "Bash(wrangler deploy *)",
-      "Bash(wrangler d1 migrations apply * --remote*)",
+      "Bash(node-pg-migrate *)",
       "Bash(wrangler secret *)",
       "Bash(pnpm setup:vectorize:*)",
       "Bash(pnpm eval*)"

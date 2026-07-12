@@ -5,7 +5,7 @@
  * Owns the test database schema: waits for Postgres (Docker locally via
  * `pnpm db:up`, a service container in CI), creates the `felix_test`
  * database if the volume predates docker/pg-init, drops + recreates the
- * `public` schema, and applies apps/api/migrations-pg with node-pg-migrate.
+ * `public` schema, and applies apps/api/migrations with node-pg-migrate.
  * Test files therefore always see a fresh, fully-migrated schema and isolate
  * from each other by distinct tenant ids — never by truncating tables.
  */
@@ -16,7 +16,7 @@ import { runner } from 'node-pg-migrate';
 import pg from 'pg';
 
 const DEFAULT_URL = 'postgresql://postgres:postgres@localhost:5432/felix_test';
-const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../migrations-pg');
+const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../migrations');
 
 const CONNECT_ATTEMPTS = 30;
 const CONNECT_DELAY_MS = 1000;

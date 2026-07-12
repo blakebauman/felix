@@ -18,7 +18,7 @@ See [manifest-reference.md](manifest-reference.md) for every field with defaults
 
 Manifests can be loaded from four sources. The request-path resolver `resolveManifest(env, tenantId, name)` (`src/manifests/resolver.ts`) walks them in order and returns the first hit:
 
-1. **Tenant D1 active version** — the `manifests` table + `manifest_active` pointer (`migrations/0003_manifests.sql`). Tenants populate this through the `/manifests` REST surface; rows are append-only and rollback flips the pointer.
+1. **Tenant Postgres active version** — the `manifests` table + `manifest_active` pointer (`apps/api/migrations/0001_baseline.sql`). Tenants populate this through the `/manifests` REST surface; rows are append-only and rollback flips the pointer. (The resolver's internal `source` value stays `tenant_d1` — see [management-api.md](management-api.md).)
 2. **Tenant R2 override** — `manifests/<tenant_id>/<name>.json` in the `BUNDLES` bucket. Useful for bulk pre-population via `wrangler r2 object put`; the management API does not write here.
 3. **Global R2 override** — `manifests/<name>.json` in `BUNDLES`. Affects every tenant.
 4. **Bundled** — `pnpm build:manifests` reads the repo-local `manifests/*.yaml`, validates each with the Zod schema, and emits `src/manifests/bundled.ts`.
@@ -31,7 +31,7 @@ The bundled set is also exposed as OpenAI "models" through `GET /v1/models`.
 
 ## Tenant
 
-Multi-tenancy is structural in Felix, not advisory. Every D1 row uses a composite primary key `(tenant_id, id)`; every Vectorize entry is filtered by tenant on `recall`. The tenant id comes from the verified inbound JWT:
+Multi-tenancy is structural in Felix, not advisory. Every Postgres row uses a composite primary key `(tenant_id, id)`; every `memory_vectors` row is filtered by tenant on `recall`. The tenant id comes from the verified inbound JWT:
 
 1. Custom claim `custom:tenant_id`, if present.
 2. Custom claim `tenant_id`.
@@ -116,7 +116,7 @@ Tools come from these sources (orthogonal to transport):
 7. **Sandboxes** — every `sandboxes[]` entry becomes a tool whose executor is a `SandboxExecutor` targeting a worker-local Fetcher. See [manifest-reference.md#specsandboxes](manifest-reference.md#specsandboxes) and [`examples/sandbox-worker/`](../../examples/sandbox-worker/).
 8. **Browser tools** — every `browser_tools[]` entry becomes a tool whose executor is a `BrowserExecutor` targeting a worker-local Fetcher wrapping `@cloudflare/puppeteer`. See [manifest-reference.md#specbrowser_tools](manifest-reference.md#specbrowser_tools) and [`examples/browser-worker/`](../../examples/browser-worker/).
 9. **`fetch_artifact`** — auto-injected by the builder when `spec.artifacts.enabled: true` so the model can read back oversized tool results that were spilled to R2.
-10. **`recall_procedure`** — auto-injected when `spec.procedural_memory.enabled: true` so the model can recall past similar tool-call sequences from Vectorize.
+10. **`recall_procedure`** — auto-injected when `spec.procedural_memory.enabled: true` so the model can recall past similar tool-call sequences from pgvector.
 
 Every tool is wrapped by the governance pipeline before being exposed to the model — see [internals/governance.md](../internals/governance.md). Wrappers replace `tool.executor` while preserving the inner `transport` label so audit and observability report the true transport even after composition.
 
@@ -132,8 +132,8 @@ Four orthogonal layers:
 
 - **Session checkpointer** (`spec.memory.checkpointer`) — the per-thread session event log. Backed by `ConversationDO`. Enum values: `do` (default), `agentcore` and `sqlite` (legacy aliases), `none`. The `Session` interface (`src/session/types.ts`) is what patterns consume.
 - **Session strategy** (`spec.session.strategy`) — decides how prior events render into the working-set messages the model sees. `full_replay` (default) replays every prior message; `windowed:N` keeps the last N events; `summarizing:N` keeps the last N raw and model-summarizes everything older, caching the summary as a `kind: 'audit'` event so steady-state rendering skips the model call; `semantic:N` keeps the top-N most relevant past events by BGE cosine similarity to the current user message. Events tagged `metadata.pinned: true` survive every strategy's compaction.
-- **Long-term store** (`spec.memory.store`) — semantic memory across threads. Backed by Vectorize index `MEMORY_VEC` with 768-dimensional `@cf/baai/bge-base-en-v1.5` embeddings. Enum values: `vectorize` (default), `agentcore` (legacy alias), `memory` (legacy in-process), `none`.
-- **Procedural memory** (`spec.procedural_memory.enabled: true`) — after a successful run, distills `(user_intent, tool_call_sequence)` into a Vectorize row tagged `metadata.kind: 'procedural'`. The auto-injected `recall_procedure(query)` tool returns past similar successes so the model can see "last time this came up, the sequence that worked was X → Y → Z." Filter-scoped by tenant.
+- **Long-term store** (`spec.memory.store`) — semantic memory across threads. Backed by the `memory_vectors` pgvector table with 768-dimensional `@cf/baai/bge-base-en-v1.5` embeddings. Enum values: `vectorize` (default; legacy name, now pgvector-backed), `agentcore` (legacy alias), `memory` (legacy in-process), `none`.
+- **Procedural memory** (`spec.procedural_memory.enabled: true`) — after a successful run, distills `(user_intent, tool_call_sequence)` into a `memory_vectors` row tagged `kind: 'procedural'`. The auto-injected `recall_procedure(query)` tool returns past similar successes so the model can see "last time this came up, the sequence that worked was X → Y → Z." Filter-scoped by tenant.
 
 When `memory.store` resolves to `vectorize`, the builder auto-injects `memory_remember` and `memory_recall` tools. The agent never needs to declare these in `tools:`.
 
@@ -160,7 +160,7 @@ The `orchestrator_durable_fallback` counter fires whenever durable mode degrades
 
 ## Eval harness
 
-The eval surface is three D1 tables (`eval_datasets`, `eval_dataset_items`, `eval_runs`) backing `/eval/datasets`, `/eval/datasets/{name}/items`, `/eval/datasets/{name}/run`, and `/eval/runs`. A run executes off the request path: `POST …/run` returns `202 { run_id }` and the scoring happens in a background job (`execCtx.waitUntil`) so a large dataset can't blow the Worker CPU / subrequest ceiling — poll `GET /eval/runs/{id}` for the terminal `completed` / `failed` status. Each item carries:
+The eval surface is three Postgres tables (`eval_datasets`, `eval_dataset_items`, `eval_runs`) backing `/eval/datasets`, `/eval/datasets/{name}/items`, `/eval/datasets/{name}/run`, and `/eval/runs`. A run executes off the request path: `POST …/run` returns `202 { run_id }` and the scoring happens in a background job (`execCtx.waitUntil`) so a large dataset can't blow the Worker CPU / subrequest ceiling — poll `GET /eval/runs/{id}` for the terminal `completed` / `failed` status. Each item carries:
 
 - `user_input` — the prompt to drive through the candidate manifest
 - `rubric` — pass criteria. Layered scoring:
@@ -185,7 +185,7 @@ pnpm eval -- --base-url https://staging-make.felix.run \
 
 Inbound: JWT bearer tokens verified against the verifiers configured in `JWT_VERIFIERS` env (Cloudflare Access and Cognito are the two built-in schemes). Anonymous traffic populates a context with `tenantId = 'default'`. A per-manifest `auth.inbound.allow_anonymous` flag decides whether each manifest accepts anonymous calls; `auth.inbound.required_scopes` lets a manifest demand specific OAuth scopes.
 
-Outbound: client-credentials OAuth tokens cached in the `oauth_token_cache` D1 table, encrypted at rest with `OAUTH_CACHE_KEY` (AES-256-GCM). Manifests declare which providers they need under `auth.outbound.providers`.
+Outbound: client-credentials OAuth tokens cached in the `oauth_token_cache` Postgres table, encrypted at rest with `OAUTH_CACHE_KEY` (AES-256-GCM). Manifests declare which providers they need under `auth.outbound.providers`.
 
 ## Federation
 

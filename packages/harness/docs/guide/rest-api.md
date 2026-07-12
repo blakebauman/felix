@@ -122,7 +122,7 @@ OpenAI-compatible chat completions. Any OpenAI SDK should work — point it at `
 
 | Header | When set | Value |
 |---|---|---|
-| `x-manifest-variant` | Set on every chat call that resolves through the tenant-D1 layer | `stable` or `canary` — which side of an active canary rollout served the request. Absent when no canary is active or the manifest came from R2 / bundled. |
+| `x-manifest-variant` | Set on every chat call that resolves through the tenant Postgres layer | `stable` or `canary` — which side of an active canary rollout served the request. Absent when no canary is active or the manifest came from R2 / bundled. |
 
 **Body**
 

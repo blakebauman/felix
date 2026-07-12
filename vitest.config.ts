@@ -42,8 +42,7 @@ export default defineConfig({
             main: './apps/api/src/index.ts',
             // We don't point at wrangler.jsonc here: the bundled workerd
             // doesn't support the wrapped AI binding our production config
-            // declares. Tests bind D1 / KV / R2 / DOs explicitly and stub
-            // the AI binding via a service worker.
+            // declares. Tests bind Hyperdrive / KV / R2 / DOs explicitly.
             miniflare: {
               // Matches wrangler.jsonc — postgres.js over the Hyperdrive
               // binding needs a current compat date alongside nodejs_compat.
@@ -56,7 +55,6 @@ export default defineConfig({
                   process.env.TEST_DATABASE_URL ??
                   'postgresql://postgres:postgres@localhost:5432/felix_test',
               },
-              d1Databases: ['DB'],
               kvNamespaces: ['CACHE'],
               r2Buckets: ['BUNDLES'],
               queueProducers: { AUDIT_QUEUE: 'felix-audit', JOBS_QUEUE: 'felix-jobs' },
@@ -88,7 +86,7 @@ export default defineConfig({
           name: 'workers',
           include: ['apps/api/tests/integration/**/*.test.ts'],
           // Node-side: waits for Postgres, resets the felix_test schema, and
-          // applies apps/api/migrations-pg via node-pg-migrate.
+          // applies apps/api/migrations via node-pg-migrate.
           globalSetup: ['./apps/api/tests/integration/global-setup.ts'],
           // Postgres is shared across test files (unlike miniflare's per-test
           // D1 isolation), so run files serially: tenant-distinct data keeps
