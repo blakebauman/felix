@@ -42,5 +42,6 @@ registerPattern('deep', (ctx) =>
     toolsRetrieval: ctx.manifest.spec.tools_retrieval,
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
+    procedural: ctx.manifest.spec.procedural_memory,
   }),
 );
