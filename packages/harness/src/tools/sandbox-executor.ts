@@ -36,6 +36,7 @@
  */
 
 import { z } from 'zod';
+import { readCappedJson, readCappedText } from '../security/response-limit';
 import { codeForStatus, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
@@ -101,13 +102,15 @@ export class SandboxExecutor implements ToolExecutor {
         ...(composed.signal ? { signal: composed.signal } : {}),
       });
       if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
+        const text = await readCappedText(resp, 4096).catch(() => '');
         return toolErrorOutput(
           codeForStatus(resp.status),
           `[sandbox error] ${this.opts.sandboxToolName}: ${resp.status} ${text.slice(0, 200)}`,
         );
       }
-      const data = (await resp.json()) as SandboxResponse;
+      // Cap the success body so a buggy/compromised adapter can't OOM the
+      // isolate with a multi-GB response (mirrors mcp/a2a/container).
+      const data = await readCappedJson<SandboxResponse>(resp);
       if (data.exit_code != null && data.exit_code !== 0) {
         const detail = (data.stderr || data.content || '').slice(0, 1000);
         return toolErrorOutput(

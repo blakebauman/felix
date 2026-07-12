@@ -18,6 +18,7 @@
 
 import { getContext } from '../context';
 import { currentSignal } from '../limits/state';
+import { recordCounter } from '../observability/metrics';
 import { recordUsage } from '../patterns/model';
 import type { ChatMessage } from '../patterns/types';
 import { makeSemanticRetrievalSessionStrategy } from './semantic-strategy';
@@ -184,7 +185,9 @@ class SummarizingStrategy implements SessionStrategy {
       if (!newSummary) throw new Error('summarizer returned empty content');
     } catch {
       // Degrade gracefully — the model call failed, so render windowed
-      // with pinned events kept verbatim.
+      // with pinned events kept verbatim. Emit a counter so the fleet-wide
+      // degrade (summarizing -> windowed) is visible instead of silent.
+      recordCounter('orchestrator_session_summarize_failures');
       const merged = [...pinned, ...keepEvents].sort((a, b) => a.seq - b.seq);
       return assemble(opts.systemPrompt, latestSummary?.content, merged, incoming);
     }

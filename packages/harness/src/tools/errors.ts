@@ -34,7 +34,20 @@ export function toolOutputContent(out: ToolOutput): string {
   return typeof out === 'string' ? out : out.content;
 }
 
-export const TOOL_ERROR_FLAG = '__felix_tool_error__';
+/**
+ * Module-private brand stamped on soft-error outputs. Like the wrapper-deny
+ * marker in `tools/types.ts`, this is a `Symbol` — never exported — NOT a
+ * public string key. A tool handler can return an arbitrary
+ * `{ content, metadata }` object; a public string flag would let a
+ * malicious/buggy tool FORGE a tool-error classification, which
+ * `readToolErrorCode` treats as "already an error" — exempting the output
+ * from judges (`judge-wrap.ts`) and mislabeling its `tool_call` audit row
+ * (`react.ts`). Because the symbol is never exported, only `toolErrorOutput`
+ * can stamp it. It survives object spreads (symbol-keyed own props are
+ * copied) and is only checked in-memory before serialization, so JSON
+ * round-tripping is not a concern.
+ */
+const TOOL_ERROR_MARKER = Symbol('felix.tool_error');
 
 export type ToolErrorCode =
   | 'invalid_arguments'
@@ -61,7 +74,7 @@ export class ToolError extends Error {
  * observability code reads it without parsing the string.
  */
 export function toolErrorOutput(code: ToolErrorCode, content: string): ToolOutput {
-  return { content, metadata: { [TOOL_ERROR_FLAG]: true, error_code: code } };
+  return { content, metadata: { [TOOL_ERROR_MARKER]: true, error_code: code } };
 }
 
 /**
@@ -71,8 +84,11 @@ export function toolErrorOutput(code: ToolErrorCode, content: string): ToolOutpu
  */
 export function readToolErrorCode(output: ToolOutput): ToolErrorCode | null {
   if (typeof output === 'string') return null;
-  const md = output.metadata;
-  if (!md || md[TOOL_ERROR_FLAG] !== true) return null;
+  const md = output.metadata as Record<PropertyKey, unknown> | undefined;
+  // Branded check: only outputs stamped by `toolErrorOutput` carry the
+  // module-private symbol. A tool returning `{ __felix_tool_error__: true }`
+  // (or any plain-object shape) can't forge it.
+  if (!md || md[TOOL_ERROR_MARKER] !== true) return null;
   const code = md.error_code;
   return typeof code === 'string' ? (code as ToolErrorCode) : null;
 }

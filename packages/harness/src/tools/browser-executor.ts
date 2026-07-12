@@ -52,6 +52,7 @@
 
 import { z } from 'zod';
 import type { Env } from '../env';
+import { readCappedText } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
 import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
@@ -122,7 +123,7 @@ export class BrowserExecutor implements ToolExecutor {
         ...(composed.signal ? { signal: composed.signal } : {}),
       });
       if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
+        const text = await readCappedText(resp, 4096).catch(() => '');
         return toolErrorOutput(
           codeForStatus(resp.status),
           `[browser error] ${this.opts.op}: ${resp.status} ${text.slice(0, 200)}`,
@@ -130,8 +131,9 @@ export class BrowserExecutor implements ToolExecutor {
       }
       // Trust the wrapper Worker to return text (base64 for binary ops).
       // We don't try to JSON-parse here so a `content` op returning raw
-      // HTML lands intact.
-      const text = await resp.text();
+      // HTML lands intact. Cap the read so a buggy/compromised adapter
+      // can't OOM the isolate (mirrors mcp/a2a/container).
+      const text = await readCappedText(resp);
       return text || `[browser ${this.opts.op} returned empty body]`;
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') {

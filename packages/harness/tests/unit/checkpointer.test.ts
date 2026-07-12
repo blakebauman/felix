@@ -123,3 +123,45 @@ describe('DoSession round-trip', () => {
     expect(stores.get('t5')).toHaveLength(1);
   });
 });
+
+/** Env whose CONVERSATION_DO POST always returns `status`, counting calls. */
+function countingEnv(status: number): { env: Env; calls: () => number } {
+  let n = 0;
+  const stub = {
+    fetch: async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST') {
+        n += 1;
+        return new Response('boom', { status });
+      }
+      return new Response('{}');
+    },
+  };
+  const env = {
+    CONVERSATION_DO: {
+      idFromName: (name: string) => name,
+      get: () => stub,
+    },
+  } as unknown as Env;
+  return { env, calls: () => n };
+}
+
+describe('DoSession retry semantics', () => {
+  it('does NOT retry a 4xx client error (fails fast after one attempt)', async () => {
+    const { env, calls } = countingEnv(400);
+    const session = getSessionStore(env, 'do').open('t6');
+    await expect(
+      session.appendBatch([{ kind: 'message', role: 'user', content: 'hi' }]),
+    ).rejects.toThrow(/status 400/);
+    expect(calls()).toBe(1);
+  });
+
+  it('retries a 5xx server error up to the attempt budget', async () => {
+    const { env, calls } = countingEnv(500);
+    const session = getSessionStore(env, 'do').open('t7');
+    await expect(
+      session.appendBatch([{ kind: 'message', role: 'user', content: 'hi' }]),
+    ).rejects.toThrow(/status 500/);
+    expect(calls()).toBe(3);
+  });
+});
