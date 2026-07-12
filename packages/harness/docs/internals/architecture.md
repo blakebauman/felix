@@ -107,7 +107,7 @@ OpenAPIHono<{ Bindings: Env, Variables: { auth: AuthContext } }>
   get      GET  /.well-known/jwks.json              (self-issued JWKS from env.JWKS_PUBLIC; 404 when unset)
   route    /v1          buildOpenAIRouter
   route    /chat        buildChatRouter
-  route    /internal    buildInternalRouter         (queue consumers POST tool_results here; x-consumer-secret)
+  route    /internal    buildInternalRouter         (queue consumers POST tool_results here; x-consumer-secret + dispatch pairing)
   route    /audit       buildAuditRouter            (incl. /audit/metrics, /audit/ab)
   route    /approvals   buildApprovalsRouter
   route    /plans       buildPlansRouter

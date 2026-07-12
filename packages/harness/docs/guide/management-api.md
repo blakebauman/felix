@@ -91,7 +91,7 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 | `approval_decision` | `/approvals/:id/decide` and retry-time wrapper — payload `{ approval_id, tool, transport }` | `approved`, `denied`, `pending` |
 | `checkpoint_failure` | Session `appendBatch` failed after retry | `failed` |
 | `queue_dispatch` | `QueueExecutor` — payload `{ job_id, tool, tool_call_id, thread_id, deadline_ms? }` | `enqueued` |
-| `queue_complete` | Queue consumer (external, via `POST /internal/sessions/:thread_id/events`) — payload `{ job_id, tool_call_id, duration_ms? }` | `ok`, `error` |
+| `queue_complete` | Emitted server-side on a successful `POST /internal/sessions/:thread_id/events` write-back (the route pairs the `tool_result` to an outstanding `queue_dispatch` first; unpaired or already-resolved → 409) — payload `{ tool, tool_call_id, thread_id, job_id? }`, `manifest_id` carried over from the paired dispatch | `ok` |
 | `queue_expired` | Orphan-cleanup cron for unresolved `queue_dispatch` rows — payload `{ job_id, tool_call_id, thread_id, age_ms }` | `expired` |
 | `manifest_created` | `POST /manifests/:name` | (none) |
 | `manifest_activated` | `POST /manifests/:name/activate` (or implicit on create) | (none) |
