@@ -172,3 +172,69 @@ describe('bindExternalMcp — trailing schema cases', () => {
     }
   });
 });
+
+describe('McpExecutor.execute — tools/call error taxonomy', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // fetch mock: answer `tools/list` (build time) with one tool, then answer the
+  // subsequent `tools/call` with the given non-2xx status.
+  function mockCallStatus(status: number) {
+    return vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = JSON.parse(String(init?.body ?? '{}')).method;
+      if (method === 'tools/list') {
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'search' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('upstream boom', { status });
+    });
+  }
+
+  async function callWithStatus(status: number) {
+    vi.stubGlobal('fetch', mockCallStatus(status));
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    const tool = tools[0];
+    if (!tool) throw new Error('expected one tool from bindExternalMcp');
+    return tool.executor.execute({ q: 'hi' });
+  }
+
+  it('surfaces rate_limited (not internal) on a 429 tools/call', async () => {
+    const out = await callWithStatus(429);
+    expect(readToolErrorCode(out)).toBe('rate_limited');
+  });
+
+  it('surfaces provider_error (not internal) on a 500 tools/call', async () => {
+    const out = await callWithStatus(500);
+    expect(readToolErrorCode(out)).toBe('provider_error');
+  });
+
+  it('surfaces permission_denied on a 403 tools/call', async () => {
+    const out = await callWithStatus(403);
+    expect(readToolErrorCode(out)).toBe('permission_denied');
+  });
+
+  it('surfaces provider_error on a JSON-RPC error object', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const method = JSON.parse(String(init?.body ?? '{}')).method;
+        if (method === 'tools/list') {
+          return new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'search' }] } }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: 'x', error: { code: -32000, message: 'nope' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    const out = await tools[0]!.executor.execute({ q: 'hi' });
+    expect(readToolErrorCode(out)).toBe('provider_error');
+  });
+});
