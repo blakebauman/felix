@@ -3,6 +3,7 @@ import type { Env } from '../../src/env';
 import type { McpServerRef } from '../../src/manifests/schema';
 import { bindExternalMcp } from '../../src/mcp/client';
 import { getToolInputSchema } from '../../src/patterns/zod-to-json-schema';
+import { readToolErrorCode } from '../../src/tools/errors';
 
 function ref(name: string): McpServerRef {
   return { name, url: 'https://mcp.example.com/rpc', auth: '', transport: 'http' };
@@ -86,6 +87,70 @@ describe('bindExternalMcp — remote inputSchema handling', () => {
       vi.fn(async () => Response.redirect('https://169.254.169.254/latest', 302)),
     );
     await expect(bindExternalMcp(ref('evil'), fakeEnv())).rejects.toThrow(/redirect/i);
+  });
+});
+
+describe('bindExternalMcp — per-call timeout', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // Fetch mock: resolve `tools/list` immediately, hang `tools/call` until its
+  // signal aborts (rejecting with the signal reason, like the real platform).
+  function listThenHangFetch() {
+    return vi.fn((_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string };
+      if (body.method === 'tools/list') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'slow' }] } }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        signal.addEventListener('abort', () =>
+          reject(signal.reason ?? new DOMException('aborted', 'AbortError')),
+        );
+      });
+    });
+  }
+
+  it('aborts a hung tools/call at the default timeout and surfaces a `timeout` error', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', listThenHangFetch());
+    const [tool] = await bindExternalMcp(ref('srv'), fakeEnv());
+    if (!tool) throw new Error('expected one tool');
+
+    const p = tool.executor.execute({ q: 'x' });
+    // The 30s default per-call timeout fires and cancels the in-flight fetch.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const out = await p;
+    expect(readToolErrorCode(out)).toBe('timeout');
+  });
+
+  it('maps a caller-driven abort to `user_aborted`, not `timeout`', async () => {
+    vi.stubGlobal('fetch', listThenHangFetch());
+    const [tool] = await bindExternalMcp(ref('srv'), fakeEnv());
+    if (!tool) throw new Error('expected one tool');
+
+    const controller = new AbortController();
+    const p = tool.executor.execute({ q: 'x' }, { signal: controller.signal });
+    controller.abort(new DOMException('request torn down', 'AbortError'));
+    const out = await p;
+    expect(readToolErrorCode(out)).toBe('user_aborted');
+  });
+});
+
+describe('bindExternalMcp — trailing schema cases', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('drops a malformed inputSchema and falls back to the Zod compile path', async () => {
