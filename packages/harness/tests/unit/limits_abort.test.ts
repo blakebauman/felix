@@ -17,8 +17,27 @@ import {
   runWithContext,
 } from '../../src/context';
 import type { Env } from '../../src/env';
+import { ABSOLUTE_LIMITS, clampLimits, DEFAULT_LIMITS } from '../../src/limits/models';
 import { applyLimits } from '../../src/limits/wrap';
 import { defineTool } from '../../src/tools/types';
+
+describe('clampLimits (defense-in-depth ceiling)', () => {
+  it('clamps a non-null cap above the ceiling down to it', () => {
+    const clamped = clampLimits({
+      ...DEFAULT_LIMITS,
+      max_tool_calls: 1_000_000,
+      max_input_tokens: 9_000_000_000,
+    });
+    expect(clamped.max_tool_calls).toBe(ABSOLUTE_LIMITS.max_tool_calls);
+    expect(clamped.max_input_tokens).toBe(ABSOLUTE_LIMITS.max_input_tokens);
+  });
+
+  it('preserves null (no manifest cap) and in-range values', () => {
+    const clamped = clampLimits({ ...DEFAULT_LIMITS, max_tool_calls: null, max_peer_hops: 2 });
+    expect(clamped.max_tool_calls).toBeNull();
+    expect(clamped.max_peer_hops).toBe(2);
+  });
+});
 
 function fakeCtx(): RequestContext {
   return { env: {} as unknown as Env, auth: ANONYMOUS, limitState: newLimitState() };

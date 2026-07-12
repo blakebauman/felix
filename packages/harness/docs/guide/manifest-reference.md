@@ -21,7 +21,7 @@ spec: { ... }                 # defaults to a minimal react agent
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `name` | string (1-128 chars) | required | Used as the manifest id, the OpenAI `model` value, and the audit `manifest_id`. |
+| `name` | string (1-128 chars, `[a-zA-Z0-9._-]`) | required | Used as the manifest id, the OpenAI `model` value, the audit `manifest_id`, and an R2 override object-key segment. Restricted to `[a-zA-Z0-9._-]` (no slashes or whitespace) so it can't escape its key prefix. |
 | `version` | string | `"1.0.0"` | Free-form. |
 | `description` | string | `""` | Surfaced in the A2A agent card. |
 | `tags` | string[] | `[]` | Free-form. |
@@ -105,7 +105,7 @@ mcp_servers:
     transport: sse                # default: sse; "http" | "sse" | "stdio"
 ```
 
-URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`.
+URLs go through `assertSafeOutboundUrl` at parse time — `http://` is rejected except in development, and private-range IPs / `.internal` / `.cluster.local` hosts are blocked unless added to `SSRF_ALLOW_HOSTS`. Each tool from a server is namespaced as `${name}__${toolName}`. A remote server is a **trust boundary**: its tool `description` and `inputSchema` are injected into the model's tool definitions (a prompt-injection surface), so the description is length-capped, an oversized schema is dropped, and the build-time `tools/list` discovery call is bounded by a timeout.
 
 ## spec.peers
 
@@ -479,7 +479,7 @@ guardrails:
   judges: []                   # default: []; declared JudgeRule entries
 ```
 
-`pii` runs four regex patterns (email, SSN, US phone, credit card) with SHA-256 fingerprints written to audit (never the raw value). `pii` is currently the only accepted provider — `bedrock` is explicitly rejected at parse time with a validation error until an AI Gateway content-policy hook lands. Omitting `targets` scans **both** input and output (the default is `[input, output]`, not `[]`). See [internals/governance.md](../internals/governance.md).
+`pii` runs four regex patterns (email, SSN, US phone, credit card) with SHA-256 fingerprints written to audit (never the raw value). `pii` is currently the only accepted provider — **any unknown provider name is rejected at parse time** (an unregistered provider would otherwise be silently skipped, disabling filtering while appearing protected), and `bedrock` is explicitly rejected until an AI Gateway content-policy hook lands. Omitting `targets` scans **both** input and output (the default is `[input, output]`, not `[]`). See [internals/governance.md](../internals/governance.md).
 
 ### Final-response guard
 
@@ -503,7 +503,7 @@ guardrails:
       final_response: false                           # default: false; see below
 ```
 
-The `llm_judge` wrapper composes *after* the regex-style guardrails: a tool result that escapes the `pii` filter can still be denied for being off-topic or hallucinated. Each rule emits a `judge_score` audit event per call. Skipped on outputs already flagged by `denyOutput` (other wrappers) or `toolErrorOutput` (transport error) — judging a deny string is wasted compute. Short-circuits to pass when `env.AI` is absent so a misconfigured Worker doesn't silently block every tool call.
+The `llm_judge` wrapper composes *after* the regex-style guardrails: a tool result that escapes the `pii` filter can still be denied for being off-topic or hallucinated. Each rule emits a `judge_score` audit event per call. Skipped on outputs already flagged by `denyOutput` (other wrappers) or `toolErrorOutput` (transport error) — judging a deny string is wasted compute. When `env.AI` is absent the judge short-circuits to pass in `development`, but **fails closed (denies)** in any other environment — a declared judge that can't run is a misconfiguration, not a reason to ship unjudged output (the skip is counted via `orchestrator_judge_skipped`).
 
 Set **`final_response: true`** to make a judge score the model's **final answer** instead of tool results (requires `final_response` in `targets`; `target_tools` is ignored). A below-threshold score replaces the answer with `[response withheld by output policy]` and emits `judge_score { source: 'final_response' }`. Because a judge needs the complete answer, it can only block on the non-streaming path and streaming `buffer` mode — under `passthrough` the bytes have already streamed, so the judge scores the persisted message but can't retract sent output. A judge with no AI binding is skipped (never silently blocks).
 

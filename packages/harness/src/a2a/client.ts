@@ -19,8 +19,9 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { A2APeerRef } from '../manifests/schema';
-import { assertSafeOutboundUrlForEnv } from '../security/ssrf';
-import { codeForStatus, toolErrorOutput } from '../tools/errors';
+import { readCappedJson } from '../security/response-limit';
+import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
+import { codeForStatus, ToolError, toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
 import {
   defineToolWithExecutor,
@@ -98,21 +99,31 @@ class A2AExecutor implements ToolExecutor {
           method: 'tasks/send',
           params,
         }),
+        // Don't follow redirects: the SSRF guard only validated the initial
+        // peer URL, so a 3xx to an internal host would bypass it.
+        redirect: 'manual',
         // Cancellation propagates from the per-request abort signal —
         // a wall-clock breach or request teardown will cancel the
         // outbound peer call mid-flight instead of blocking the next one.
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
+      if (isRedirect(resp)) {
+        return toolErrorOutput(
+          'provider_error',
+          `[peer error] ${this.ref.name}: server attempted a redirect`,
+        );
+      }
       if (!resp.ok) {
         return toolErrorOutput(
           codeForStatus(resp.status),
           `[peer error] ${this.ref.name}: ${resp.status}`,
         );
       }
-      const data = (await resp.json()) as {
+      // Byte-cap the read so a hostile peer can't OOM the isolate.
+      const data = await readCappedJson<{
         result?: TaskSendResult;
         error?: { message: string };
-      };
+      }>(resp);
       if (data.error)
         return toolErrorOutput(
           'provider_error',
@@ -126,6 +137,9 @@ class A2AExecutor implements ToolExecutor {
           'user_aborted',
           `[peer cancelled] ${this.ref.name}: ${(err as Error).message}`,
         );
+      }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[peer error] ${this.ref.name}: ${err.message}`);
       }
       throw err;
     }
