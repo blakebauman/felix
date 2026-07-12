@@ -1,12 +1,13 @@
 /**
- * Customer + behavior-event store (D1). Every query is tenant-scoped via the
- * composite (tenant_id, id) primary key, matching the rest of the schema.
+ * Customer + behavior-event store (Postgres). Every query is tenant-scoped via
+ * the composite (tenant_id, id) primary key, matching the rest of the schema.
  *
  * Behavior recording is best-effort telemetry — `recordBehaviorEvent` never
  * throws into a caller; it logs and returns. Recommendation seeding and
  * abandoned-cart detection both read back through this store.
  */
 
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import {
   type BehaviorEvent,
@@ -21,7 +22,7 @@ interface CustomerRow {
   id: string;
   email: string;
   external_ref: string;
-  attrs_json: string;
+  attrs_json: Record<string, unknown> | null;
   created_at: number;
   last_seen_at: number;
 }
@@ -34,15 +35,7 @@ interface BehaviorRow {
   type: string;
   product_id: string;
   ts: number;
-  metadata_json: string;
-}
-
-function safeJson(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
+  metadata_json: Record<string, unknown> | null;
 }
 
 function rowToCustomer(row: CustomerRow): Customer {
@@ -51,7 +44,7 @@ function rowToCustomer(row: CustomerRow): Customer {
     id: row.id,
     email: row.email,
     external_ref: row.external_ref,
-    attrs: safeJson(row.attrs_json),
+    attrs: row.attrs_json ?? {},
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
   });
@@ -66,30 +59,23 @@ function rowToEvent(row: BehaviorRow): BehaviorEvent {
     type: row.type,
     product_id: row.product_id,
     ts: row.ts,
-    metadata: safeJson(row.metadata_json),
+    metadata: row.metadata_json ?? {},
   });
 }
 
 export async function upsertCustomer(env: Env, customer: Customer): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO customers (tenant_id, id, email, external_ref, attrs_json, created_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, id) DO UPDATE SET
-       email = excluded.email,
-       external_ref = excluded.external_ref,
-       attrs_json = excluded.attrs_json,
-       last_seen_at = excluded.last_seen_at`,
-  )
-    .bind(
-      customer.tenant_id,
-      customer.id,
-      customer.email,
-      customer.external_ref,
-      JSON.stringify(customer.attrs),
-      customer.created_at,
-      customer.last_seen_at,
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO customers (tenant_id, id, email, external_ref, attrs_json, created_at, last_seen_at)
+      VALUES (${customer.tenant_id}, ${customer.id}, ${customer.email}, ${customer.external_ref},
+              ${customer.attrs as Record<string, unknown>}, ${customer.created_at},
+              ${customer.last_seen_at})
+      ON CONFLICT (tenant_id, id) DO UPDATE SET
+        email = excluded.email,
+        external_ref = excluded.external_ref,
+        attrs_json = excluded.attrs_json,
+        last_seen_at = excluded.last_seen_at
+  `;
 }
 
 export async function getCustomer(
@@ -97,10 +83,11 @@ export async function getCustomer(
   tenantId: string,
   id: string,
 ): Promise<Customer | null> {
-  const row = await env.DB.prepare('SELECT * FROM customers WHERE tenant_id = ? AND id = ? LIMIT 1')
-    .bind(tenantId, id)
-    .first<CustomerRow>();
-  return row ? rowToCustomer(row) : null;
+  const sql = getDb(env);
+  const rows = await sql<CustomerRow[]>`
+    SELECT * FROM customers WHERE tenant_id = ${tenantId} AND id = ${id} LIMIT 1
+  `;
+  return rows[0] ? rowToCustomer(rows[0]) : null;
 }
 
 /** Link a conversation thread to a customer (cross-session identity). */
@@ -111,13 +98,12 @@ export async function linkSessionToCustomer(
   customerId: string,
   nowMs: number,
 ): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO customer_sessions (tenant_id, thread_id, customer_id, created_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (tenant_id, thread_id) DO UPDATE SET customer_id = excluded.customer_id`,
-  )
-    .bind(tenantId, threadId, customerId, nowMs)
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO customer_sessions (tenant_id, thread_id, customer_id, created_at)
+      VALUES (${tenantId}, ${threadId}, ${customerId}, ${nowMs})
+      ON CONFLICT (tenant_id, thread_id) DO UPDATE SET customer_id = excluded.customer_id
+  `;
 }
 
 /** Resolve the customer id linked to a thread, if any. */
@@ -127,12 +113,12 @@ export async function getSessionCustomer(
   threadId: string,
 ): Promise<string | null> {
   if (!threadId) return null;
-  const row = await env.DB.prepare(
-    'SELECT customer_id FROM customer_sessions WHERE tenant_id = ? AND thread_id = ? LIMIT 1',
-  )
-    .bind(tenantId, threadId)
-    .first<{ customer_id: string }>();
-  return row?.customer_id ?? null;
+  const sql = getDb(env);
+  const rows = await sql<{ customer_id: string }[]>`
+    SELECT customer_id FROM customer_sessions
+      WHERE tenant_id = ${tenantId} AND thread_id = ${threadId} LIMIT 1
+  `;
+  return rows[0]?.customer_id ?? null;
 }
 
 /**
@@ -148,12 +134,11 @@ export async function attachThreadEventsToCustomer(
 ): Promise<void> {
   if (!threadId || !customerId) return;
   try {
-    await env.DB.prepare(
-      `UPDATE behavior_events SET customer_id = ?
-        WHERE tenant_id = ? AND thread_id = ? AND customer_id = ''`,
-    )
-      .bind(customerId, tenantId, threadId)
-      .run();
+    const sql = getDb(env);
+    await sql`
+      UPDATE behavior_events SET customer_id = ${customerId}
+        WHERE tenant_id = ${tenantId} AND thread_id = ${threadId} AND customer_id = ''
+    `;
   } catch (err) {
     console.warn('attachThreadEventsToCustomer failed', err);
   }
@@ -176,22 +161,14 @@ export async function recordBehaviorEvent(
   },
 ): Promise<void> {
   try {
-    await env.DB.prepare(
-      `INSERT INTO behavior_events
-         (tenant_id, id, customer_id, thread_id, type, product_id, ts, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-      .bind(
-        evt.tenant_id,
-        crypto.randomUUID(),
-        evt.customer_id ?? '',
-        evt.thread_id ?? '',
-        evt.type,
-        evt.product_id ?? '',
-        evt.ts,
-        JSON.stringify(evt.metadata ?? {}),
-      )
-      .run();
+    const sql = getDb(env);
+    await sql`
+      INSERT INTO behavior_events
+          (tenant_id, id, customer_id, thread_id, type, product_id, ts, metadata_json)
+        VALUES (${evt.tenant_id}, ${crypto.randomUUID()}, ${evt.customer_id ?? ''},
+                ${evt.thread_id ?? ''}, ${evt.type}, ${evt.product_id ?? ''}, ${evt.ts},
+                ${evt.metadata ?? {}})
+    `;
   } catch (err) {
     console.warn('recordBehaviorEvent failed', err);
   }
@@ -203,26 +180,22 @@ export async function listRecentBehavior(
   tenantId: string,
   opts: { threadId?: string; customerId?: string; types?: BehaviorType[]; limit?: number },
 ): Promise<BehaviorEvent[]> {
-  const clauses = ['tenant_id = ?'];
-  const binds: unknown[] = [tenantId];
-  if (opts.customerId) {
-    clauses.push('customer_id = ?');
-    binds.push(opts.customerId);
-  } else if (opts.threadId) {
-    clauses.push('thread_id = ?');
-    binds.push(opts.threadId);
-  }
-  if (opts.types?.length) {
-    clauses.push(`type IN (${opts.types.map(() => '?').join(', ')})`);
-    binds.push(...opts.types);
-  }
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const rows = await env.DB.prepare(
-    `SELECT * FROM behavior_events WHERE ${clauses.join(' AND ')} ORDER BY ts DESC LIMIT ?`,
-  )
-    .bind(...binds, limit)
-    .all<BehaviorRow>();
-  return (rows.results ?? []).map(rowToEvent);
+  const sql = getDb(env);
+  const rows = await sql<BehaviorRow[]>`
+    SELECT * FROM behavior_events
+      WHERE tenant_id = ${tenantId}
+      ${
+        opts.customerId
+          ? sql`AND customer_id = ${opts.customerId}`
+          : opts.threadId
+            ? sql`AND thread_id = ${opts.threadId}`
+            : sql``
+      }
+      ${opts.types?.length ? sql`AND type IN ${sql(opts.types)}` : sql``}
+      ORDER BY ts DESC LIMIT ${limit}
+  `;
+  return rows.map(rowToEvent);
 }
 
 /**
@@ -237,13 +210,13 @@ export async function countRecentPurchases(
   sinceMs: number,
 ): Promise<number> {
   try {
-    const row = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM behavior_events
-        WHERE tenant_id = ? AND product_id = ? AND type = 'purchase' AND ts >= ?`,
-    )
-      .bind(tenantId, productId, sinceMs)
-      .first<{ n: number }>();
-    return row?.n ?? 0;
+    const sql = getDb(env);
+    const rows = await sql<{ n: number }[]>`
+      SELECT COUNT(*) AS n FROM behavior_events
+        WHERE tenant_id = ${tenantId} AND product_id = ${productId}
+          AND type = 'purchase' AND ts >= ${sinceMs}
+    `;
+    return Number(rows[0]?.n ?? 0);
   } catch {
     return 0;
   }
@@ -265,26 +238,24 @@ export async function findAbandonedCandidates(
   env: Env,
   opts: { lookbackFrom: number; idleBefore: number; limit: number },
 ): Promise<AbandonedCandidate[]> {
-  const rows = await env.DB.prepare(
-    `SELECT tenant_id, thread_id,
+  const sql = getDb(env);
+  // Postgres HAVING can't reference SELECT aliases (SQLite could), so the
+  // intent/purchase aggregates move into HAVING as bool_or predicates.
+  const rows = await sql<
+    { tenant_id: string; thread_id: string; last_ts: number; customer_id: string | null }[]
+  >`
+    SELECT tenant_id, thread_id,
             MAX(ts) AS last_ts,
-            MAX(customer_id) AS customer_id,
-            MAX(CASE WHEN type IN ('add_to_cart','checkout_start') THEN 1 ELSE 0 END) AS has_intent,
-            MAX(CASE WHEN type = 'purchase' THEN 1 ELSE 0 END) AS has_purchase
+            MAX(customer_id) AS customer_id
        FROM behavior_events
-      WHERE thread_id != '' AND ts >= ?
+      WHERE thread_id != '' AND ts >= ${opts.lookbackFrom}
       GROUP BY tenant_id, thread_id
-     HAVING has_intent = 1 AND has_purchase = 0 AND last_ts <= ?
-      LIMIT ?`,
-  )
-    .bind(opts.lookbackFrom, opts.idleBefore, opts.limit)
-    .all<{
-      tenant_id: string;
-      thread_id: string;
-      last_ts: number;
-      customer_id: string;
-    }>();
-  return (rows.results ?? []).map((r) => ({
+     HAVING bool_or(type IN ('add_to_cart', 'checkout_start'))
+        AND NOT bool_or(type = 'purchase')
+        AND MAX(ts) <= ${opts.idleBefore}
+      LIMIT ${opts.limit}
+  `;
+  return rows.map((r) => ({
     tenant_id: r.tenant_id,
     thread_id: r.thread_id,
     customer_id: r.customer_id ?? '',
@@ -301,12 +272,11 @@ export async function markAbandoned(
   candidate: AbandonedCandidate,
   nowMs: number,
 ): Promise<boolean> {
-  const res = await env.DB.prepare(
-    `INSERT INTO abandoned_carts (tenant_id, thread_id, customer_id, detected_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (tenant_id, thread_id) DO NOTHING`,
-  )
-    .bind(candidate.tenant_id, candidate.thread_id, candidate.customer_id, nowMs)
-    .run();
-  return (res.meta?.changes ?? 0) > 0;
+  const sql = getDb(env);
+  const res = await sql`
+    INSERT INTO abandoned_carts (tenant_id, thread_id, customer_id, detected_at)
+      VALUES (${candidate.tenant_id}, ${candidate.thread_id}, ${candidate.customer_id}, ${nowMs})
+      ON CONFLICT (tenant_id, thread_id) DO NOTHING
+  `;
+  return res.count > 0;
 }

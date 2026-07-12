@@ -8,7 +8,6 @@ import { env, SELF } from 'cloudflare:test';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const H = { 'content-type': 'application/json' };
@@ -22,7 +21,6 @@ async function provision(id: string, name: string) {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await provision('offco', 'Off Co');
   await provision('csco', 'CS Co');
   await provision('nodom', 'No Domain Co');

@@ -21,14 +21,9 @@ import { env, SELF } from 'cloudflare:test';
 import { approvalsDoStub } from '@felix/harness/approvals/approvals-do';
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 describe('/jobs cross-tenant scoping', () => {
   it("hides another tenant's jobs from the anonymous (default) caller", async () => {

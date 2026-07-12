@@ -1,8 +1,10 @@
 /**
- * Pricing-rule store (D1). Tolerant of malformed rows — a bad `config_json`
- * resolves to an empty config rather than failing price resolution.
+ * Pricing-rule store (Postgres). Tolerant of malformed rows — a bad
+ * `config_json` resolves to an empty config rather than failing price
+ * resolution.
  */
 
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { PricingRule, PricingRuleConfig } from './models';
 
@@ -13,14 +15,14 @@ interface Row {
   target: string;
   kind: string;
   adjustment_bps: number;
-  config_json: string;
-  active: number;
+  config_json: unknown;
+  active: boolean;
   created_at: number;
 }
 
-function safeConfig(s: string): PricingRuleConfig {
+function safeConfig(v: unknown): PricingRuleConfig {
   try {
-    return PricingRuleConfig.parse(JSON.parse(s));
+    return PricingRuleConfig.parse(v ?? {});
   } catch {
     return {};
   }
@@ -36,7 +38,7 @@ function rowToRule(row: Row): PricingRule | null {
       kind: row.kind,
       adjustment_bps: row.adjustment_bps,
       config: safeConfig(row.config_json),
-      active: row.active === 1,
+      active: row.active,
       created_at: row.created_at,
     });
   } catch {
@@ -46,37 +48,28 @@ function rowToRule(row: Row): PricingRule | null {
 
 /** Active rules for a tenant. Small per-tenant set; loaded per price resolution. */
 export async function listActiveRules(env: Env, tenant: string): Promise<PricingRule[]> {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM pricing_rules WHERE tenant_id = ? AND active = 1 ORDER BY created_at',
-  )
-    .bind(tenant)
-    .all<Row>();
-  return (rows.results ?? []).map(rowToRule).filter((r): r is PricingRule => r !== null);
+  const sql = getDb(env);
+  const rows = await sql<Row[]>`
+    SELECT * FROM pricing_rules WHERE tenant_id = ${tenant} AND active = true
+      ORDER BY created_at
+  `;
+  return rows.map(rowToRule).filter((r): r is PricingRule => r !== null);
 }
 
 export async function upsertPricingRule(env: Env, rule: PricingRule): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO pricing_rules
-       (tenant_id, id, scope, target, kind, adjustment_bps, config_json, active, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, id) DO UPDATE SET
-       scope = excluded.scope,
-       target = excluded.target,
-       kind = excluded.kind,
-       adjustment_bps = excluded.adjustment_bps,
-       config_json = excluded.config_json,
-       active = excluded.active`,
-  )
-    .bind(
-      rule.tenant_id,
-      rule.id,
-      rule.scope,
-      rule.target,
-      rule.kind,
-      rule.adjustment_bps,
-      JSON.stringify(rule.config),
-      rule.active ? 1 : 0,
-      rule.created_at,
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO pricing_rules
+        (tenant_id, id, scope, target, kind, adjustment_bps, config_json, active, created_at)
+      VALUES (${rule.tenant_id}, ${rule.id}, ${rule.scope}, ${rule.target}, ${rule.kind},
+              ${rule.adjustment_bps}, ${rule.config as Record<string, unknown>},
+              ${rule.active}, ${rule.created_at})
+      ON CONFLICT (tenant_id, id) DO UPDATE SET
+        scope = excluded.scope,
+        target = excluded.target,
+        kind = excluded.kind,
+        adjustment_bps = excluded.adjustment_bps,
+        config_json = excluded.config_json,
+        active = excluded.active
+  `;
 }

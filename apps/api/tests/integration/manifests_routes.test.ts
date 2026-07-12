@@ -11,8 +11,7 @@ import { env, SELF } from 'cloudflare:test';
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -58,10 +57,6 @@ async function runEvalAndWait(
   }
   throw new Error(`eval run ${run_id} did not finalize`);
 }
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 beforeEach(() => {
   _clearResolverCache();

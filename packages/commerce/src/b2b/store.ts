@@ -1,5 +1,5 @@
 /**
- * B2B native stores (D1) + external mappers + entity-type registration.
+ * B2B native stores (Postgres) + external mappers + entity-type registration.
  *
  * `accountStore` / `buyerStore` implement the seam's `NativeStore<T>` so they
  * back `native` and `synced` modes; the `mapAccount` / `mapBuyer` mappers turn
@@ -7,6 +7,7 @@
  * `registerEntityType` calls at the bottom wire both into the resolver + sync.
  */
 
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { registerEntityType } from '../entities/registry';
 import type { ListOpts, NativeStore, Page, RawRecord } from '../entities/types';
@@ -22,17 +23,11 @@ interface AccountRow {
   payment_terms: string;
   credit_limit_cents: number;
   currency: string;
-  metadata_json: string;
+  metadata_json: Record<string, unknown> | null;
   created_at: number;
 }
 
 function rowToAccount(r: AccountRow): Account {
-  let metadata: Record<string, unknown> = {};
-  try {
-    metadata = JSON.parse(r.metadata_json);
-  } catch {
-    /* default */
-  }
   return Account.parse({
     tenant_id: r.tenant_id,
     id: r.id,
@@ -41,50 +36,40 @@ function rowToAccount(r: AccountRow): Account {
     payment_terms: r.payment_terms,
     credit_limit_cents: r.credit_limit_cents,
     currency: r.currency,
-    metadata,
+    metadata: r.metadata_json ?? {},
     created_at: r.created_at,
   });
 }
 
 export const accountStore: NativeStore<Account> = {
   async get(env, tenant, id) {
-    const row = await env.DB.prepare(
-      'SELECT * FROM accounts WHERE tenant_id = ? AND id = ? LIMIT 1',
-    )
-      .bind(tenant, id)
-      .first<AccountRow>();
-    return row ? rowToAccount(row) : null;
+    const sql = getDb(env);
+    const rows = await sql<AccountRow[]>`
+      SELECT * FROM accounts WHERE tenant_id = ${tenant} AND id = ${id} LIMIT 1
+    `;
+    return rows[0] ? rowToAccount(rows[0]) : null;
   },
   async list(env, tenant, opts?: ListOpts): Promise<Page<Account>> {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const rows = await env.DB.prepare(
-      'SELECT * FROM accounts WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?',
-    )
-      .bind(tenant, limit)
-      .all<AccountRow>();
-    return { items: (rows.results ?? []).map(rowToAccount) };
+    const sql = getDb(env);
+    const rows = await sql<AccountRow[]>`
+      SELECT * FROM accounts WHERE tenant_id = ${tenant} ORDER BY created_at DESC LIMIT ${limit}
+    `;
+    return { items: rows.map(rowToAccount) };
   },
   async upsert(env, tenant, a) {
-    await env.DB.prepare(
-      `INSERT INTO accounts (tenant_id, id, name, status, payment_terms, credit_limit_cents, currency, metadata_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (tenant_id, id) DO UPDATE SET
-         name = excluded.name, status = excluded.status, payment_terms = excluded.payment_terms,
-         credit_limit_cents = excluded.credit_limit_cents, currency = excluded.currency,
-         metadata_json = excluded.metadata_json`,
-    )
-      .bind(
-        tenant,
-        a.id,
-        a.name,
-        a.status,
-        a.payment_terms,
-        a.credit_limit_cents,
-        a.currency,
-        JSON.stringify(a.metadata),
-        a.created_at,
-      )
-      .run();
+    const sql = getDb(env);
+    await sql`
+      INSERT INTO accounts (tenant_id, id, name, status, payment_terms, credit_limit_cents,
+                            currency, metadata_json, created_at)
+        VALUES (${tenant}, ${a.id}, ${a.name}, ${a.status}, ${a.payment_terms},
+                ${a.credit_limit_cents}, ${a.currency},
+                ${a.metadata as Record<string, unknown>}, ${a.created_at})
+        ON CONFLICT (tenant_id, id) DO UPDATE SET
+          name = excluded.name, status = excluded.status, payment_terms = excluded.payment_terms,
+          credit_limit_cents = excluded.credit_limit_cents, currency = excluded.currency,
+          metadata_json = excluded.metadata_json
+    `;
   },
 };
 
@@ -107,10 +92,9 @@ export function mapAccount(raw: RawRecord, tenant: string): Account {
 }
 
 export async function deleteAccount(env: Env, tenant: string, id: string): Promise<boolean> {
-  const res = await env.DB.prepare('DELETE FROM accounts WHERE tenant_id = ? AND id = ?')
-    .bind(tenant, id)
-    .run();
-  return (res.meta?.changes ?? 0) > 0;
+  const sql = getDb(env);
+  const res = await sql`DELETE FROM accounts WHERE tenant_id = ${tenant} AND id = ${id}`;
+  return res.count > 0;
 }
 
 // ---- buyers ----
@@ -141,39 +125,30 @@ function rowToBuyer(r: BuyerRow): Buyer {
 
 export const buyerStore: NativeStore<Buyer> = {
   async get(env, tenant, id) {
-    const row = await env.DB.prepare('SELECT * FROM buyers WHERE tenant_id = ? AND id = ? LIMIT 1')
-      .bind(tenant, id)
-      .first<BuyerRow>();
-    return row ? rowToBuyer(row) : null;
+    const sql = getDb(env);
+    const rows = await sql<BuyerRow[]>`
+      SELECT * FROM buyers WHERE tenant_id = ${tenant} AND id = ${id} LIMIT 1
+    `;
+    return rows[0] ? rowToBuyer(rows[0]) : null;
   },
   async list(env, tenant, opts?: ListOpts): Promise<Page<Buyer>> {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const rows = await env.DB.prepare(
-      'SELECT * FROM buyers WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?',
-    )
-      .bind(tenant, limit)
-      .all<BuyerRow>();
-    return { items: (rows.results ?? []).map(rowToBuyer) };
+    const sql = getDb(env);
+    const rows = await sql<BuyerRow[]>`
+      SELECT * FROM buyers WHERE tenant_id = ${tenant} ORDER BY created_at DESC LIMIT ${limit}
+    `;
+    return { items: rows.map(rowToBuyer) };
   },
   async upsert(env, tenant, b) {
-    await env.DB.prepare(
-      `INSERT INTO buyers (tenant_id, id, account_id, email, role, spending_limit_cents, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (tenant_id, id) DO UPDATE SET
-         account_id = excluded.account_id, email = excluded.email, role = excluded.role,
-         spending_limit_cents = excluded.spending_limit_cents, status = excluded.status`,
-    )
-      .bind(
-        tenant,
-        b.id,
-        b.account_id,
-        b.email,
-        b.role,
-        b.spending_limit_cents,
-        b.status,
-        b.created_at,
-      )
-      .run();
+    const sql = getDb(env);
+    await sql`
+      INSERT INTO buyers (tenant_id, id, account_id, email, role, spending_limit_cents, status, created_at)
+        VALUES (${tenant}, ${b.id}, ${b.account_id}, ${b.email}, ${b.role},
+                ${b.spending_limit_cents}, ${b.status}, ${b.created_at})
+        ON CONFLICT (tenant_id, id) DO UPDATE SET
+          account_id = excluded.account_id, email = excluded.email, role = excluded.role,
+          spending_limit_cents = excluded.spending_limit_cents, status = excluded.status
+    `;
   },
 };
 
@@ -195,19 +170,18 @@ export async function listBuyersByAccount(
   tenant: string,
   accountId: string,
 ): Promise<Buyer[]> {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM buyers WHERE tenant_id = ? AND account_id = ? ORDER BY created_at DESC',
-  )
-    .bind(tenant, accountId)
-    .all<BuyerRow>();
-  return (rows.results ?? []).map(rowToBuyer);
+  const sql = getDb(env);
+  const rows = await sql<BuyerRow[]>`
+    SELECT * FROM buyers WHERE tenant_id = ${tenant} AND account_id = ${accountId}
+      ORDER BY created_at DESC
+  `;
+  return rows.map(rowToBuyer);
 }
 
 export async function deleteBuyer(env: Env, tenant: string, id: string): Promise<boolean> {
-  const res = await env.DB.prepare('DELETE FROM buyers WHERE tenant_id = ? AND id = ?')
-    .bind(tenant, id)
-    .run();
-  return (res.meta?.changes ?? 0) > 0;
+  const sql = getDb(env);
+  const res = await sql`DELETE FROM buyers WHERE tenant_id = ${tenant} AND id = ${id}`;
+  return res.count > 0;
 }
 
 // ---- register entity types on the seam ----

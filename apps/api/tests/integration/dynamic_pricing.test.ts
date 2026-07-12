@@ -16,8 +16,7 @@ import { upsertPricingRule } from '@felix/commerce/pricing/rules-store';
 import { catalogGetTool } from '@felix/commerce/tools';
 import { buildAnonymousContext, runWithContext } from '@felix/harness/context';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 function product(tenant: string, id: string, cents: number, category = 'apparel'): Product {
   return {
@@ -38,10 +37,6 @@ function product(tenant: string, id: string, cents: number, category = 'apparel'
 
 const testEnv = env as unknown as AppEnv;
 const NOON = Date.UTC(2026, 0, 1, 12, 0, 0); // 12:00 UTC
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 describe('dynamic pricing on the catalog branch', () => {
   it('applies a velocity discount only when demand clears the threshold', async () => {

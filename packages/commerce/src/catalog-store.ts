@@ -1,10 +1,16 @@
 /**
- * Catalog store (D1). Backs the built-in `catalog_*` tools. Every query is
- * scoped by tenant_id — the `products` table has a composite (tenant_id, id)
+ * Catalog store (Postgres). Backs the built-in `catalog_*` tools. Every query
+ * is scoped by tenant_id — the `products` table has a composite (tenant_id, id)
  * primary key, matching the rest of the schema.
+ *
+ * Search rides the schema's generated `search_tsv` column (weighted
+ * title > category > description) with a trigram OR-arm on title for typo'd
+ * single-word queries — capabilities the old D1 `LIKE '%q%'` scan couldn't
+ * offer. Results rank by ts_rank, then price.
  */
 
 import { getContext } from '@felix/harness/context';
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { type Product, ProductSchema } from './models';
 import { upsertProductEmbedding } from './personalization/embeddings';
@@ -20,17 +26,9 @@ interface ProductRow {
   image_url: string;
   category: string;
   inventory: number;
-  active: number;
-  attrs_json: string;
+  active: boolean;
+  attrs_json: Record<string, unknown>;
   created_at: number;
-}
-
-function safeJson(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
 }
 
 function rowToProduct(row: ProductRow): Product {
@@ -44,8 +42,8 @@ function rowToProduct(row: ProductRow): Product {
     image_url: row.image_url,
     category: row.category,
     inventory: row.inventory,
-    active: row.active === 1,
-    attrs: safeJson(row.attrs_json),
+    active: row.active,
+    attrs: row.attrs_json ?? {},
     created_at: row.created_at,
   });
 }
@@ -64,35 +62,41 @@ export async function searchProducts(
   tenantId: string,
   opts: SearchOpts,
 ): Promise<Product[]> {
-  const clauses = ['tenant_id = ?', 'active = 1'];
-  const binds: unknown[] = [tenantId];
-  if (opts.query) {
-    clauses.push('(title LIKE ? OR description LIKE ?)');
-    const like = `%${opts.query}%`;
-    binds.push(like, like);
-  }
-  if (opts.category) {
-    clauses.push('category = ?');
-    binds.push(opts.category);
-  }
-  if (typeof opts.maxPriceCents === 'number') {
-    clauses.push('price_cents <= ?');
-    binds.push(opts.maxPriceCents);
-  }
   const limit = Math.min(Math.max(opts.limit ?? MAX_LIMIT, 1), MAX_LIMIT);
-  const rows = await env.DB.prepare(
-    `SELECT * FROM products WHERE ${clauses.join(' AND ')} ORDER BY price_cents ASC LIMIT ?`,
-  )
-    .bind(...binds, limit)
-    .all<ProductRow>();
-  return (rows.results ?? []).map(rowToProduct);
+  const sql = getDb(env);
+  // Full-text arm: websearch_to_tsquery handles free-form user text safely
+  // (quoted phrases, ORs) against the weighted search_tsv; the `%` trigram
+  // arm catches close-miss single words (typos) the FTS stemmer won't.
+  // No-query searches keep the plain filtered scan ordered by price.
+  const rows = opts.query
+    ? await sql<ProductRow[]>`
+        SELECT * FROM products
+          WHERE tenant_id = ${tenantId} AND active
+            ${opts.category ? sql`AND category = ${opts.category}` : sql``}
+            ${typeof opts.maxPriceCents === 'number' ? sql`AND price_cents <= ${opts.maxPriceCents}` : sql``}
+            AND (search_tsv @@ websearch_to_tsquery('english', ${opts.query})
+                 OR title % ${opts.query})
+          ORDER BY ts_rank(search_tsv, websearch_to_tsquery('english', ${opts.query})) DESC,
+                   price_cents ASC
+          LIMIT ${limit}
+      `
+    : await sql<ProductRow[]>`
+        SELECT * FROM products
+          WHERE tenant_id = ${tenantId} AND active
+            ${opts.category ? sql`AND category = ${opts.category}` : sql``}
+            ${typeof opts.maxPriceCents === 'number' ? sql`AND price_cents <= ${opts.maxPriceCents}` : sql``}
+          ORDER BY price_cents ASC
+          LIMIT ${limit}
+      `;
+  return rows.map(rowToProduct);
 }
 
 export async function getProduct(env: Env, tenantId: string, id: string): Promise<Product | null> {
-  const row = await env.DB.prepare('SELECT * FROM products WHERE tenant_id = ? AND id = ? LIMIT 1')
-    .bind(tenantId, id)
-    .first<ProductRow>();
-  return row ? rowToProduct(row) : null;
+  const sql = getDb(env);
+  const rows = await sql<ProductRow[]>`
+    SELECT * FROM products WHERE tenant_id = ${tenantId} AND id = ${id} LIMIT 1
+  `;
+  return rows[0] ? rowToProduct(rows[0]) : null;
 }
 
 /**
@@ -107,13 +111,13 @@ export async function listProductsPage(
 ): Promise<{ products: Product[]; has_more: boolean }> {
   const limit = Math.min(Math.max(opts.limit, 1), 200);
   const offset = Math.max(opts.offset, 0);
+  const sql = getDb(env);
   // Fetch one extra row to detect a following page.
-  const rows = await env.DB.prepare(
-    `SELECT * FROM products WHERE tenant_id = ? AND active = 1 ORDER BY id LIMIT ? OFFSET ?`,
-  )
-    .bind(tenantId, limit + 1, offset)
-    .all<ProductRow>();
-  const all = (rows.results ?? []).map(rowToProduct);
+  const rows = await sql<ProductRow[]>`
+    SELECT * FROM products WHERE tenant_id = ${tenantId} AND active
+      ORDER BY id LIMIT ${limit + 1} OFFSET ${offset}
+  `;
+  const all = rows.map(rowToProduct);
   return { products: all.slice(0, limit), has_more: all.length > limit };
 }
 
@@ -127,21 +131,25 @@ export async function decrementInventory(
   tenantId: string,
   items: ReadonlyArray<{ id: string; qty: number }>,
 ): Promise<void> {
-  const stmts = items.map((it) =>
-    env.DB.prepare(
-      `UPDATE products SET inventory = MAX(0, inventory - ?)
-         WHERE tenant_id = ? AND id = ? AND inventory != -1`,
-    ).bind(it.qty, tenantId, it.id),
-  );
-  if (stmts.length) await env.DB.batch(stmts);
+  if (items.length === 0) return;
+  const sql = getDb(env);
+  await sql.begin(async (tx) => {
+    for (const it of items) {
+      await tx`
+        UPDATE products SET inventory = GREATEST(0, inventory - ${it.qty})
+          WHERE tenant_id = ${tenantId} AND id = ${it.id} AND inventory != -1
+      `;
+    }
+  });
 }
 
 /**
  * Backfill embeddings for an existing catalog. Re-embeds every active product
- * (text + image) into Vectorize so recommendations and visual search work for
- * catalogs imported before the embedding hook existed. Awaits each embed so the
- * work completes within the request; bounded by `cap`. Returns the count
- * processed. Best-effort per product (failures are swallowed by the embed fns).
+ * (text + image) into the vector store so recommendations and visual search
+ * work for catalogs imported before the embedding hook existed. Awaits each
+ * embed so the work completes within the request; bounded by `cap`. Returns
+ * the count processed. Best-effort per product (failures are swallowed by the
+ * embed fns).
  */
 export async function reindexCatalogEmbeddings(
   env: Env,
@@ -169,50 +177,38 @@ export async function reindexCatalogEmbeddings(
 }
 
 export async function listCategories(env: Env, tenantId: string): Promise<string[]> {
-  const rows = await env.DB.prepare(
-    `SELECT DISTINCT category FROM products
-       WHERE tenant_id = ? AND active = 1 AND category != ''
-       ORDER BY category`,
-  )
-    .bind(tenantId)
-    .all<{ category: string }>();
-  return (rows.results ?? []).map((r) => r.category);
+  const sql = getDb(env);
+  const rows = await sql<{ category: string }[]>`
+    SELECT DISTINCT category FROM products
+      WHERE tenant_id = ${tenantId} AND active AND category != ''
+      ORDER BY category
+  `;
+  return rows.map((r) => r.category);
 }
 
 export async function upsertProduct(env: Env, product: Product): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO products (tenant_id, id, title, description, price_cents, currency,
-                           image_url, category, inventory, active, attrs_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, id) DO UPDATE SET
-       title = excluded.title,
-       description = excluded.description,
-       price_cents = excluded.price_cents,
-       currency = excluded.currency,
-       image_url = excluded.image_url,
-       category = excluded.category,
-       inventory = excluded.inventory,
-       active = excluded.active,
-       attrs_json = excluded.attrs_json`,
-  )
-    .bind(
-      product.tenant_id,
-      product.id,
-      product.title,
-      product.description,
-      product.price_cents,
-      product.currency,
-      product.image_url,
-      product.category,
-      product.inventory,
-      product.active ? 1 : 0,
-      JSON.stringify(product.attrs),
-      product.created_at,
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO products (tenant_id, id, title, description, price_cents, currency,
+                          image_url, category, inventory, active, attrs_json, created_at)
+      VALUES (${product.tenant_id}, ${product.id}, ${product.title}, ${product.description},
+              ${product.price_cents}, ${product.currency}, ${product.image_url},
+              ${product.category}, ${product.inventory}, ${product.active},
+              ${product.attrs as Record<string, unknown>}, ${product.created_at})
+      ON CONFLICT (tenant_id, id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        price_cents = excluded.price_cents,
+        currency = excluded.currency,
+        image_url = excluded.image_url,
+        category = excluded.category,
+        inventory = excluded.inventory,
+        active = excluded.active,
+        attrs_json = excluded.attrs_json
+  `;
 
   // Refresh the product's text + image embeddings for similarity/visual search.
-  // Best-effort and off the response path (waitUntil): a missing Vectorize index
+  // Best-effort and off the response path (waitUntil): a missing vector index
   // or embed failure never fails the catalog write. Embeddings access
   // `env.MEMORY_VEC` directly, so the manifest's `memory.store` is irrelevant.
   const exec = getContext()?.execCtx;

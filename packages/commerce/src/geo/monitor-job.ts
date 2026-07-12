@@ -196,7 +196,7 @@ export async function runGeoMonitorTick(
   execCtx?: ExecutionContext,
 ): Promise<GeoMonitorResult> {
   const result: GeoMonitorResult = { processed: 0, mentioned: 0, dropped: 0 };
-  if (!env.DB || !env.AI || opts.max_queries_per_tick <= 0) return result;
+  if (!env.HYPERDRIVE || !env.AI || opts.max_queries_per_tick <= 0) return result;
 
   // Pull one extra to detect (and report) work shed by the per-tick cap.
   const queries = await listActiveQueries(env, opts.max_queries_per_tick + 1);

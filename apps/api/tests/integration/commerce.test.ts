@@ -12,9 +12,9 @@ import { searchProducts, upsertProduct } from '@felix/commerce/catalog-store';
 import type { Product } from '@felix/commerce/models';
 import { getOrder } from '@felix/commerce/order-store';
 import { handleCheckoutCompleted } from '@felix/commerce/webhook';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -36,7 +36,6 @@ function product(tenant: string, id: string, over: Partial<Product> = {}): Produ
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(
     testEnv,
     product('tenantA', 'tee', { title: 'Cotton Tee', category: 'apparel', price_cents: 2500 }),
@@ -100,11 +99,10 @@ describe('checkout → order conversion', () => {
     });
 
     // Find the order by scanning the tenant's orders for the stripe_ref.
-    const row = await testEnv.DB.prepare(
-      'SELECT id FROM orders WHERE tenant_id = ? AND stripe_ref = ?',
-    )
-      .bind('tenantA', 'cs_test_123')
-      .first<{ id: string }>();
+    const rows = await getDb(testEnv)<{ id: string }[]>`
+      SELECT id FROM orders WHERE tenant_id = 'tenantA' AND stripe_ref = 'cs_test_123'
+    `;
+    const row = rows[0] ?? null;
     expect(row).not.toBeNull();
 
     const order = await getOrder(testEnv, 'tenantA', row!.id);

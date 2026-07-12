@@ -16,14 +16,9 @@
 
 import { env, SELF } from 'cloudflare:test';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 interface RunRow {
   id: string;

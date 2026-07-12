@@ -14,7 +14,6 @@ import type { Product } from '@felix/commerce/models';
 import { getOrder } from '@felix/commerce/order-store';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const AUTH = { authorization: 'Bearer test-acp-key', 'content-type': 'application/json' };
@@ -46,7 +45,6 @@ const ADDRESS = {
 };
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(testEnv, product('acp-tee', { title: 'ACP Tee', price_cents: 2500 }));
   await upsertProduct(testEnv, product('acp-mug', { title: 'ACP Mug', price_cents: 1200 }));
 });

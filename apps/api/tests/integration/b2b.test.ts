@@ -10,17 +10,13 @@ import type { Account } from '@felix/commerce/b2b/models';
 import { setDataSourceConfig } from '@felix/commerce/entities/config-store';
 import { registerEntityConnector } from '@felix/commerce/entities/connectors';
 import { resolveEntitySource } from '@felix/commerce/entities/resolver';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import '@felix/commerce/b2b/store'; // registers 'account' / 'buyer' entity types
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const H = { 'content-type': 'application/json' };
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 async function createAccount(id: string, over: Record<string, unknown> = {}) {
   return SELF.fetch('https://o.test/b2b/accounts', {
@@ -140,11 +136,9 @@ describe('entity data-source seam', () => {
     expect(acct?.name).toBe('Remote Co');
     expect(acct?.credit_limit_cents).toBe(123456);
     // Not in our D1 — proves it came from the connector.
-    const native = await testEnv.DB.prepare(
-      'SELECT id FROM accounts WHERE tenant_id = ? AND id = ?',
-    )
-      .bind('fedco', 'remote-1')
-      .first();
-    expect(native).toBeNull();
+    const native = await getDb(testEnv)<{ id: string }[]>`
+      SELECT id FROM accounts WHERE tenant_id = 'fedco' AND id = 'remote-1'
+    `;
+    expect(native[0] ?? null).toBeNull();
   });
 });

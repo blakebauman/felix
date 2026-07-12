@@ -7,15 +7,10 @@ import { env, SELF } from 'cloudflare:test';
 import type { Brand } from '@felix/commerce/brands/models';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache, resolveManifest } from '@felix/harness/manifests/resolver';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
 const JSON_HEADERS = { 'content-type': 'application/json' };
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 beforeEach(() => {
   _clearResolverCache();

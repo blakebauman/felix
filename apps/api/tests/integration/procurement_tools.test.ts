@@ -20,7 +20,6 @@ import { upsertProduct } from '@felix/commerce/catalog-store';
 import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '@felix/harness/env';
 import type { Tool } from '@felix/harness/tools/types';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -49,7 +48,6 @@ function product(id: string, price: number): Product {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(testEnv, product('bolt', 1000));
   await accountStore.upsert(testEnv, 'default', {
     tenant_id: 'default',

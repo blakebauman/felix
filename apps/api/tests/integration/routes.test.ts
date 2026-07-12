@@ -7,17 +7,12 @@
 import { env, SELF } from 'cloudflare:test';
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 // The `cloudflare:test` env is typed as Cloudflare.Env (the bindings declared
 // in vitest.config.ts). For tests that pass it into project code typed
 // against our richer Env shape, cast through a structural alias.
 const testEnv = env as unknown as AppEnv;
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 describe('/audit', () => {
   it('lists events with a well-formed envelope', async () => {

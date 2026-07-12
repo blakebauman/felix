@@ -1,10 +1,11 @@
 /**
- * Quote + invoice native stores (D1) + entity-seam registration. Quotes carry
- * their line items (quote_items); upsert replaces the item set transactionally.
- * Registered as `quote` / `invoice` entity types so a tenant on an external
- * CPQ/billing system can back them federated/synced.
+ * Quote + invoice native stores (Postgres) + entity-seam registration. Quotes
+ * carry their line items (quote_items); upsert replaces the item set
+ * transactionally. Registered as `quote` / `invoice` entity types so a tenant
+ * on an external CPQ/billing system can back them federated/synced.
  */
 
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { registerEntityType } from '../entities/registry';
 import type { ListOpts, NativeStore, Page, RawRecord } from '../entities/types';
@@ -61,82 +62,66 @@ function rowToQuote(row: QuoteRow, items: QuoteItem[]): Quote {
 }
 
 async function readItems(env: Env, tenant: string, quoteId: string): Promise<QuoteItem[]> {
-  const rows = await env.DB.prepare(
-    'SELECT product_id, title, qty, unit_price_cents, discount_cents, line_total_cents FROM quote_items WHERE tenant_id = ? AND quote_id = ?',
-  )
-    .bind(tenant, quoteId)
-    .all<QuoteItemRow>();
-  return (rows.results ?? []).map((r) => ({ ...r }));
+  const sql = getDb(env);
+  const rows = await sql<QuoteItemRow[]>`
+    SELECT product_id, title, qty, unit_price_cents, discount_cents, line_total_cents
+      FROM quote_items WHERE tenant_id = ${tenant} AND quote_id = ${quoteId}
+  `;
+  return rows.map((r) => ({ ...r }));
 }
 
 export const quoteStore: NativeStore<Quote> = {
   async get(env, tenant, id) {
-    const row = await env.DB.prepare('SELECT * FROM quotes WHERE tenant_id = ? AND id = ? LIMIT 1')
-      .bind(tenant, id)
-      .first<QuoteRow>();
+    const sql = getDb(env);
+    const rows = await sql<QuoteRow[]>`
+      SELECT * FROM quotes WHERE tenant_id = ${tenant} AND id = ${id} LIMIT 1
+    `;
+    const row = rows[0];
     if (!row) return null;
     return rowToQuote(row, await readItems(env, tenant, id));
   },
   async list(env, tenant, opts?: ListOpts): Promise<Page<Quote>> {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const rows = await env.DB.prepare(
-      'SELECT * FROM quotes WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?',
-    )
-      .bind(tenant, limit)
-      .all<QuoteRow>();
+    const sql = getDb(env);
+    const rows = await sql<QuoteRow[]>`
+      SELECT * FROM quotes WHERE tenant_id = ${tenant} ORDER BY created_at DESC LIMIT ${limit}
+    `;
     // List view omits items to avoid N+1; callers fetch a single quote for items.
-    return { items: (rows.results ?? []).map((r) => rowToQuote(r, [])) };
+    return { items: rows.map((r) => rowToQuote(r, [])) };
   },
   async upsert(env, tenant, q) {
-    const stmts = [
-      env.DB.prepare(
-        `INSERT INTO quotes (tenant_id, id, account_id, buyer_id, status, currency, subtotal_cents,
-                             discount_cents, total_cents, valid_until, approval_id, order_id, notes,
-                             created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (tenant_id, id) DO UPDATE SET
-           status = excluded.status, currency = excluded.currency, subtotal_cents = excluded.subtotal_cents,
-           discount_cents = excluded.discount_cents, total_cents = excluded.total_cents,
-           valid_until = excluded.valid_until, approval_id = excluded.approval_id,
-           order_id = excluded.order_id, notes = excluded.notes, updated_at = excluded.updated_at`,
-      ).bind(
-        tenant,
-        q.id,
-        q.account_id,
-        q.buyer_id,
-        q.status,
-        q.currency,
-        q.subtotal_cents,
-        q.discount_cents,
-        q.total_cents,
-        q.valid_until,
-        q.approval_id,
-        q.order_id,
-        q.notes,
-        q.created_at,
-        q.updated_at,
-      ),
-      env.DB.prepare('DELETE FROM quote_items WHERE tenant_id = ? AND quote_id = ?').bind(
-        tenant,
-        q.id,
-      ),
-      ...q.items.map((it) =>
-        env.DB.prepare(
-          `INSERT INTO quote_items (tenant_id, quote_id, product_id, title, qty, unit_price_cents, discount_cents, line_total_cents)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(
-          tenant,
-          q.id,
-          it.product_id,
-          it.title,
-          it.qty,
-          it.unit_price_cents,
-          it.discount_cents,
-          it.line_total_cents,
-        ),
-      ),
-    ];
-    await env.DB.batch(stmts);
+    const sql = getDb(env);
+    // Quote row + item-set replacement are one transaction so a reader never
+    // sees a quote whose items are mid-swap.
+    await sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO quotes (tenant_id, id, account_id, buyer_id, status, currency, subtotal_cents,
+                            discount_cents, total_cents, valid_until, approval_id, order_id, notes,
+                            created_at, updated_at)
+          VALUES (${tenant}, ${q.id}, ${q.account_id}, ${q.buyer_id}, ${q.status}, ${q.currency},
+                  ${q.subtotal_cents}, ${q.discount_cents}, ${q.total_cents}, ${q.valid_until},
+                  ${q.approval_id}, ${q.order_id}, ${q.notes}, ${q.created_at}, ${q.updated_at})
+          ON CONFLICT (tenant_id, id) DO UPDATE SET
+            status = excluded.status, currency = excluded.currency, subtotal_cents = excluded.subtotal_cents,
+            discount_cents = excluded.discount_cents, total_cents = excluded.total_cents,
+            valid_until = excluded.valid_until, approval_id = excluded.approval_id,
+            order_id = excluded.order_id, notes = excluded.notes, updated_at = excluded.updated_at
+      `;
+      await tx`DELETE FROM quote_items WHERE tenant_id = ${tenant} AND quote_id = ${q.id}`;
+      if (q.items.length > 0) {
+        const itemRows = q.items.map((it) => ({
+          tenant_id: tenant,
+          quote_id: q.id,
+          product_id: it.product_id,
+          title: it.title,
+          qty: it.qty,
+          unit_price_cents: it.unit_price_cents,
+          discount_cents: it.discount_cents,
+          line_total_cents: it.line_total_cents,
+        }));
+        await tx`INSERT INTO quote_items ${tx(itemRows)}`;
+      }
+    });
   },
 };
 
@@ -170,12 +155,12 @@ export async function listQuotesByAccount(
   tenant: string,
   accountId: string,
 ): Promise<Quote[]> {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM quotes WHERE tenant_id = ? AND account_id = ? ORDER BY created_at DESC',
-  )
-    .bind(tenant, accountId)
-    .all<QuoteRow>();
-  return (rows.results ?? []).map((r) => rowToQuote(r, []));
+  const sql = getDb(env);
+  const rows = await sql<QuoteRow[]>`
+    SELECT * FROM quotes WHERE tenant_id = ${tenant} AND account_id = ${accountId}
+      ORDER BY created_at DESC
+  `;
+  return rows.map((r) => rowToQuote(r, []));
 }
 
 // ---- invoices ----
@@ -204,50 +189,35 @@ function rowToInvoice(r: InvoiceRow): Invoice {
 
 export const invoiceStore: NativeStore<Invoice> = {
   async get(env, tenant, id) {
-    const row = await env.DB.prepare(
-      'SELECT * FROM invoices WHERE tenant_id = ? AND id = ? LIMIT 1',
-    )
-      .bind(tenant, id)
-      .first<InvoiceRow>();
-    return row ? rowToInvoice(row) : null;
+    const sql = getDb(env);
+    const rows = await sql<InvoiceRow[]>`
+      SELECT * FROM invoices WHERE tenant_id = ${tenant} AND id = ${id} LIMIT 1
+    `;
+    return rows[0] ? rowToInvoice(rows[0]) : null;
   },
   async list(env, tenant, opts?: ListOpts): Promise<Page<Invoice>> {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const rows = await env.DB.prepare(
-      'SELECT * FROM invoices WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?',
-    )
-      .bind(tenant, limit)
-      .all<InvoiceRow>();
-    return { items: (rows.results ?? []).map(rowToInvoice) };
+    const sql = getDb(env);
+    const rows = await sql<InvoiceRow[]>`
+      SELECT * FROM invoices WHERE tenant_id = ${tenant} ORDER BY created_at DESC LIMIT ${limit}
+    `;
+    return { items: rows.map(rowToInvoice) };
   },
   async upsert(env, tenant, inv) {
-    await env.DB.prepare(
-      `INSERT INTO invoices (tenant_id, id, account_id, quote_id, order_id, amount_cents, currency,
-                             terms, status, due_at, created_at, paid_at, provider, external_ref, hosted_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (tenant_id, id) DO UPDATE SET
-         status = excluded.status, paid_at = excluded.paid_at,
-         provider = excluded.provider, external_ref = excluded.external_ref,
-         hosted_url = excluded.hosted_url`,
-    )
-      .bind(
-        tenant,
-        inv.id,
-        inv.account_id,
-        inv.quote_id,
-        inv.order_id,
-        inv.amount_cents,
-        inv.currency,
-        inv.terms,
-        inv.status,
-        inv.due_at,
-        inv.created_at,
-        inv.paid_at,
-        inv.provider,
-        inv.external_ref,
-        inv.hosted_url,
-      )
-      .run();
+    const sql = getDb(env);
+    await sql`
+      INSERT INTO invoices (tenant_id, id, account_id, quote_id, order_id, amount_cents, currency,
+                            terms, status, due_at, created_at, paid_at, provider, external_ref,
+                            hosted_url)
+        VALUES (${tenant}, ${inv.id}, ${inv.account_id}, ${inv.quote_id}, ${inv.order_id},
+                ${inv.amount_cents}, ${inv.currency}, ${inv.terms}, ${inv.status}, ${inv.due_at},
+                ${inv.created_at}, ${inv.paid_at}, ${inv.provider}, ${inv.external_ref},
+                ${inv.hosted_url})
+        ON CONFLICT (tenant_id, id) DO UPDATE SET
+          status = excluded.status, paid_at = excluded.paid_at,
+          provider = excluded.provider, external_ref = excluded.external_ref,
+          hosted_url = excluded.hosted_url
+    `;
   },
 };
 

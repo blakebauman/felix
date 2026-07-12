@@ -16,7 +16,6 @@ import { catalogSearchTool } from '@felix/commerce/tools';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -47,7 +46,6 @@ async function provision(id: string, name: string) {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await provision('shopco', 'Shop Co');
   // Catalog under the brand's data tenant + a decoy under `default`.
   await upsertProduct(testEnv, product('shopco', 'sc-widget', 'ShopCo Widget'));

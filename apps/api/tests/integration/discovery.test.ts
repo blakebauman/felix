@@ -20,15 +20,11 @@ import {
   upsertQuery,
 } from '@felix/commerce/geo/store';
 import { handleCheckoutCompleted } from '@felix/commerce/webhook';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 describe('geo monitoring store', () => {
   it('registers queries and reads active ones across tenants', async () => {
@@ -148,11 +144,10 @@ describe('checkout attribution', () => {
         consent_id: 'c1',
       },
     });
-    const orderRow = await testEnv.DB.prepare(
-      'SELECT id FROM orders WHERE tenant_id = ? AND stripe_ref = ?',
-    )
-      .bind('attrA', 'cs_attr_1')
-      .first<{ id: string }>();
+    const orderRows = await getDb(testEnv)<{ id: string }[]>`
+      SELECT id FROM orders WHERE tenant_id = 'attrA' AND stripe_ref = 'cs_attr_1'
+    `;
+    const orderRow = orderRows[0] ?? null;
     expect(orderRow).not.toBeNull();
     const attr = await getAttribution(testEnv, 'attrA', orderRow!.id);
     expect(attr?.channel).toBe('chat');

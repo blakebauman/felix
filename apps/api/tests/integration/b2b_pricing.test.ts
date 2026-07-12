@@ -12,7 +12,6 @@ import type { ContractPrice } from '@felix/commerce/b2b/pricing-models';
 import type { Quote } from '@felix/commerce/b2b/quote-models';
 import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const H = { 'content-type': 'application/json' };
@@ -48,7 +47,6 @@ async function quoteTotal(account: string, items: unknown): Promise<number> {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(testEnv, product('gear', 1000));
   // Plain account (contract pricing), and a discounted account.
   await post('/b2b/accounts', { id: 'priceco', name: 'Price Co' });

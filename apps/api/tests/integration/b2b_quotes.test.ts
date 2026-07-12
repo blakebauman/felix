@@ -10,8 +10,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import '@felix/commerce/b2b/store';
 import '@felix/commerce/b2b/quote-store';
 import type { Product } from '@felix/commerce/models';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const H = { 'content-type': 'application/json' };
@@ -42,7 +42,6 @@ async function post(path: string, body?: unknown) {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(testEnv, product('widget', 1000));
   // Account on net-30 terms with a buyer limited to $50.
   await post('/b2b/accounts', {
@@ -116,9 +115,9 @@ describe('quote guards', () => {
     const quote = (await created.json()) as Quote;
     // Send, then backdate validity into the past via D1.
     await post(`/b2b/quotes/${quote.id}/send`, { valid_days: 1 });
-    await testEnv.DB.prepare('UPDATE quotes SET valid_until = 1 WHERE tenant_id = ? AND id = ?')
-      .bind('default', quote.id)
-      .run();
+    await getDb(testEnv)`
+      UPDATE quotes SET valid_until = 1 WHERE tenant_id = 'default' AND id = ${quote.id}
+    `;
     const accept = await post(`/b2b/quotes/${quote.id}/accept`);
     expect(accept.status).toBe(409);
     expect(((await accept.json()) as { error: string }).error).toBe('expired');
