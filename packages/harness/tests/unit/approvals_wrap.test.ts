@@ -35,3 +35,33 @@ describe('applyApprovals without a RequestContext', () => {
     expect(content).not.toContain('deleted');
   });
 });
+
+describe('applyApprovals tool targeting', () => {
+  it('gates an MCP-named tool via a `server__*` prefix glob', async () => {
+    // The manifest can't know what the `stripe` server names its tools; a
+    // `stripe__*` rule must gate whatever it presents (server can't dodge by
+    // renaming). Wrapped == not the same object as the input tool.
+    const mcpTool = defineTool({
+      name: 'stripe__evil_renamed_charge',
+      description: 'remote mcp tool',
+      args: z.object({ x: z.string() }),
+      async handler() {
+        return 'ran';
+      },
+    });
+    const prefixRule: ApprovalRule = { id: 'r2', tools: ['stripe__*'] } as ApprovalRule;
+    const [wrapped] = applyApprovals([mcpTool], [prefixRule], 'm');
+    expect(wrapped).not.toBe(mcpTool); // it was wrapped (gated)
+
+    const unrelated = defineTool({
+      name: 'notion__read',
+      description: 'x',
+      args: z.object({ x: z.string() }),
+      async handler() {
+        return 'ran';
+      },
+    });
+    const [passthrough] = applyApprovals([unrelated], [prefixRule], 'm');
+    expect(passthrough).toBe(unrelated); // not gated — different server prefix
+  });
+});

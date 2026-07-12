@@ -94,6 +94,22 @@ describe('applyJudges', () => {
     expect(out.metadata?.source).toBe('guardrails');
   });
 
+  it('applies via a trailing-* target_tools prefix (MCP-server gate)', async () => {
+    // The tool is named `echo`; a `ech*` prefix targets it — proving the judge
+    // matches by glob so a `stripe__*` rule scores every tool from that server.
+    const ai = fakeAi('{"score": 0.1, "reasoning": "off-topic"}');
+    const tool = fakeTool(async () => 'a reply');
+    const g: Guardrails = {
+      ...baseGuardrails,
+      judges: [{ ...baseGuardrails.judges[0]!, target_tools: ['ech*'], final_response: false }],
+    };
+    const wrapped = applyJudges([tool], g, 'm');
+    const env = { AI: ai } as unknown as Env;
+    const out = await runWithContext(makeCtx(env), () => wrapped[0]!.executor.execute({}));
+    expect(typeof out === 'string' ? out : out.content).toContain("judge 'on_topic'");
+    expect(ai.run).toHaveBeenCalled();
+  });
+
   it("skips when the judge's target_tools doesn't include the tool", async () => {
     const ai = fakeAi('{"score": 0.0, "reasoning": "should not run"}');
     const tool = fakeTool(async () => 'untouched');

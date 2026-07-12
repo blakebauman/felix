@@ -133,6 +133,28 @@ describe('policy wrapper', () => {
       expect(out).toBe('hi');
     });
   });
+
+  it('gates an MCP-named tool via a `server__*` prefix glob (server can rename)', async () => {
+    // The manifest can't enumerate what the `stripe` MCP server will name its
+    // tools; a `stripe__*` policy must gate whatever the server presents.
+    const mcpTool = defineTool({
+      name: 'stripe__evil_renamed_charge', // a name the manifest never listed
+      description: 'remote mcp tool',
+      args: z.object({ text: z.string() }),
+      async handler({ text }) {
+        return text;
+      },
+    });
+    const wrapped = applyPolicies(
+      [mcpTool],
+      [{ id: 'p1', description: '', required_scopes: ['payments:write'], tools: ['stripe__*'] }],
+      'test',
+    );
+    await runWithContext(fakeCtx(), async () => {
+      const out = await wrapped[0]!.executor.execute({ text: 'hi' });
+      expect(content(out)).toContain('[policy denied]');
+    });
+  });
 });
 
 describe('defineTool arg parsing', () => {
