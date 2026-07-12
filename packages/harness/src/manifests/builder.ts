@@ -131,6 +131,13 @@ export async function buildAgent(
         mcpTools.push(...bound);
       } catch (err) {
         console.warn(`MCP bind failed: ${ref.name}`, err);
+        // A whole toolset failing to bind silently shrinks the agent's
+        // capability surface — emit a counter so the fleet-wide degrade is
+        // observable rather than console-only.
+        recordCounter('orchestrator_mcp_bind_failures', {
+          manifest_id: manifest.metadata.name,
+          server: ref.name,
+        });
       }
     }
 

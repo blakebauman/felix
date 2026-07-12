@@ -126,6 +126,17 @@ describe('BrowserExecutor', () => {
     expect(captured[0]).toMatch(/\/browser\/content$/);
   });
 
+  it('caps an oversized success body instead of buffering it unbounded', async () => {
+    // A buggy/compromised adapter returns a body past the 8 MiB response cap.
+    // The metered reader aborts and throws rather than OOMing the isolate.
+    const huge = 'a'.repeat(8 * 1024 * 1024 + 64);
+    const exec = new BrowserExecutor({
+      binding: fakeFetcher(async () => new Response(huge, { status: 200 })),
+      op: 'content',
+    });
+    await expect(exec.execute({ url: 'https://example.com' })).rejects.toThrow(/cap/);
+  });
+
   it('treats an empty 200 body as a sentinel string', async () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response('', { status: 200 })),
