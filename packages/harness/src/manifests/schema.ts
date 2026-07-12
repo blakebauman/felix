@@ -19,6 +19,30 @@ import { assertSafeOutboundUrl } from '../security/ssrf';
 export const API_VERSION = 'orchestrator/v1';
 export const MANIFEST_KIND = 'Agent';
 
+/**
+ * Legal characters for a manifest name. The name is used verbatim as an R2
+ * object-key segment in the resolver's override chain
+ * (`manifests/<tenant>/<name>.json` and the global `manifests/<name>.json`),
+ * so a `/` in the name lets a caller in tenant A address tenant B's
+ * tenant-scoped override object via the global layer. Restricting to this
+ * character class (no `/`, no whitespace, no `..` path tricks) closes that
+ * cross-tenant path-confusion at the schema layer; `assertValidManifestName`
+ * enforces the same rule in the resolver for callers that pass the name as a
+ * bare string (chat `manifest`, OpenAI `model`).
+ */
+export const MANIFEST_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+
+/**
+ * Throw when a manifest name is empty, too long, or contains characters that
+ * are unsafe as an R2 key segment. Used by `resolveManifest` so every
+ * request-path caller is contained regardless of its own input schema.
+ */
+export function assertValidManifestName(name: string): void {
+  if (!name || name.length > 128 || !MANIFEST_NAME_RE.test(name)) {
+    throw new Error(`Invalid manifest name: ${JSON.stringify(name)}`);
+  }
+}
+
 export const Pattern = z
   .string()
   .min(1)
@@ -41,10 +65,12 @@ const Metadata = z
       .string()
       .min(1)
       .max(128)
+      .regex(MANIFEST_NAME_RE)
       .openapi({
         description:
-          'Used as the manifest id, the OpenAI `model` value, and the audit `manifest_id`. ' +
-          '1–128 characters.',
+          'Used as the manifest id, the OpenAI `model` value, the audit `manifest_id`, and an ' +
+          'R2 override object-key segment. 1–128 characters, restricted to ' +
+          '`[a-zA-Z0-9._-]` (no slashes or whitespace) so it cannot escape its key prefix.',
         example: 'quick',
       }),
     version: z.string().default('1.0.0').openapi({
