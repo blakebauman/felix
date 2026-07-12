@@ -426,6 +426,28 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 
 `404 not_found` if the target version does not exist.
 
+#### Eval activation gate (opt-in)
+
+Two optional body fields make activation refuse to flip a version that has not passed an eval. **Both default to off** — a request with only `version` behaves exactly as before.
+
+- `eval_run_id` — an `/eval` run id. Supplying it always enforces the gate: the run must be `completed`, have zero failing items, and its recorded `manifest_version` must equal the version being activated.
+- `require_eval: true` — refuse the flip unless a passing `eval_run_id` is supplied (so an operator can force every activation through the gate even when no run id is passed).
+
+```bash
+# 1. Upload the candidate without activating it.
+curl -s -X POST ".../manifests/shopping?activate=false" -d '{"manifest": …}'   # → version 3
+
+# 2. Eval version 3 (pin it — the runner records the version on the run).
+curl -s -X POST ".../eval/datasets/golden/run" \
+  -d '{"candidate_manifest":"shopping","candidate_version":3}'   # → run_id
+
+# 3. Activate 3, gated on that passing run.
+curl -s -X POST ".../manifests/shopping/activate" \
+  -d '{"version": 3, "require_eval": true, "eval_run_id": "<run_id>"}'
+```
+
+`409 eval_gate_failed` (with a `detail` string) when the referenced run is missing, tested a different manifest or version, is not `completed`, or has failing items — or when `require_eval` is set and no run id is supplied.
+
 ### POST /manifests/:name/canary
 
 Set or update the canary pointer on the active manifest. The stable version is unchanged; the resolver hash-buckets each thread by `(tenant_id, thread_id, manifest_name, stable_v, canary_v)` so a single conversation stays on one side across the rollout. Flipping `canary_version` or `canary_weight` re-randomises bucket assignment.
@@ -450,6 +472,8 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 ```
 
 `canary_weight` is 0..100. Pass `canary_version: null` to clear the version pointer entirely (equivalent to `POST /rollback` with `clear_version: true`). The OpenAI-compatible surface (`/v1/chat/completions`, sync + stream) sets `x-manifest-variant: stable|canary` on every response that resolves through the tenant-D1 layer so an operator can verify the canary is reaching real traffic.
+
+The same opt-in eval gate as `activate` applies: pass `eval_run_id` (and/or `require_eval: true`) to refuse pointing the canary at a version that has no passing run for it (`409 eval_gate_failed`). The gate is skipped when `canary_version` is `null` (clearing).
 
 Emits `manifest_canary_set` audit.
 
@@ -575,6 +599,10 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 ```
 
 `deterministic_judge: true` uses substring + trajectory gates only — no `env.AI` calls. Useful for CI environments without an AI binding wired.
+
+`candidate_version: N` pins the run to a specific tenant-managed manifest version instead of the active pointer — the only way to eval an inactive version before promoting it. The version the run tested is stored on the run row as `manifest_version` (null for bundled / R2 candidates) and is what the `/manifests` activate + canary eval gate matches against.
+
+If the run throws before it finalizes (candidate not found, agent build error), the row is finalized `failed` rather than left `in_progress`.
 
 ### GET /eval/runs
 

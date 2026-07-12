@@ -142,6 +142,7 @@ export async function createRun(
     id,
     dataset_name: opts.datasetName,
     candidate_manifest: opts.candidateManifest,
+    manifest_version: null,
     started_at,
     finished_at: null,
     status: 'in_progress',
@@ -155,22 +156,41 @@ export async function finalizeRun(
   env: Env,
   tenantId: string,
   runId: string,
-  opts: { status: 'completed' | 'failed'; scores: ItemScore[] },
+  opts: {
+    status: 'completed' | 'failed';
+    scores: ItemScore[];
+    /**
+     * The tenant-managed version the run tested (from the resolver). Written
+     * so the activation gate can match a passing run to the exact version.
+     * `undefined` leaves the column untouched; `null` clears it.
+     */
+    manifestVersion?: number | null;
+  },
 ): Promise<void> {
   const passes = opts.scores.filter((s) => s.verdict === 'pass').length;
   const fails = opts.scores.length - passes;
   await env.DB.prepare(
     `UPDATE eval_runs
-        SET status = ?, finished_at = ?, pass_count = ?, fail_count = ?, scores_json = ?
+        SET status = ?, finished_at = ?, pass_count = ?, fail_count = ?, scores_json = ?,
+            manifest_version = ?
         WHERE tenant_id = ? AND id = ?`,
   )
-    .bind(opts.status, Date.now(), passes, fails, JSON.stringify(opts.scores), tenantId, runId)
+    .bind(
+      opts.status,
+      Date.now(),
+      passes,
+      fails,
+      JSON.stringify(opts.scores),
+      opts.manifestVersion ?? null,
+      tenantId,
+      runId,
+    )
     .run();
 }
 
 export async function getRun(env: Env, tenantId: string, runId: string): Promise<EvalRun | null> {
   const row = await env.DB.prepare(
-    `SELECT id, dataset_name, candidate_manifest, started_at, finished_at,
+    `SELECT id, dataset_name, candidate_manifest, manifest_version, started_at, finished_at,
             status, pass_count, fail_count, scores_json
        FROM eval_runs
        WHERE tenant_id = ? AND id = ?`,
@@ -180,6 +200,7 @@ export async function getRun(env: Env, tenantId: string, runId: string): Promise
       id: string;
       dataset_name: string;
       candidate_manifest: string;
+      manifest_version: number | null;
       started_at: number;
       finished_at: number | null;
       status: string;
@@ -192,6 +213,7 @@ export async function getRun(env: Env, tenantId: string, runId: string): Promise
     id: row.id,
     dataset_name: row.dataset_name,
     candidate_manifest: row.candidate_manifest,
+    manifest_version: row.manifest_version,
     started_at: row.started_at,
     finished_at: row.finished_at,
     status: row.status as EvalRun['status'],
@@ -208,7 +230,7 @@ export async function listRuns(
 ): Promise<EvalRun[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const sql = `
-    SELECT id, dataset_name, candidate_manifest, started_at, finished_at,
+    SELECT id, dataset_name, candidate_manifest, manifest_version, started_at, finished_at,
            status, pass_count, fail_count, scores_json
       FROM eval_runs
       WHERE tenant_id = ?
@@ -225,6 +247,7 @@ export async function listRuns(
       id: string;
       dataset_name: string;
       candidate_manifest: string;
+      manifest_version: number | null;
       started_at: number;
       finished_at: number | null;
       status: string;
@@ -236,6 +259,7 @@ export async function listRuns(
     id: row.id,
     dataset_name: row.dataset_name,
     candidate_manifest: row.candidate_manifest,
+    manifest_version: row.manifest_version,
     started_at: row.started_at,
     finished_at: row.finished_at,
     status: row.status as EvalRun['status'],

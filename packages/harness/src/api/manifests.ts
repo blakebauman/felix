@@ -23,6 +23,7 @@ import { recordEvent } from '../audit/store';
 import type { AuthContext } from '../auth/context';
 import { requireScope } from '../auth/middleware';
 import type { Env } from '../env';
+import { getRun } from '../eval/datasets';
 import { invalidateActive, resolveManifest } from '../manifests/resolver';
 import { MANIFEST_NAME_RE, ManifestSchema } from '../manifests/schema';
 import {
@@ -73,8 +74,33 @@ const ManifestCreateRequestSchema = z
   .strict()
   .openapi('ManifestCreateRequest');
 
+// Opt-in eval gate. Both fields default to "off" so existing callers that
+// send only `version` (or `canary_version`) are unaffected. Supplying
+// `eval_run_id` always enforces the gate; `require_eval` refuses the flip
+// when no run id is supplied (belt-and-suspenders for operators who want the
+// server to reject an ungated activation outright).
+const EvalGateFields = {
+  require_eval: z
+    .boolean()
+    .default(false)
+    .openapi({
+      description:
+        'When true, refuse the version flip unless a passing `eval_run_id` for this exact ' +
+        '(manifest, version) is supplied. Default false keeps activation ungated.',
+    }),
+  eval_run_id: z
+    .string()
+    .min(1)
+    .optional()
+    .openapi({
+      description:
+        'An `/eval` run id that must be `completed` with zero failures and have tested this ' +
+        'exact manifest version. Rejected with 409 otherwise.',
+    }),
+};
+
 const ManifestActivateRequestSchema = z
-  .object({ version: z.number().int().min(1) })
+  .object({ version: z.number().int().min(1), ...EvalGateFields })
   .strict()
   .openapi('ManifestActivateRequest', { example: { version: 2 } });
 
@@ -167,6 +193,7 @@ const ManifestCanaryRequestSchema = z
           'Percent of traffic routed to the canary (0–100). Bucketed deterministically per ' +
           'thread so a single conversation stays on one side across the rollout.',
       }),
+    ...EvalGateFields,
   })
   .strict()
   .openapi('ManifestCanaryRequest', { example: { canary_version: 3, canary_weight: 25 } });
@@ -403,7 +430,10 @@ const activateManifestRoute = createRoute({
   path: '/{name}/activate',
   tags: ['Manifests'],
   summary: 'Flip the active pointer to a specific version (rollback)',
-  description: 'Requires the `manifests:write` scope.',
+  description:
+    'Requires the `manifests:write` scope. Opt-in eval gate: supply `eval_run_id` (and/or ' +
+    '`require_eval: true`) to refuse the flip unless a passing `/eval` run tested this exact ' +
+    'version. Omitting both keeps activation ungated (backward compatible).',
   security: BearerSecurity(),
   request: {
     params: NameParam,
@@ -423,6 +453,10 @@ const activateManifestRoute = createRoute({
     },
     404: {
       description: 'Unknown version.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+    409: {
+      description: 'Eval gate failed — no passing run for this exact version.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
   },
@@ -452,6 +486,10 @@ const setCanaryRoute = createRoute({
     },
     404: {
       description: 'No active stable version, or canary version not found.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+    409: {
+      description: 'Eval gate failed — no passing run for the canary version.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
   },
@@ -534,6 +572,62 @@ const deleteVersionRoute = createRoute({
     },
   },
 });
+
+/**
+ * Opt-in eval activation gate. Returns `null` when the flip may proceed, or a
+ * `{ error, detail }` envelope when it must be rejected with 409.
+ *
+ * A run "passes" for a (tenant, manifest, version) when it is `completed`,
+ * has zero failures, and its recorded `manifest_version` matches the version
+ * being activated / canaried. `require_eval` without a run id is refused so
+ * an operator can force every flip through the gate.
+ */
+async function checkEvalGate(
+  env: Env,
+  tenantId: string,
+  name: string,
+  version: number,
+  opts: { requireEval: boolean; evalRunId?: string },
+): Promise<{ error: string; detail: string } | null> {
+  if (opts.evalRunId) {
+    const run = await getRun(env, tenantId, opts.evalRunId);
+    if (!run) {
+      return { error: 'eval_gate_failed', detail: `eval run '${opts.evalRunId}' not found` };
+    }
+    if (run.candidate_manifest !== name) {
+      return {
+        error: 'eval_gate_failed',
+        detail: `eval run '${opts.evalRunId}' tested manifest '${run.candidate_manifest}', not '${name}'`,
+      };
+    }
+    if (run.manifest_version !== version) {
+      return {
+        error: 'eval_gate_failed',
+        detail: `eval run '${opts.evalRunId}' tested version ${run.manifest_version ?? 'unknown'}, not ${version}`,
+      };
+    }
+    if (run.status !== 'completed') {
+      return {
+        error: 'eval_gate_failed',
+        detail: `eval run '${opts.evalRunId}' is '${run.status}', not 'completed'`,
+      };
+    }
+    if (run.fail_count > 0) {
+      return {
+        error: 'eval_gate_failed',
+        detail: `eval run '${opts.evalRunId}' did not pass (${run.fail_count} failing item(s))`,
+      };
+    }
+    return null;
+  }
+  if (opts.requireEval) {
+    return {
+      error: 'eval_gate_failed',
+      detail: `require_eval is set but no passing eval_run_id was supplied for '${name}' version ${version}`,
+    };
+  }
+  return null;
+}
 
 export function buildManifestsRouter() {
   // The default zod-openapi error envelope (`{ success: false, error: ZodError }`)
@@ -696,6 +790,12 @@ export function buildManifestsRouter() {
     const { name } = c.req.valid('param');
     const body = c.req.valid('json');
 
+    const gate = await checkEvalGate(c.env, auth.principal.tenantId, name, body.version, {
+      requireEval: body.require_eval,
+      evalRunId: body.eval_run_id,
+    });
+    if (gate) return c.json(gate, 409);
+
     const updated = await activateVersion(c.env, {
       tenantId: auth.principal.tenantId,
       name,
@@ -723,6 +823,15 @@ export function buildManifestsRouter() {
     const auth = c.get('auth');
     const { name } = c.req.valid('param');
     const body = c.req.valid('json');
+    // Only gate when actually pointing the canary at a version — clearing it
+    // (null) never needs an eval.
+    if (body.canary_version !== null) {
+      const gate = await checkEvalGate(c.env, auth.principal.tenantId, name, body.canary_version, {
+        requireEval: body.require_eval,
+        evalRunId: body.eval_run_id,
+      });
+      if (gate) return c.json(gate, 409);
+    }
     let updated: Awaited<ReturnType<typeof setCanary>>;
     try {
       updated = await setCanary(c.env, {
