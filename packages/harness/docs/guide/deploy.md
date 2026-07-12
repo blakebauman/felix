@@ -19,7 +19,7 @@ From `apps/api/wrangler.jsonc` — your gitignored copy of the tracked template 
 | `BUNDLES` | R2 | Signed `PolicyBundle`, per-tenant manifest overrides at `manifests/<tenant_id>/<name>.json`, global overrides at `manifests/<name>.json`, and artifact spills at `artifacts/<tenant_id>/<thread_id>/<tool_call_id>.json` (when `spec.artifacts.enabled`). |
 | `MEMORY_VEC` | Vectorize | 768-dim BGE index (`@cf/baai/bge-base-en-v1.5`) — semantic memory, JIT tool retrieval, `semantic:N` session strategy, procedural memory. |
 | `AUDIT_QUEUE` | Queue (producer) | Audit events fan out from the producer in `audit/store.ts`. |
-| `felix-audit` consumer | Queue (consumer) | Batched persist into D1 (`max_batch_size: 50`, `max_batch_timeout: 5s`). |
+| `felix-audit` consumer | Queue (consumer) | Batched persist into Postgres — one multi-row INSERT per pull (`max_batch_size: 50`, `max_batch_timeout: 5s`). |
 | `METRICS` | Analytics Engine | `orchestrator_*` counters + histograms via `recordCounter` / `recordHistogram`. Falls back to structured `console.log` when absent. |
 | `AGENT_WORKFLOW` | Workflows | Durable agent execution (`AgentWorkflow`) for manifests with `execution.mode: durable`. Optional — falls back to in-isolate execution when absent. |
 | `CONVERSATION_DO` | Durable Object | One per thread id; session event log backing the `Session` abstraction. Exposes `/events` with slice + cursor. |

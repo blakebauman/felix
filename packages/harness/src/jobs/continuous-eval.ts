@@ -51,6 +51,7 @@ import {
   type RequestContext,
   runWithContext,
 } from '../context';
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { type Judge, workersAiJudge } from '../eval/judge';
 import type { Rubric } from '../eval/types';
@@ -162,19 +163,19 @@ async function sampleInputs(
   remaining: number,
 ): Promise<string[]> {
   if (remaining <= 0) return [];
-  const rows = await env.DB.prepare(
-    `SELECT json_extract(payload_json, '$.user_input') AS user_input, MAX(ts) AS last_ts
-       FROM audit_events
-       WHERE tenant_id = ? AND manifest_id = ? AND event_type = 'tool_call'
-         AND ts >= ? AND json_extract(payload_json, '$.user_input') IS NOT NULL
-         AND json_extract(payload_json, '$.replay') IS NULL
-       GROUP BY user_input
-       ORDER BY last_ts DESC`,
-  )
-    .bind(canary.tenant_id, canary.name, sinceMs)
-    .all<SampledRow>();
+  const sql = getDb(env);
+  const rows = await sql<SampledRow[]>`
+    SELECT payload_json->>'user_input' AS user_input, MAX(ts) AS last_ts
+      FROM audit_events
+      WHERE tenant_id = ${canary.tenant_id} AND manifest_id = ${canary.name}
+        AND event_type = 'tool_call'
+        AND ts >= ${sinceMs} AND payload_json->>'user_input' IS NOT NULL
+        AND payload_json->>'replay' IS NULL
+      GROUP BY user_input
+      ORDER BY last_ts DESC
+  `;
   const out: string[] = [];
-  for (const row of rows.results ?? []) {
+  for (const row of rows) {
     const input = row.user_input;
     if (!input) continue;
     if (hashUnit(input) >= opts.sample_rate) continue;
@@ -237,7 +238,7 @@ export async function runContinuousEvalTick(
     passed: 0,
     failed: 0,
   };
-  if (!env.DB) return result;
+  if (!env.HYPERDRIVE) return result;
 
   const sinceMs = now - opts.window_ms;
   const canaries = await listActiveCanaries(env);

@@ -18,6 +18,7 @@ import { decideRequest, getRequest } from '@felix/harness/approvals/store';
 import { applyApprovals } from '@felix/harness/approvals/wrap';
 import type { AuthContext } from '@felix/harness/auth/context';
 import { newLimitState, type RequestContext, runWithContext } from '@felix/harness/context';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { defineTool, isWrapperDeny, type Tool, type ToolOutput } from '@felix/harness/tools/types';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -132,9 +133,10 @@ describe('TTL (expiring) approval grants', () => {
     await approve(id1);
 
     // Force the grant into the past — deterministic vs. sleeping on a real TTL.
-    await testEnv.DB.prepare('UPDATE approvals SET expires_at = ? WHERE tenant_id = ? AND id = ?')
-      .bind(Date.now() - 1000, TENANT, id1)
-      .run();
+    await getDb(testEnv)`
+      UPDATE approvals SET expires_at = ${Date.now() - 1000}
+        WHERE tenant_id = ${TENANT} AND id = ${id1}
+    `;
 
     const second = await run(wrapped, args, 'alice');
     expect(isWrapperDeny(second)).toBe(true); // expired -> re-request

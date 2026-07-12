@@ -20,7 +20,20 @@ import postgres from 'postgres';
 import { getContext } from '../context';
 import type { Env } from '../env';
 
-export type Db = postgres.Sql;
+/**
+ * Custom-type map for the Felix client. `bigint` is a real runtime parser
+ * (int8 → Number); `json` exists only at the TYPE level so tagged-template
+ * params accept plain objects/arrays for jsonb columns — postgres.js
+ * Describes each statement, sees the jsonb param OID, and JSON-serializes
+ * the value once (pre-stringifying would double-encode into a jsonb string
+ * scalar).
+ */
+type FelixDbTypes = {
+  bigint: number;
+  json: Record<string, unknown> | readonly unknown[];
+};
+
+export type Db = postgres.Sql<FelixDbTypes>;
 
 export function getDb(env: Env): Db {
   const ctx = getContext();
@@ -37,7 +50,9 @@ export function getDb(env: Env): Db {
       // Date.now() arithmetic working at every call site.
       bigint: { to: 20, from: [20], serialize: String, parse: Number },
     },
-  });
+    // Cast: `json` in FelixDbTypes is type-level only (no runtime parser
+    // needed — postgres.js parses json/jsonb natively).
+  }) as unknown as Db;
   if (ctx) ctx.db = db;
   return db;
 }

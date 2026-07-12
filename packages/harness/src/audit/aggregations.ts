@@ -17,6 +17,7 @@
  * query that.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 
 export interface ToolCallMetricsQuery {
@@ -45,8 +46,8 @@ export interface ToolCallMetricsRow {
 const ROW_HARD_CAP = 500;
 
 /**
- * `json_extract` returns SQLite JSON1's null for missing keys; we want
- * those to surface as JS `null` so downstream callers can branch on it.
+ * jsonb `->>` yields SQL NULL for missing keys, which surfaces as JS `null`
+ * so downstream callers can branch on it.
  */
 export async function getToolCallMetrics(
   env: Env,
@@ -54,39 +55,37 @@ export async function getToolCallMetrics(
 ): Promise<ToolCallMetricsRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), ROW_HARD_CAP);
   const until = opts.until ?? Date.now();
-  const sql = `
+  const sql = getDb(env);
+  const result = await sql<
+    {
+      manifest_id: string;
+      tool: string;
+      transport: string;
+      status: string;
+      error_code: string | null;
+      count: number;
+      avg_duration_ms: string | number | null;
+    }[]
+  >`
     SELECT
       manifest_id,
-      COALESCE(json_extract(payload_json, '$.tool'), '') AS tool,
-      COALESCE(json_extract(payload_json, '$.transport'), '') AS transport,
+      COALESCE(payload_json->>'tool', '') AS tool,
+      COALESCE(payload_json->>'transport', '') AS transport,
       status,
-      json_extract(payload_json, '$.error_code') AS error_code,
+      payload_json->>'error_code' AS error_code,
       COUNT(*) AS count,
-      AVG(json_extract(payload_json, '$.duration_ms')) AS avg_duration_ms
+      AVG((payload_json->>'duration_ms')::numeric) AS avg_duration_ms
     FROM audit_events
-    WHERE tenant_id = ?
+    WHERE tenant_id = ${opts.tenantId}
       AND event_type = 'tool_call'
-      AND ts >= ?
-      AND ts <= ?
-      ${opts.manifestId ? 'AND manifest_id = ?' : ''}
+      AND ts >= ${opts.since}
+      AND ts <= ${until}
+      ${opts.manifestId ? sql`AND manifest_id = ${opts.manifestId}` : sql``}
     GROUP BY manifest_id, tool, transport, status, error_code
     ORDER BY count DESC
-    LIMIT ?
+    LIMIT ${limit}
   `;
-  const binds: unknown[] = [opts.tenantId, opts.since, until];
-  if (opts.manifestId) binds.push(opts.manifestId);
-  binds.push(limit);
-  const stmt = env.DB.prepare(sql).bind(...binds);
-  const result = await stmt.all<{
-    manifest_id: string;
-    tool: string;
-    transport: string;
-    status: string;
-    error_code: string | null;
-    count: number;
-    avg_duration_ms: number | null;
-  }>();
-  return (result.results ?? []).map((row) => ({
+  return result.map((row) => ({
     manifest_id: row.manifest_id,
     tool: row.tool,
     transport: row.transport,

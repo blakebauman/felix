@@ -26,6 +26,7 @@ import { buildReactAgent } from '../../src/patterns/react';
 import type { ChatMessage } from '../../src/patterns/types';
 import { applyPolicies } from '../../src/policy/wrap';
 import { defineTool, defineToolWithExecutor, denyOutput, type Tool } from '../../src/tools/types';
+import { makeFakeSql } from '../helpers/fake-sql';
 
 function ctx(env: Env = {} as Env): RequestContext {
   return { env, auth: ANONYMOUS, limitState: newLimitState() };
@@ -302,51 +303,53 @@ describe('audit enqueue durability', () => {
   }
 
   function dbStub() {
-    const run = vi.fn().mockResolvedValue({});
-    const bind = vi.fn().mockReturnValue({ run });
-    const prepare = vi.fn().mockReturnValue({ bind });
-    return { prepare, bind, run, DB: { prepare } as unknown as Env['DB'] };
+    const inserted: Array<{ text: string; params: unknown[] }> = [];
+    const { sql } = makeFakeSql((q) => {
+      inserted.push({ text: q.text, params: q.params });
+      return 1;
+    });
+    return { sql, inserted };
   }
 
-  it('falls back to a direct D1 write when AUDIT_QUEUE.send rejects', async () => {
+  it('falls back to a direct database write when AUDIT_QUEUE.send rejects', async () => {
     const { counters } = recordedCounters();
     const db = dbStub();
     const send = vi.fn().mockRejectedValue(new Error('queue overloaded'));
     const env = {
       AUDIT_QUEUE: { send } as unknown as Env['AUDIT_QUEUE'],
-      DB: db.DB,
-    } as Env;
+      HYPERDRIVE: { connectionString: 'postgresql://fake' },
+    } as unknown as Env;
     const { execCtx, settled } = captureExecCtx();
 
-    await runWithContext({ ...ctx(env), execCtx }, async () => {
+    await runWithContext({ ...ctx(env), execCtx, db: db.sql }, async () => {
       auditStore.recordEvent({ tenantId: 'default', eventType: 'tool_call', manifestId: 'm' });
     });
     await settled();
 
     expect(send).toHaveBeenCalledTimes(1);
-    // Rejected send must not silently drop — the event lands in D1 instead.
-    expect(db.prepare).toHaveBeenCalledTimes(1);
-    expect(db.run).toHaveBeenCalledTimes(1);
+    // Rejected send must not silently drop — the event lands in Postgres instead.
+    expect(db.inserted).toHaveLength(1);
+    expect(db.inserted[0]!.text).toContain('INSERT INTO audit_events');
     const fallback = counters.find((c) => c.name === 'orchestrator_audit_enqueue_fallback');
     expect(fallback?.labels).toMatchObject({ manifest_id: 'm' });
   });
 
-  it('does not touch D1 on a successful send (happy path unchanged)', async () => {
+  it('does not touch the database on a successful send (happy path unchanged)', async () => {
     const db = dbStub();
     const send = vi.fn().mockResolvedValue(undefined);
     const env = {
       AUDIT_QUEUE: { send } as unknown as Env['AUDIT_QUEUE'],
-      DB: db.DB,
-    } as Env;
+      HYPERDRIVE: { connectionString: 'postgresql://fake' },
+    } as unknown as Env;
     const { execCtx, settled } = captureExecCtx();
 
-    await runWithContext({ ...ctx(env), execCtx }, async () => {
+    await runWithContext({ ...ctx(env), execCtx, db: db.sql }, async () => {
       auditStore.recordEvent({ tenantId: 'default', eventType: 'tool_call', manifestId: 'm' });
     });
     await settled();
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(db.prepare).not.toHaveBeenCalled();
+    expect(db.inserted).toHaveLength(0);
   });
 });
 

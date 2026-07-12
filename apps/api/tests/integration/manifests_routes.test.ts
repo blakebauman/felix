@@ -8,6 +8,7 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -287,16 +288,17 @@ describe('/manifests CRUD', () => {
     // Seed two manifests directly through D1 so the listing test is
     // independent of the create flow above.
     const now = Date.now();
-    await testEnv.DB.batch([
-      testEnv.DB.prepare(
-        `INSERT INTO manifests (tenant_id, name, version, manifest_json, created_at, created_by, comment)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind('default', 'alpha', 1, JSON.stringify(manifestBody('alpha', 'a')), now, '', ''),
-      testEnv.DB.prepare(
-        `INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).bind('default', 'alpha', 1, now, ''),
-    ]);
+    const sql = getDb(testEnv);
+    await sql`
+      INSERT INTO manifests (tenant_id, name, version, manifest_json, created_at, created_by, comment)
+        VALUES ('default', 'alpha', 1, ${manifestBody('alpha', 'a')}, ${now}, '', '')
+        ON CONFLICT (tenant_id, name, version) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO manifest_active (tenant_id, name, version, updated_at, updated_by)
+        VALUES ('default', 'alpha', 1, ${now}, '')
+        ON CONFLICT (tenant_id, name) DO UPDATE SET version = excluded.version
+    `;
 
     const resp = await SELF.fetch('https://orchestrator.test/manifests');
     expect(resp.status).toBe(200);

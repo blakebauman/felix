@@ -25,6 +25,7 @@
  */
 
 import { recordEvent } from '../audit/store';
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { conversationStub } from '../memory/conversation-do';
 
@@ -49,7 +50,7 @@ interface AuditRow {
   event_type: string;
   manifest_id: string;
   principal_subj: string;
-  payload_json: string;
+  payload_json: Record<string, unknown>;
 }
 
 interface DispatchRecord {
@@ -73,26 +74,20 @@ export async function sweepOrphanQueueDispatches(
   const maxPerSweep = opts.maxPerSweep ?? 50;
   const cutoffMs = now - windowMs;
 
-  const rows = await env.DB.prepare(
-    `SELECT id, tenant_id, ts, event_type, manifest_id, principal_subj, payload_json
-       FROM audit_events
-       WHERE event_type IN ('queue_dispatch', 'queue_complete', 'queue_expired')
-         AND ts >= ?
-       ORDER BY ts ASC`,
-  )
-    .bind(cutoffMs)
-    .all<AuditRow>();
+  const sql = getDb(env);
+  const rows = await sql<AuditRow[]>`
+    SELECT id, tenant_id, ts, event_type, manifest_id, principal_subj, payload_json
+      FROM audit_events
+      WHERE event_type IN ('queue_dispatch', 'queue_complete', 'queue_expired')
+        AND ts >= ${cutoffMs}
+      ORDER BY ts ASC
+  `;
 
   const completedJobs = new Set<string>();
   const dispatches: DispatchRecord[] = [];
 
-  for (const row of rows.results ?? []) {
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = JSON.parse(row.payload_json) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+  for (const row of rows) {
+    const payload = row.payload_json ?? {};
     const jobId = String(payload.job_id ?? '');
     if (!jobId) continue;
     const key = `${row.tenant_id}#${jobId}`;

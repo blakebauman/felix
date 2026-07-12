@@ -5,6 +5,7 @@
  */
 
 import { env, SELF } from 'cloudflare:test';
+import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { applyMigrations } from './setup';
@@ -19,11 +20,15 @@ beforeAll(async () => {
 });
 
 describe('/audit', () => {
-  it('returns an empty list before any events are recorded', async () => {
+  it('lists events with a well-formed envelope', async () => {
+    // Postgres state is shared across test files (unlike the old per-run
+    // miniflare D1), so earlier suites may already have written events for
+    // this tenant — assert the envelope shape, not emptiness.
     const resp = await SELF.fetch('https://orchestrator.test/audit');
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { events: unknown[] };
-    expect(body.events).toEqual([]);
+    const body = (await resp.json()) as { events: Array<{ tenant_id?: string }> };
+    expect(Array.isArray(body.events)).toBe(true);
+    for (const e of body.events) expect(e.tenant_id).toBe('default');
   });
 });
 
@@ -39,6 +44,7 @@ describe('/audit/metrics', () => {
       { tool: 'fetch', transport: 'mcp', status: 'error', err: 'provider_error' },
       { tool: 'fetch', transport: 'mcp', status: 'error', err: 'timeout' },
     ];
+    const sql = getDb(testEnv);
     for (const r of rows) {
       const payload: Record<string, unknown> = {
         tool: r.tool,
@@ -46,13 +52,11 @@ describe('/audit/metrics', () => {
         duration_ms: 12,
       };
       if (r.err) payload.error_code = r.err;
-      await testEnv.DB.prepare(
-        `INSERT INTO audit_events
-           (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
-           VALUES (?, 'default', ?, 'tool_call', 'quick', '', ?, ?)`,
-      )
-        .bind(crypto.randomUUID(), now, r.status, JSON.stringify(payload))
-        .run();
+      await sql`
+        INSERT INTO audit_events
+          (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+          VALUES (${crypto.randomUUID()}, 'default', ${now}, 'tool_call', 'quick', '', ${r.status}, ${payload})
+      `;
     }
 
     const resp = await SELF.fetch(
@@ -124,13 +128,11 @@ describe('/approvals/:id/decide via ApprovalsDO', () => {
     // Seed a pending approval directly through D1 — bypasses the wrap
     // path so we don't need a model.
     const id = crypto.randomUUID();
-    await testEnv.DB.prepare(
-      `INSERT INTO approvals
-         (id, tenant_id, manifest_id, tool_name, call_signature, args_json, principal_subj, status, created_at)
-         VALUES (?, 'default', 'quick', 'echo', ?, '{}', '', 'pending', ?)`,
-    )
-      .bind(id, `sig-${id}`, Date.now())
-      .run();
+    await getDb(testEnv)`
+      INSERT INTO approvals
+        (id, tenant_id, manifest_id, tool_name, call_signature, args_json, principal_subj, status, created_at)
+        VALUES (${id}, 'default', 'quick', 'echo', ${`sig-${id}`}, '{}', '', 'pending', ${Date.now()})
+    `;
 
     // Fire two concurrent decide requests with conflicting statuses. The
     // DO's blockConcurrencyWhile must serialize them so the final row
@@ -153,9 +155,10 @@ describe('/approvals/:id/decide via ApprovalsDO', () => {
     const statuses = [approve.status, deny.status].sort();
     expect(statuses).toEqual([200, 409]);
 
-    const row = await testEnv.DB.prepare('SELECT status FROM approvals WHERE id = ?')
-      .bind(id)
-      .first<{ status: string }>();
+    const rows = await getDb(testEnv)<{ status: string }[]>`
+      SELECT status FROM approvals WHERE id = ${id}
+    `;
+    const row = rows[0];
     expect(['approved', 'denied']).toContain(row!.status);
 
     const final = await SELF.fetch(`https://orchestrator.test/approvals/${id}`);

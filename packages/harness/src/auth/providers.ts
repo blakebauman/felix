@@ -2,7 +2,7 @@
  * Outbound OAuth provider registry.
  *
  * Provider configs come from Worker secrets (one JSON blob, parsed once),
- * and successful client-credentials grants are cached in D1
+ * and successful client-credentials grants are cached in Postgres
  * (`oauth_token_cache`) keyed by `(provider, tenant, subject)` — the tenant is
  * part of the opaque cache key so two tenants that happen to share a `subject`
  * never read each other's cached token.
@@ -16,6 +16,7 @@
  * at an attacker-controlled URL won't actually get the bearer header.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { decryptAtRest, encryptAtRest } from '../security/at-rest';
 import { assertSafeOutboundUrlForEnv, isOutboundHostAllowed } from '../security/ssrf';
@@ -47,7 +48,7 @@ interface TokenRow {
 
 /**
  * Cap the cached lifetime regardless of the issuer's `expires_in`. The token
- * is AES-256-GCM encrypted at rest in D1 (see `security/at-rest.ts`); the
+ * is AES-256-GCM encrypted at rest (see `security/at-rest.ts`); the
  * shorter TTL still bounds the exposure window if a row and the key both leak.
  * 1 hour matches the JWKS TTL for symmetry.
  */
@@ -66,9 +67,11 @@ export async function getClientCredentialsToken(
   const cacheKey = `${provider}:${tenantId}:${subject}`;
   const now = Date.now();
 
-  const cached = await env.DB.prepare('SELECT * FROM oauth_token_cache WHERE cache_key = ? LIMIT 1')
-    .bind(cacheKey)
-    .first<TokenRow>();
+  const sql = getDb(env);
+  const cachedRows = await sql<TokenRow[]>`
+    SELECT * FROM oauth_token_cache WHERE cache_key = ${cacheKey} LIMIT 1
+  `;
+  const cached = cachedRows[0];
   if (cached && cached.expires_at > now + 30_000) {
     // Decryption failure (rotated key, tampered row, legacy plaintext that
     // doesn't decode) -> treat as a cache miss and fetch fresh below.
@@ -107,12 +110,14 @@ export async function getClientCredentialsToken(
   // Encrypt before persisting. Production requires OAUTH_CACHE_KEY to be
   // set; dev falls back to plaintext with a warning (see at-rest.ts).
   const encrypted = await encryptAtRest(env, data.access_token);
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO oauth_token_cache (cache_key, access_token, expires_at, scope)
-     VALUES (?, ?, ?, ?)`,
-  )
-    .bind(cacheKey, encrypted, expiresAt, data.scope ?? '')
-    .run();
+  await sql`
+    INSERT INTO oauth_token_cache (cache_key, access_token, expires_at, scope)
+      VALUES (${cacheKey}, ${encrypted}, ${expiresAt}, ${data.scope ?? ''})
+      ON CONFLICT (cache_key) DO UPDATE SET
+        access_token = excluded.access_token,
+        expires_at = excluded.expires_at,
+        scope = excluded.scope
+  `;
   return data.access_token;
 }
 

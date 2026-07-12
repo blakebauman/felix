@@ -177,10 +177,10 @@ export function buildInternalRouter(): OpenAPIHono<{
     }
 
     // Dispatch pairing needs the audit store. Fail closed if it's absent —
-    // the harness core always wires DB in staging/production; refusing here
-    // is consistent with the missing-secret 503 above and never silently
-    // skips the integrity check.
-    if (!c.env.DB) {
+    // the harness core always wires HYPERDRIVE in staging/production;
+    // refusing here is consistent with the missing-secret 503 above and
+    // never silently skips the integrity check.
+    if (!c.env.HYPERDRIVE) {
       return c.json({ error: 'dispatch verification unavailable (no audit store)' }, 503) as never;
     }
 

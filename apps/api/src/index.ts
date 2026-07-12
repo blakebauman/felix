@@ -140,47 +140,57 @@ export default {
     );
   },
 
-  async queue(batch: MessageBatch<AuditEvent>, env: Env): Promise<void> {
-    // Dead-letter branch: the `felix-audit-dlq-*` queues collect audit events
-    // the main consumer exhausted its retries on. Drain them best-effort (log +
-    // counter + direct-D1 write) and ACK unconditionally — a DLQ has no further
-    // dead-letter, so retrying would only loop.
-    if (batch.queue.includes('-dlq')) {
-      try {
-        await drainAuditDlq(
-          env,
-          batch.messages.map((m) => m.body),
-        );
-      } catch (err) {
-        console.error('audit DLQ drain failed', err);
-        recordCounter('orchestrator_cron_task_failures', { task: 'audit_dlq_drain' });
-      }
-      for (const m of batch.messages) m.ack();
-      return;
-    }
-    if (batch.queue !== 'felix-audit') return;
-    // Fast path: try the batched insert. On whole-batch failure, fall back
-    // to per-row inserts so we can ack successes and retry only the failures
-    // — otherwise one poison row blocks the queue and starves audit writes
-    // for every tenant.
+  async queue(batch: MessageBatch<AuditEvent>, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Runs under an anonymous RequestContext (like `scheduled`) so `getDb`
+    // caches one Postgres client per batch instead of opening a connection
+    // per store call.
+    const reqCtx = buildAnonymousContext(env, ctx);
     try {
-      await persistBatch(
-        env,
-        batch.messages.map((m) => m.body),
-      );
-      for (const m of batch.messages) m.ack();
-      return;
-    } catch (err) {
-      console.error('audit batch persist failed, falling back to per-row', err);
-    }
-    for (const m of batch.messages) {
-      try {
-        await persistBatch(env, [m.body]);
-        m.ack();
-      } catch (rowErr) {
-        console.error('audit row persist failed', rowErr);
-        m.retry({ delaySeconds: 30 });
-      }
+      await runWithContext(reqCtx, async () => {
+        // Dead-letter branch: the `felix-audit-dlq-*` queues collect audit
+        // events the main consumer exhausted its retries on. Drain them
+        // best-effort (log + counter + direct write) and ACK unconditionally
+        // — a DLQ has no further dead-letter, so retrying would only loop.
+        if (batch.queue.includes('-dlq')) {
+          try {
+            await drainAuditDlq(
+              env,
+              batch.messages.map((m) => m.body),
+            );
+          } catch (err) {
+            console.error('audit DLQ drain failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'audit_dlq_drain' });
+          }
+          for (const m of batch.messages) m.ack();
+          return;
+        }
+        if (batch.queue !== 'felix-audit') return;
+        // Fast path: try the batched insert. On whole-batch failure, fall back
+        // to per-row inserts so we can ack successes and retry only the failures
+        // — otherwise one poison row blocks the queue and starves audit writes
+        // for every tenant.
+        try {
+          await persistBatch(
+            env,
+            batch.messages.map((m) => m.body),
+          );
+          for (const m of batch.messages) m.ack();
+          return;
+        } catch (err) {
+          console.error('audit batch persist failed, falling back to per-row', err);
+        }
+        for (const m of batch.messages) {
+          try {
+            await persistBatch(env, [m.body]);
+            m.ack();
+          } catch (rowErr) {
+            console.error('audit row persist failed', rowErr);
+            m.retry({ delaySeconds: 30 });
+          }
+        }
+      });
+    } finally {
+      disposeLimitState(reqCtx.limitState);
     }
   },
 } satisfies ExportedHandler<Env, AuditEvent>;

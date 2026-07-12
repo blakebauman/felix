@@ -1,9 +1,10 @@
 /**
- * Job registry (D1). Every query is scoped by tenant_id — the migration
- * 0002 rewrote the table with a composite (tenant_id, name) primary key,
- * matching the rest of the schema.
+ * Job registry (Postgres). Every query is scoped by tenant_id — the table
+ * has a composite (tenant_id, name) primary key, matching the rest of the
+ * schema.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { type JobRecord, JobRecordSchema } from './models';
 
@@ -17,7 +18,7 @@ interface JobRow {
   last_status: string;
   last_error: string;
   created_at: number;
-  payload_json: string;
+  payload_json: Record<string, unknown>;
 }
 
 function rowToJob(row: JobRow): JobRecord {
@@ -31,56 +32,40 @@ function rowToJob(row: JobRow): JobRecord {
     last_status: row.last_status,
     last_error: row.last_error,
     created_at: row.created_at,
-    payload: safeJson(row.payload_json),
+    payload: row.payload_json ?? {},
   });
 }
 
-function safeJson(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
-}
-
 export async function listJobs(env: Env, tenantId: string): Promise<JobRecord[]> {
-  const rows = await env.DB.prepare('SELECT * FROM jobs WHERE tenant_id = ? ORDER BY name')
-    .bind(tenantId)
-    .all<JobRow>();
-  return (rows.results ?? []).map(rowToJob);
+  const sql = getDb(env);
+  const rows = await sql<JobRow[]>`
+    SELECT * FROM jobs WHERE tenant_id = ${tenantId} ORDER BY name
+  `;
+  return rows.map(rowToJob);
 }
 
 export async function getJob(env: Env, tenantId: string, name: string): Promise<JobRecord | null> {
-  const row = await env.DB.prepare('SELECT * FROM jobs WHERE tenant_id = ? AND name = ? LIMIT 1')
-    .bind(tenantId, name)
-    .first<JobRow>();
-  return row ? rowToJob(row) : null;
+  const sql = getDb(env);
+  const rows = await sql<JobRow[]>`
+    SELECT * FROM jobs WHERE tenant_id = ${tenantId} AND name = ${name} LIMIT 1
+  `;
+  return rows[0] ? rowToJob(rows[0]) : null;
 }
 
 export async function upsertJob(env: Env, job: JobRecord): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO jobs (tenant_id, name, schedule, manifest_id, last_run_at, next_run_at,
-                       last_status, last_error, created_at, payload_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, name) DO UPDATE SET
-       schedule = excluded.schedule,
-       manifest_id = excluded.manifest_id,
-       next_run_at = excluded.next_run_at,
-       payload_json = excluded.payload_json`,
-  )
-    .bind(
-      job.tenant_id,
-      job.name,
-      job.schedule,
-      job.manifest_id,
-      job.last_run_at ?? null,
-      job.next_run_at ?? null,
-      job.last_status,
-      job.last_error,
-      job.created_at,
-      JSON.stringify(job.payload),
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO jobs (tenant_id, name, schedule, manifest_id, last_run_at, next_run_at,
+                      last_status, last_error, created_at, payload_json)
+      VALUES (${job.tenant_id}, ${job.name}, ${job.schedule}, ${job.manifest_id},
+              ${job.last_run_at ?? null}, ${job.next_run_at ?? null}, ${job.last_status},
+              ${job.last_error}, ${job.created_at}, ${job.payload as Record<string, unknown>})
+      ON CONFLICT (tenant_id, name) DO UPDATE SET
+        schedule = excluded.schedule,
+        manifest_id = excluded.manifest_id,
+        next_run_at = excluded.next_run_at,
+        payload_json = excluded.payload_json
+  `;
 }
 
 export async function recordRun(
@@ -94,20 +79,13 @@ export async function recordRun(
     next_run_at?: number | null;
   },
 ): Promise<void> {
-  await env.DB.prepare(
-    `UPDATE jobs
-       SET last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ?
-       WHERE tenant_id = ? AND name = ?`,
-  )
-    .bind(
-      update.last_run_at,
-      update.last_status,
-      update.last_error,
-      update.next_run_at ?? null,
-      tenantId,
-      name,
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    UPDATE jobs
+      SET last_run_at = ${update.last_run_at}, last_status = ${update.last_status},
+          last_error = ${update.last_error}, next_run_at = ${update.next_run_at ?? null}
+      WHERE tenant_id = ${tenantId} AND name = ${name}
+  `;
 }
 
 /**
@@ -118,15 +96,14 @@ export async function recordRun(
  * appears here exactly once per intended firing.
  */
 export async function listDueJobs(env: Env, asOfMs: number, limit = 500): Promise<JobRecord[]> {
-  const rows = await env.DB.prepare(
-    `SELECT * FROM jobs
-       WHERE schedule != ''
-         AND next_run_at IS NOT NULL
-         AND next_run_at <= ?
-       ORDER BY next_run_at ASC
-       LIMIT ?`,
-  )
-    .bind(asOfMs, limit)
-    .all<JobRow>();
-  return (rows.results ?? []).map(rowToJob);
+  const sql = getDb(env);
+  const rows = await sql<JobRow[]>`
+    SELECT * FROM jobs
+      WHERE schedule != ''
+        AND next_run_at IS NOT NULL
+        AND next_run_at <= ${asOfMs}
+      ORDER BY next_run_at ASC
+      LIMIT ${limit}
+  `;
+  return rows.map(rowToJob);
 }

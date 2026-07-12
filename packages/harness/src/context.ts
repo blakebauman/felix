@@ -12,8 +12,9 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type postgres from 'postgres';
 import { ANONYMOUS, type AuthContext } from './auth/context';
+// Type-only: db/client imports this module at runtime; the reverse edge is erased.
+import type { Db } from './db/client';
 import type { Env } from './env';
 
 export interface LimitState {
@@ -70,7 +71,7 @@ export interface RequestContext {
    * first use and reused by every store for the rest of the request. Never
    * closed explicitly — Hyperdrive owns connection lifecycle.
    */
-  db?: postgres.Sql;
+  db?: Db;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

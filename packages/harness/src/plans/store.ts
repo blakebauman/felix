@@ -1,8 +1,9 @@
 /**
- * Plan persistence in D1.
+ * Plan persistence in Postgres.
  * Composite key (tenant_id, plan_id) preserves tenant isolation.
  */
 
+import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { type Plan, PlanSchema, type PlanStepStatus } from './models';
 
@@ -32,40 +33,31 @@ export async function createPlan(env: Env, input: CreatePlanInput): Promise<Plan
     created_at: now,
     updated_at: now,
   });
-  await env.DB.prepare(
-    `INSERT INTO plans (id, tenant_id, manifest_id, created_at, updated_at, expires_at, plan_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      plan.id,
-      plan.tenant_id,
-      plan.manifest_id,
-      plan.created_at,
-      plan.updated_at,
-      now + DEFAULT_TTL_MS,
-      JSON.stringify(plan),
-    )
-    .run();
+  const sql = getDb(env);
+  await sql`
+    INSERT INTO plans (id, tenant_id, manifest_id, created_at, updated_at, expires_at, plan_json)
+      VALUES (${plan.id}, ${plan.tenant_id}, ${plan.manifest_id}, ${plan.created_at},
+              ${plan.updated_at}, ${now + DEFAULT_TTL_MS}, ${plan as unknown as Record<string, unknown>})
+  `;
   return plan;
 }
 
 export async function getPlan(env: Env, tenantId: string, id: string): Promise<Plan | null> {
-  const row = await env.DB.prepare(
-    'SELECT plan_json FROM plans WHERE tenant_id = ? AND id = ? LIMIT 1',
-  )
-    .bind(tenantId, id)
-    .first<{ plan_json: string }>();
-  if (!row) return null;
-  return PlanSchema.parse(JSON.parse(row.plan_json));
+  const sql = getDb(env);
+  const rows = await sql<{ plan_json: unknown }[]>`
+    SELECT plan_json FROM plans WHERE tenant_id = ${tenantId} AND id = ${id} LIMIT 1
+  `;
+  if (!rows[0]) return null;
+  return PlanSchema.parse(rows[0].plan_json);
 }
 
 export async function listPlans(env: Env, tenantId: string, limit = 100): Promise<Plan[]> {
-  const rows = await env.DB.prepare(
-    'SELECT plan_json FROM plans WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?',
-  )
-    .bind(tenantId, Math.min(limit, 500))
-    .all<{ plan_json: string }>();
-  return (rows.results ?? []).map((r) => PlanSchema.parse(JSON.parse(r.plan_json)));
+  const sql = getDb(env);
+  const rows = await sql<{ plan_json: unknown }[]>`
+    SELECT plan_json FROM plans WHERE tenant_id = ${tenantId}
+      ORDER BY updated_at DESC LIMIT ${Math.min(limit, 500)}
+  `;
+  return rows.map((r) => PlanSchema.parse(r.plan_json));
 }
 
 export async function updatePlanStep(
@@ -82,10 +74,10 @@ export async function updatePlanStep(
   step.status = update.status;
   if (update.result !== undefined) step.result = update.result;
   plan.updated_at = Date.now();
-  await env.DB.prepare(
-    'UPDATE plans SET plan_json = ?, updated_at = ? WHERE tenant_id = ? AND id = ?',
-  )
-    .bind(JSON.stringify(plan), plan.updated_at, tenantId, planId)
-    .run();
+  const sql = getDb(env);
+  await sql`
+    UPDATE plans SET plan_json = ${plan as unknown as Record<string, unknown>}, updated_at = ${plan.updated_at}
+      WHERE tenant_id = ${tenantId} AND id = ${planId}
+  `;
   return plan;
 }

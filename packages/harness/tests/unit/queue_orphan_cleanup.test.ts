@@ -20,8 +20,10 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { Db } from '../../src/db/client';
 import type { Env } from '../../src/env';
 import { sweepOrphanQueueDispatches } from '../../src/jobs/queue-orphan-cleanup';
+import { makeFakeSql, withFakeDb } from '../helpers/fake-sql';
 
 interface PreparedResults {
   results: Array<{
@@ -31,7 +33,7 @@ interface PreparedResults {
     event_type: 'queue_dispatch' | 'queue_complete' | 'queue_expired';
     manifest_id: string;
     principal_subj: string;
-    payload_json: string;
+    payload_json: Record<string, unknown>;
   }>;
 }
 
@@ -51,7 +53,8 @@ function row(opts: {
     event_type: opts.event_type,
     manifest_id: opts.manifest_id ?? 'm',
     principal_subj: opts.principal_subj ?? '',
-    payload_json: JSON.stringify(opts.payload),
+    // jsonb round-trips as an object now, not a JSON string.
+    payload_json: opts.payload,
   };
 }
 
@@ -63,7 +66,7 @@ interface FetchCall {
 function fakeEnv(opts: {
   rows: PreparedResults['results'];
   failConvoStub?: (threadId: string) => boolean;
-}): { env: Env; conversationCalls: Map<string, FetchCall[]> } {
+}): { env: Env; sql: Db; conversationCalls: Map<string, FetchCall[]> } {
   const conversationCalls = new Map<string, FetchCall[]>();
   const stub = (threadId: string) => ({
     async fetch(url: string, init?: RequestInit) {
@@ -74,29 +77,29 @@ function fakeEnv(opts: {
       return new Response('ok');
     },
   });
+  const { sql } = makeFakeSql((q) => {
+    const cutoff = q.params[0] as number;
+    return opts.rows.filter((r) => r.ts >= cutoff).sort((a, b) => a.ts - b.ts);
+  });
   const env = {
-    DB: {
-      prepare: (_sql: string) => ({
-        bind: () => ({
-          async all<T>(): Promise<{ results: T[] }> {
-            return { results: opts.rows as unknown as T[] };
-          },
-        }),
-      }),
-    },
+    HYPERDRIVE: { connectionString: 'postgresql://fake' },
+    // recordEvent prefers AUDIT_QUEUE.send when present — stub it so the
+    // queue_expired emission doesn't fall through to a direct write against
+    // the same fake sql.
+    AUDIT_QUEUE: { send: () => Promise.resolve() },
     CONVERSATION_DO: {
       idFromName: (name: string) => name,
       get: (id: unknown) => stub(String(id)),
     },
   } as unknown as Env;
-  return { env, conversationCalls };
+  return { env, sql, conversationCalls };
 }
 
 describe('sweepOrphanQueueDispatches', () => {
   it('expires a stale dispatch with no completion — writes tool_result + emits queue_expired', async () => {
     const now = 1_000_000_000;
     const ancient = now - 60 * 60 * 1000; // 1h old, well past 30m threshold
-    const { env, conversationCalls } = fakeEnv({
+    const { env, sql, conversationCalls } = fakeEnv({
       rows: [
         row({
           id: 'a1',
@@ -112,7 +115,7 @@ describe('sweepOrphanQueueDispatches', () => {
         }),
       ],
     });
-    const cleaned = await sweepOrphanQueueDispatches(env, {}, now);
+    const cleaned = await withFakeDb(env, sql, () => sweepOrphanQueueDispatches(env, {}, now));
     expect(cleaned).toBe(1);
     const calls = conversationCalls.get('acme:thread-1') ?? [];
     expect(calls).toHaveLength(1);
@@ -127,7 +130,7 @@ describe('sweepOrphanQueueDispatches', () => {
   it('leaves a paired dispatch + completion alone (consumer landed normally)', async () => {
     const now = 1_000_000_000;
     const old = now - 60 * 60 * 1000;
-    const { env, conversationCalls } = fakeEnv({
+    const { env, sql, conversationCalls } = fakeEnv({
       rows: [
         row({
           id: 'a1',
@@ -150,7 +153,7 @@ describe('sweepOrphanQueueDispatches', () => {
         }),
       ],
     });
-    const cleaned = await sweepOrphanQueueDispatches(env, {}, now);
+    const cleaned = await withFakeDb(env, sql, () => sweepOrphanQueueDispatches(env, {}, now));
     expect(cleaned).toBe(0);
     expect(conversationCalls.size).toBe(0);
   });
@@ -158,7 +161,7 @@ describe('sweepOrphanQueueDispatches', () => {
   it('leaves a young dispatch alone (consumer still has time)', async () => {
     const now = 1_000_000_000;
     const young = now - 60 * 1000; // 1 minute old; threshold defaults to 30 minutes
-    const { env, conversationCalls } = fakeEnv({
+    const { env, sql, conversationCalls } = fakeEnv({
       rows: [
         row({
           id: 'a1',
@@ -174,7 +177,7 @@ describe('sweepOrphanQueueDispatches', () => {
         }),
       ],
     });
-    const cleaned = await sweepOrphanQueueDispatches(env, {}, now);
+    const cleaned = await withFakeDb(env, sql, () => sweepOrphanQueueDispatches(env, {}, now));
     expect(cleaned).toBe(0);
     expect(conversationCalls.size).toBe(0);
   });
@@ -182,7 +185,7 @@ describe('sweepOrphanQueueDispatches', () => {
   it('scopes job_id pairing per tenant — same job_id across tenants does not cross-resolve', async () => {
     const now = 1_000_000_000;
     const old = now - 60 * 60 * 1000;
-    const { env, conversationCalls } = fakeEnv({
+    const { env, sql, conversationCalls } = fakeEnv({
       rows: [
         row({
           id: 'a1',
@@ -207,7 +210,7 @@ describe('sweepOrphanQueueDispatches', () => {
         }),
       ],
     });
-    const cleaned = await sweepOrphanQueueDispatches(env, {}, now);
+    const cleaned = await withFakeDb(env, sql, () => sweepOrphanQueueDispatches(env, {}, now));
     expect(cleaned).toBe(1);
     expect(conversationCalls.get('acme:thread-1')).toHaveLength(1);
   });
@@ -229,8 +232,10 @@ describe('sweepOrphanQueueDispatches', () => {
         },
       }),
     );
-    const { env, conversationCalls } = fakeEnv({ rows });
-    const cleaned = await sweepOrphanQueueDispatches(env, { maxPerSweep: 5 }, now);
+    const { env, sql, conversationCalls } = fakeEnv({ rows });
+    const cleaned = await withFakeDb(env, sql, () =>
+      sweepOrphanQueueDispatches(env, { maxPerSweep: 5 }, now),
+    );
     expect(cleaned).toBe(5);
     expect([...conversationCalls.keys()].length).toBe(5);
   });
@@ -238,7 +243,7 @@ describe('sweepOrphanQueueDispatches', () => {
   it('skips queue_expired emission when the tool_result write-back fails', async () => {
     const now = 1_000_000_000;
     const old = now - 60 * 60 * 1000;
-    const { env } = fakeEnv({
+    const { env, sql } = fakeEnv({
       rows: [
         row({
           id: 'a1',
@@ -256,7 +261,7 @@ describe('sweepOrphanQueueDispatches', () => {
       failConvoStub: (threadId) => threadId === 'acme:thread-1',
     });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const cleaned = await sweepOrphanQueueDispatches(env, {}, now);
+    const cleaned = await withFakeDb(env, sql, () => sweepOrphanQueueDispatches(env, {}, now));
     expect(cleaned).toBe(1); // returned count is "considered"
     // Console error was logged for the failed write-back.
     expect(errorSpy).toHaveBeenCalled();

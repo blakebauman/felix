@@ -80,6 +80,11 @@ export default defineConfig({
           // Node-side: waits for Postgres, resets the felix_test schema, and
           // applies apps/api/migrations-pg via node-pg-migrate.
           globalSetup: ['./apps/api/tests/integration/global-setup.ts'],
+          // Postgres is shared across test files (unlike miniflare's per-test
+          // D1 isolation), so run files serially: tenant-distinct data keeps
+          // suites apart, and serial order keeps the tenant-AGNOSTIC scans
+          // (anomaly detector, retention sweep, audit metrics) deterministic.
+          fileParallelism: false,
         },
       }),
     ],
