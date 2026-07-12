@@ -16,6 +16,10 @@
  * call only when new events have crossed the keep boundary.
  */
 
+import { getContext } from '../context';
+import { currentSignal } from '../limits/state';
+import { recordCounter } from '../observability/metrics';
+import { recordUsage } from '../patterns/model';
 import type { ChatMessage } from '../patterns/types';
 import { makeSemanticRetrievalSessionStrategy } from './semantic-strategy';
 import {
@@ -169,12 +173,21 @@ class SummarizingStrategy implements SessionStrategy {
             'Summarize the conversation above following the system prompt. Output only the summary.',
         },
       ];
-      const result = await opts.model.chat(summarizerMessages, []);
+      // Thread the request abort signal so a wall-clock breach cancels the
+      // summarizer in-flight, and account its tokens against the request
+      // budget/metric via recordUsage. Preflight `checkTokenBudget` isn't
+      // reachable here without plumbing manifest limits through
+      // `SessionRenderOpts` — render runs before the pattern's first token
+      // check, so this call is counted after the fact rather than gated.
+      const result = await opts.model.chat(summarizerMessages, [], { signal: currentSignal() });
+      recordUsage(result, { manifestId: getContext()?.manifestId ?? 'session_summarizer' });
       newSummary = result.message.content.trim();
       if (!newSummary) throw new Error('summarizer returned empty content');
     } catch {
       // Degrade gracefully — the model call failed, so render windowed
-      // with pinned events kept verbatim.
+      // with pinned events kept verbatim. Emit a counter so the fleet-wide
+      // degrade (summarizing -> windowed) is visible instead of silent.
+      recordCounter('orchestrator_session_summarize_failures');
       const merged = [...pinned, ...keepEvents].sort((a, b) => a.seq - b.seq);
       return assemble(opts.systemPrompt, latestSummary?.content, merged, incoming);
     }

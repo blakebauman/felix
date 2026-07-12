@@ -55,6 +55,15 @@ export interface RequestContext {
    * only roll back a canary that is itself failing.
    */
   manifestVariant?: 'stable' | 'canary';
+  /**
+   * True when this context drives a continuous-eval *replay* of sampled
+   * production traffic (see `jobs/continuous-eval.ts`). The replay runs under
+   * the canary's own tenant so tenant-A input never leaks into another
+   * tenant's audit log, but its incidental `tool_call` rows must not be
+   * re-sampled by a future tick — the react loop stamps `replay: true` onto
+   * those rows and the sampler's WHERE clause excludes them.
+   */
+  replay?: boolean;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

@@ -19,6 +19,7 @@ import { currentLimitState } from '../limits/state';
 import type { Model } from '../manifests/schema';
 import { recordCounter } from '../observability/metrics';
 import type { Tool } from '../tools/types';
+import { repairToolPairing } from './message-repair';
 import { getModelProvider, listModelProviders, registerModelProvider } from './model-registry';
 import type { ChatMessage, ImageAttachment, ThinkingBlock, ToolCall } from './types';
 import { getToolInputSchema } from './zod-to-json-schema';
@@ -161,6 +162,34 @@ export function buildModel(env: Env, spec: Model): ModelClient {
 }
 
 /**
+ * Error thrown for a non-OK gateway/stream HTTP response. Carries the numeric
+ * `status` so `isProviderError` can classify it for fallback WITHOUT parsing
+ * the message, and bounds the upstream response body so a provider's error
+ * payload (which may echo request internals) doesn't flow verbatim into
+ * tenant-visible audit rows via `app.onError`.
+ */
+export class ModelGatewayError extends Error {
+  readonly status: number;
+  constructor(label: string, status: number, body: string) {
+    // Cap the echoed body — enough to debug, not the whole payload.
+    super(`${label}: ${status} ${body.slice(0, 200)}`);
+    this.name = 'ModelGatewayError';
+    this.status = status;
+  }
+}
+
+/** Read a non-OK response and wrap it as a status-bearing ModelGatewayError. */
+async function gatewayError(label: string, resp: Response): Promise<ModelGatewayError> {
+  let body = '';
+  try {
+    body = await resp.text();
+  } catch {
+    // response body already consumed / not readable — status is enough.
+  }
+  return new ModelGatewayError(label, resp.status, body);
+}
+
+/**
  * Heuristic for whether a thrown model error is recoverable by trying
  * the next fallback. We do NOT retry on user-cancellations or 4xx
  * errors that look like client misuse (auth, validation) — those would
@@ -181,13 +210,21 @@ function isProviderError(err: unknown): boolean {
     if (status === 408 || status === 429) return true;
     return false;
   }
-  // Network-level failures with no status (DNS, socket reset) — treat
-  // as recoverable provider issues.
+  // No structured status: fall back to message sniffing. Covers network-level
+  // failures (DNS, socket reset) and any legacy throw path that hasn't been
+  // migrated to ModelGatewayError yet (belt-and-suspenders — the gateway
+  // clients now throw status-bearing errors handled above).
   const message = (e.message ?? String(err)).toLowerCase();
   if (
     message.includes('fetch failed') ||
     message.includes('econnreset') ||
-    message.includes('etimedout')
+    message.includes('etimedout') ||
+    message.includes('rate limit') ||
+    message.includes(' 429') ||
+    message.includes(' 500') ||
+    message.includes(' 502') ||
+    message.includes(' 503') ||
+    message.includes(' 504')
   ) {
     return true;
   }
@@ -385,9 +422,12 @@ class AnthropicGatewayClient implements ModelClient {
     return `https://gateway.ai.cloudflare.com/v1/${account}/${slug}/anthropic/v1/messages/count_tokens`;
   }
 
-  private body(messages: ChatMessage[], tools: Tool[], opts?: ModelChatOptions): unknown {
+  private body(rawMessages: ChatMessage[], tools: Tool[], opts?: ModelChatOptions): unknown {
     const cache = this.spec.cache === true;
     const thinkingBudget = this.spec.thinking_budget ?? null;
+    // Repair tool_use / tool_result pairing so a window-cut, crashed cycle, or
+    // duplicate queue result can't 400 and poison the thread. In-memory only.
+    const messages = repairToolPairing(rawMessages);
     const sys = messages
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
@@ -518,7 +558,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok) {
-      throw new Error(`anthropic gateway: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic gateway', resp);
     }
     const data = (await resp.json()) as AnthropicResponse;
     const toolCalls: ToolCall[] = [];
@@ -588,7 +628,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok) {
-      throw new Error(`anthropic count_tokens: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic count_tokens', resp);
     }
     const data = (await resp.json()) as { input_tokens?: number };
     return data.input_tokens ?? 0;
@@ -614,7 +654,7 @@ class AnthropicGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok || !resp.body) {
-      throw new Error(`anthropic stream: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('anthropic stream', resp);
     }
     const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = '';
@@ -892,7 +932,7 @@ class OpenAIGatewayClient implements ModelClient {
       },
       body: JSON.stringify({
         model: this.route.model,
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         tools: tools.length
           ? tools.map((t) => ({
               type: 'function',
@@ -908,7 +948,7 @@ class OpenAIGatewayClient implements ModelClient {
       }),
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
-    if (!resp.ok) throw new Error(`openai gateway: ${resp.status} ${await resp.text()}`);
+    if (!resp.ok) throw await gatewayError('openai gateway', resp);
     const data = (await resp.json()) as OpenAIResponse;
     const choice = data.choices[0]!;
     const calls: ToolCall[] = (choice.message.tool_calls ?? []).map((c) => ({
@@ -967,7 +1007,7 @@ class OpenAIGatewayClient implements ModelClient {
       },
       body: JSON.stringify({
         model: this.route.model,
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         tools: tools.length
           ? tools.map((t) => ({
               type: 'function',
@@ -989,7 +1029,7 @@ class OpenAIGatewayClient implements ModelClient {
       ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!resp.ok || !resp.body) {
-      throw new Error(`openai stream: ${resp.status} ${await resp.text()}`);
+      throw await gatewayError('openai stream', resp);
     }
     const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = '';
@@ -1137,12 +1177,17 @@ function toOpenAIMessage(m: ChatMessage): unknown {
   }
   if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
     // OpenAI's multimodal content array: text part(s) then image_url parts.
-    // image_url.url accepts both data: URLs and remote URLs.
+    // image_url.url accepts data: URLs and remote URLs, but we reject non-https
+    // remote URLs to match the outbound scheme policy (the provider fetches
+    // these, so the SSRF guard can't contain them — but https-only still holds).
     return {
       role: 'user',
       content: [
         ...(m.content ? [{ type: 'text', text: m.content }] : []),
-        ...m.attachments.map((a) => ({ type: 'image_url', image_url: { url: a.url } })),
+        ...m.attachments.map((a) => {
+          assertProviderImageUrl(a.url);
+          return { type: 'image_url', image_url: { url: a.url } };
+        }),
       ],
     };
   }
@@ -1160,9 +1205,22 @@ function parseDataUrl(url: string): { mediaType: string; data: string } | null {
 }
 
 /**
+ * Reject remote image URLs that aren't `https:`. These URLs are fetched by the
+ * model provider (Anthropic / OpenAI), not by Felix, so the SSRF guard can't
+ * contain where they connect — but we still hold them to the same https-only
+ * outbound scheme policy the rest of the codebase enforces, so an `http://`
+ * image URL can't smuggle a plaintext fetch to an internal target. `data:`
+ * URLs are inlined (not fetched) and are always allowed.
+ */
+function assertProviderImageUrl(url: string): void {
+  if (url.startsWith('data:') || url.startsWith('https://')) return;
+  throw new Error(`image url must use https: or data: scheme (rejected: ${url.slice(0, 40)})`);
+}
+
+/**
  * Map a Felix `ImageAttachment` to an Anthropic image content block. `data:`
- * URLs become a base64 source; `https://` URLs become a url source. Anything
- * else (or a malformed data URL) is dropped (returns null).
+ * URLs become a base64 source; `https://` URLs become a url source. A malformed
+ * data URL is dropped (returns null); a non-https remote URL throws.
  */
 function anthropicImageBlock(att: ImageAttachment): Record<string, unknown> | null {
   if (att.url.startsWith('data:')) {
@@ -1177,10 +1235,8 @@ function anthropicImageBlock(att: ImageAttachment): Record<string, unknown> | nu
       },
     };
   }
-  if (att.url.startsWith('https://') || att.url.startsWith('http://')) {
-    return { type: 'image', source: { type: 'url', url: att.url } };
-  }
-  return null;
+  assertProviderImageUrl(att.url);
+  return { type: 'image', source: { type: 'url', url: att.url } };
 }
 
 function safeJson(s: string): Record<string, unknown> {
@@ -1254,7 +1310,7 @@ class WorkersAiClient implements ModelClient {
     const resp = (await this.env.AI.run(
       this.route.model as keyof AiModels,
       {
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         temperature: opts?.temperature ?? this.spec.temperature ?? 0,
         max_tokens: opts?.maxTokens ?? this.spec.max_tokens ?? 1024,
         ...(toolArr ? { tools: toolArr } : {}),
@@ -1327,7 +1383,7 @@ class WorkersAiClient implements ModelClient {
     const stream = (await this.env.AI.run(
       this.route.model as keyof AiModels,
       {
-        messages: messages.map(toOpenAIMessage),
+        messages: repairToolPairing(messages).map(toOpenAIMessage),
         stream: true,
       } as never,
     )) as ReadableStream;

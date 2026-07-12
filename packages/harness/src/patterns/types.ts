@@ -64,8 +64,15 @@ export interface InvokeInput {
    * When set, the react/deep loop hydrates prior turns from the
    * configured Checkpointer (default = ConversationDO), appends each new
    * turn as it's produced, and lets a continuation pick up where a prior
-   * invocation paused. Router/parallel/groupchat forward the same id to
-   * every sub-agent so the conversation is logically one thread.
+   * invocation paused.
+   *
+   * Multi-agent patterns treat the PARENT as the single persistent entity
+   * for the thread — they never let children race-write the same DO:
+   *   - router forwards the id to its chosen child (exactly one runs);
+   *   - parallel and groupchat withhold the id from children and persist
+   *     the parent transcript themselves (children run stateless);
+   *   - plan_execute persists the planner input + synthesized answer to the
+   *     parent thread; its executor sub-loops run stateless.
    */
   threadId?: string;
 }

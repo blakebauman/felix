@@ -45,6 +45,7 @@ export const AuditEventType = z
     'manifest_canary_cleared',
     'auto_rollback',
     'model_switch',
+    'retention_sweep',
     'commerce_order',
     'brand_provisioned',
     'brand_catalog_import',

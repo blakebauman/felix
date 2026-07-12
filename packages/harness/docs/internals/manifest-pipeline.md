@@ -169,9 +169,10 @@ Auto-injection passes (each dedupes by name) on the single-agent branch:
 1. **Memory tools** — if `memory.store ∈ {vectorize, agentcore}`, inject `memory_remember` and `memory_recall`.
 2. **Procedural memory** — if `spec.procedural_memory.enabled`, inject `recall_procedure` (reads successful past plans from Vectorize index keyed by manifest).
 3. **Artifact fetch** — if `spec.artifacts.enabled`, inject `fetch_artifact` (reads back an R2-spilled tool result by ref). Auto-injected because `react` spills above `threshold_chars` to keep the working set small.
-4. **MCP tools, peer tools, container tools, queue tools, sandbox tools, browser tools, extraTools** — appended in that order.
+4. **MCP tools, peer tools, container tools, queue tools, sandbox tools, browser tools** — appended in that order.
+5. **Plan tools** — if `spec.pattern === 'deep'`, inject `PLAN_TOOLS` (`plan_create`/`plan_update_step`/`plan_get`), then **extraTools**.
 
-`PLAN_TOOLS` injection for `pattern: deep` lives **inside `deep`'s registered pattern adapter** (`src/patterns/deep.ts`), not in the builder — so a new pattern with its own tool needs only registers its adapter and the builder stays unaware.
+`PLAN_TOOLS` for `pattern: deep` are injected **in the builder BEFORE the governance pipeline** so they're gated by policies/limits/guardrails/judges/approvals like every other tool. The `deep` adapter (`src/patterns/deep.ts`) no longer re-injects them — it forwards the already-wrapped `ctx.tools`.
 
 ### 8. Governance pipeline
 

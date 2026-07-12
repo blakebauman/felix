@@ -56,6 +56,39 @@ interface OpRequest {
 
 const DEFAULT_NAV_TIMEOUT_MS = 30_000;
 
+/**
+ * Default-deny obvious internal navigation targets. Felix runs a best-effort
+ * SSRF pre-check before dispatch, but the browser actually connects from HERE,
+ * so this adapter is the real containment point — it's where a public DNS name
+ * that resolves to a private IP would land. Tighten this into an explicit
+ * allow-list for production; this literal check only stops the easy cases
+ * (loopback, RFC1918, link-local / cloud IMDS at 169.254.169.254, `.internal`).
+ */
+function isInternalTarget(rawUrl: string): boolean {
+  let host: string;
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return true;
+    host = u.hostname.toLowerCase();
+  } catch {
+    return true;
+  }
+  if (host === 'localhost' || host.endsWith('.internal') || host.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127 || a === 10 || a === 0) return true;
+    if (a === 169 && b === 254) return true; // link-local / IMDS
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  }
+  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) {
+    return true;
+  }
+  return false;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     if (req.method !== 'POST') {
@@ -73,6 +106,11 @@ export default {
     }
     if (!body.url) {
       return new Response('missing url', { status: 400 });
+    }
+    // Egress default-deny: this adapter is where the browser actually connects,
+    // so it's the real SSRF containment point. Replace with an allow-list in prod.
+    if (isInternalTarget(body.url)) {
+      return new Response('target host not allowed', { status: 403 });
     }
 
     // The `json` op never touches Chromium — it's a straight pass-through

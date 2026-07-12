@@ -48,9 +48,9 @@ Same control flow with one wrinkle: `model.streamChat(...)` is an `AsyncGenerato
 
 ## deep
 
-`src/patterns/deep.ts`. Identical loop mechanics to react, with two additions handled inside `deep`'s registered pattern adapter (not the core builder):
+`src/patterns/deep.ts`. Identical loop mechanics to react, with two additions:
 
-- `PLAN_TOOLS = [plan_create, plan_update_step, plan_get]` is auto-injected by the adapter before constructing the underlying react agent.
+- `PLAN_TOOLS = [plan_create, plan_update_step, plan_get]` is auto-injected by the **core builder** (`buildAgent`) into `resolvedTools` when `spec.pattern === 'deep'`, BEFORE the governance pipeline — so the plan tools are gated by policies/limits/guardrails/judges/approvals like any other tool. The adapter itself no longer injects them; it just forwards the already-wrapped `ctx.tools` (along with `tools_retrieval` / `artifacts` opts) into the underlying react agent.
 - A planning suffix is appended to the system prompt: "You are a deep agent. Before tool use, draft a short plan via plan_create. Update plan steps as you go using plan_update_step. Finalize with a synthesis when steps are complete."
 
 Plans live in the D1 `plans` table with a 30-day TTL. See [persistence.md](persistence.md).
@@ -83,10 +83,16 @@ The `threadId` is **forwarded** to the chosen child because consecutive user tur
 
 `src/patterns/parallel.ts`. Fan-out and aggregate.
 
-### Fan-out
+### Session hydration + fan-out
+
+Like react/groupchat, the parent opens the session and renders the working set before fanning out, then persists the new caller turn:
 
 ```ts
-const childInput = { messages: input.messages };           // threadId stripped
+const session = sessionStore.open(threadId ?? '');
+const rendered = await strategy.render(session, input.messages, { systemPrompt: aggregatorPrompt, model });
+persist(session, input.messages);                          // parent is the writer
+const childMessages = rendered.filter(m => m.role !== 'system');
+const childInput = { messages: childMessages };            // threadId stripped
 const results = await Promise.all(
   Object.entries(opts.subAgents).map(async ([name, agent]) => {
     const r = await agent.invoke(childInput);
@@ -95,7 +101,7 @@ const results = await Promise.all(
 );
 ```
 
-**The `threadId` is stripped before fan-out.** Otherwise N children would concurrently write the same `ConversationDO`, racing on `blockConcurrencyWhile`. Children operate as stateless workers for this run; the parent aggregator is the persistent entity.
+**The `threadId` is stripped before fan-out.** Otherwise N children would concurrently write the same `ConversationDO`, racing on `blockConcurrencyWhile`. Children operate as stateless workers for this run — they see the hydrated transcript but write nothing back. The parent aggregator is the persistent entity: it appends the new caller turn and the synthesized answer to the parent thread, so a `parallel` manifest with `memory.checkpointer: do` is genuinely multi-turn instead of silently forgetting.
 
 ### Aggregate
 
@@ -113,7 +119,7 @@ recordUsage(synthesis, { manifestId, modelId });
 return synthesis.message;
 ```
 
-The aggregator runs without tools — it only synthesizes. If you want a tool-using aggregator, make the parent a router pointing at a react agent with the synthesis as one of its tools.
+The aggregator runs without tools — it only synthesizes. Its answer is persisted to the parent thread (guard-then-persist, matching react) before it's returned. If you want a tool-using aggregator, make the parent a router pointing at a react agent with the synthesis as one of its tools.
 
 ## groupchat
 
@@ -223,8 +229,9 @@ Subtask-level recursion is intentionally separate from the manifest's `recursion
 ### invoke()
 
 ```
+0. open the parent session; render prior turns; persist the new caller turn
 1. (optional) fetchPlannerFewShots(...)         → preamble of past successful plans
-2. callPlanner(userGoal, fewShots, null)        → PlannerReply | null
+2. callPlanner(userGoal, fewShots, null, convo)  → PlannerReply | null
 3. if !plan: emit plan_step(error, 'plan'), return apology message
 4. loop:
      for each subtask:
@@ -233,13 +240,16 @@ Subtask-level recursion is intentionally separate from the manifest's `recursion
        if !success: failedSubtask = outcome; break
      if !failedSubtask: break
      if !replan_on_failure or replansUsed >= max_replans: break
-     plan = callPlanner(userGoal, fewShots, { plan, critique })
+     plan = callPlanner(userGoal, fewShots, { plan, critique }, convo)
      emit plan_step(replanned, 'replan_N', subtask_count=...)
 5. synthesize(userGoal, outcomes)               → final assistant turn
-6. emit plan_step(ok, 'synthesis', subtask_count, replans_used)
+6. persist the synthesized answer to the parent thread (guard-then-persist)
+7. emit plan_step(ok, 'synthesis', subtask_count, replans_used)
 ```
 
-`callPlanner` builds a prompt of `(fewShotsPreamble?, toolCatalog, subtask cap, priorAttemptCritique?, userGoal)` and asks the planner for `{"plan":[{"id","description","tool_hints?"}], "rationale":"..."}`. `parsePlannerReply` (exported for tests) locates the first balanced `{...}` block, tolerating leading prose and markdown fences. Empty plans, non-array `plan` fields, and subtasks without `description` are rejected.
+The parent thread is the persistent entity: `plan_execute` renders prior turns through the `SessionStrategy` and hydrates them into the planner as conversation context, persists the new caller turn up front, and persists the synthesized answer at the end — so a `plan_execute` manifest with `memory.checkpointer: do` is genuinely multi-turn. The executor sub-loops run **stateless** (built with no session store, invoked with no threadId) so per-subtask react loops cannot race-write the parent session DO.
+
+`callPlanner` builds a prompt of `(fewShotsPreamble?, conversationContext?, toolCatalog, subtask cap, priorAttemptCritique?, userGoal)` and asks the planner for `{"plan":[{"id","description","tool_hints?"}], "rationale":"..."}`. `parsePlannerReply` (exported for tests) locates the first balanced `{...}` block, tolerating leading prose and markdown fences. Empty plans, non-array `plan` fields, and subtasks without `description` are rejected.
 
 `runSubtask` calls `executor.invoke` with the subtask description, the original user goal, and a summary of earlier subtask outcomes. A terminal that isn't an assistant turn (fatal tool error, etc.) is treated as failure. An empty assistant turn is also failure — most often the planner asked for impossible work.
 
@@ -292,9 +302,9 @@ v1 delegates to `invoke()` then replays each subtask's tool-call list as synthet
 |---|---|
 | react / deep / reflect | Opens a `Session` keyed by `${tenantId}:${suffix}`, renders via `SessionStrategy`, and appends new events as they're produced. |
 | router | Forwards threadId to the chosen child. |
-| parallel | Strips threadId before fan-out (children are stateless this run). The parent does not write events either — its synthesis is a single model call with no session wiring. |
+| parallel | Parent owns the transcript: renders prior turns, persists the new caller turn + synthesized answer to the parent threadId. Strips threadId before fan-out (children are stateless this run — they see the hydrated transcript but race-write nothing). |
 | groupchat | Parent owns the transcript: renders + appends to the `Session` for the parent threadId, deliberately does **not** forward threadId to children (they would race-write the same DO). |
-| plan_execute | Inherits the parent threadId on the outer call; each executor subtask runs stateless (no threadId) so per-subtask react sub-loops cannot race-write the parent session DO. The planner / synthesizer model calls are session-unaware. |
+| plan_execute | Parent owns the transcript: renders prior turns into the planner as context, persists the new caller turn + synthesized answer to the parent threadId. Each executor subtask runs stateless (no session store, no threadId) so per-subtask react sub-loops cannot race-write the parent session DO. |
 
 ### Deny-string contract
 

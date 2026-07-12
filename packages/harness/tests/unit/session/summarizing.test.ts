@@ -13,7 +13,8 @@
  *   5. Missing `model` opt → degrades to windowed; no throw.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as metrics from '../../../src/observability/metrics';
 import type { ModelChatResult } from '../../../src/patterns/model';
 import type { ChatMessage } from '../../../src/patterns/types';
 import { makeSummarizingSessionStrategy } from '../../../src/session/strategies';
@@ -224,7 +225,8 @@ describe('SummarizingStrategy', () => {
     expect(session.appended).toHaveLength(0);
   });
 
-  it('degrades to windowed when the summarizer call throws', async () => {
+  it('degrades to windowed AND emits a counter when the summarizer call throws', async () => {
+    const counterSpy = vi.spyOn(metrics, 'recordCounter').mockImplementation(() => {});
     const session = mutableSession([
       evMsg(0, 'user', 'old'),
       evMsg(1, 'assistant', 'keep-1'),
@@ -248,5 +250,11 @@ describe('SummarizingStrategy', () => {
     });
     expect(rendered.map((m) => m.content)).toEqual(['sp', 'keep-1', 'keep-2', 'now']);
     expect(session.appended).toHaveLength(0);
+    // The silent degrade (summarizing -> windowed) is now observable.
+    expect(counterSpy).toHaveBeenCalledWith('orchestrator_session_summarize_failures');
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });

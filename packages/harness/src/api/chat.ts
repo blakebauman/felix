@@ -22,6 +22,8 @@ import { buildAgent } from '../manifests/builder';
 import { type ResolvedManifest, resolveManifest } from '../manifests/resolver';
 import { conversationStub } from '../memory/conversation-do';
 import type { Agent } from '../patterns/types';
+import { getActiveBundleVersion } from '../policy/bundle';
+import { ensureFederationSynced } from '../policy/federation-do';
 import type { ToolProvider } from '../tools/provider';
 import {
   BearerSecurity,
@@ -223,11 +225,17 @@ export function buildChatRouter(deps: { tools: ToolProvider }) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
   const cache = new Map<string, Promise<Agent>>();
 
-  function getAgent(env: Env, resolved: ResolvedManifest): Promise<Agent> {
-    let pending = cache.get(resolved.cacheKey);
+  async function getAgent(env: Env, resolved: ResolvedManifest): Promise<Agent> {
+    // Mirror the active federation bundle into this isolate before keying the
+    // cache so a refresh invalidates agents compiled against a stale bundle
+    // (otherwise a per-isolate agent cache would pin the old governance until
+    // the isolate recycles).
+    await ensureFederationSynced(env);
+    const key = `${resolved.cacheKey}#fb:${getActiveBundleVersion() ?? '-'}`;
+    let pending = cache.get(key);
     if (!pending) {
       pending = buildAgent(resolved.manifest, { env, tools: deps.tools });
-      cache.set(resolved.cacheKey, pending);
+      cache.set(key, pending);
     }
     return pending;
   }

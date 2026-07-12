@@ -26,7 +26,7 @@ import type { Env } from '../env';
 import type { McpServerRef } from '../manifests/schema';
 import { readCappedJson } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
-import { toolErrorOutput } from '../tools/errors';
+import { codeForStatus, ToolError, toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
 import {
   defineToolWithExecutor,
@@ -79,14 +79,24 @@ async function rpc<T>(
     ...(signal ? { signal } : {}),
   });
   if (isRedirect(resp)) {
-    throw new Error(`MCP ${method} refused: server attempted a redirect`);
+    // Mirror the container / A2A transports: a blocked redirect is a
+    // misbehaving upstream, classified as a provider error rather than
+    // an opaque `internal`.
+    throw new ToolError('provider_error', `MCP ${method} refused: server attempted a redirect`);
   }
   if (!resp.ok) {
-    throw new Error(`MCP ${method} failed: ${resp.status}`);
+    // Map the HTTP status onto the closed ToolErrorCode taxonomy so the
+    // anomaly detector can group by error code (429 → rate_limited,
+    // 5xx → provider_error, 401/403 → permission_denied, …) instead of
+    // bucketing every MCP failure as `internal`.
+    throw new ToolError(codeForStatus(resp.status), `MCP ${method} failed: ${resp.status}`);
   }
   // Byte-cap the read so a hostile server can't OOM the isolate with a huge body.
   const data = await readCappedJson<JsonRpcResponse<T>>(resp);
-  if (data.error) throw new Error(`MCP error: ${data.error.code} ${data.error.message}`);
+  // A JSON-RPC error object is a remote provider failure — same classification
+  // the A2A client gives a peer's JSON-RPC error.
+  if (data.error)
+    throw new ToolError('provider_error', `MCP error: ${data.error.code} ${data.error.message}`);
   return data.result as T;
 }
 
@@ -101,6 +111,10 @@ class McpExecutor implements ToolExecutor {
   ) {}
 
   async execute(args: ToolInput, ctx?: ToolInvocationCtx): Promise<ToolOutput> {
+    // Compose the request-scoped signal with a per-call timeout so a slow or
+    // hung server can't hold the loop open until the request wall-clock limit
+    // fires (which is only configured on some manifests). Either source aborts.
+    const composed = composeSignal(ctx?.signal, MCP_CALL_TIMEOUT_MS);
     try {
       const authHeader = this.authProvider ? await this.authProvider(this.ref) : '';
       const result = await rpc<{ content: Array<{ type: string; text?: string }> }>(
@@ -109,7 +123,7 @@ class McpExecutor implements ToolExecutor {
         { name: this.remoteToolName, arguments: args },
         this.env,
         authHeader,
-        ctx?.signal,
+        composed.signal,
       );
       const text = (result.content ?? [])
         .map((c) => (c.type === 'text' ? (c.text ?? '') : ''))
@@ -117,14 +131,74 @@ class McpExecutor implements ToolExecutor {
       return text || '[mcp tool returned no text content]';
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') {
+        if (composed.timedOut) {
+          return toolErrorOutput(
+            'timeout',
+            `[mcp timeout] ${this.namespacedName}: exceeded ${MCP_CALL_TIMEOUT_MS}ms`,
+          );
+        }
         return toolErrorOutput(
           'user_aborted',
           `[mcp cancelled] ${this.namespacedName}: ${(err as Error).message}`,
         );
       }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[mcp error] ${this.namespacedName}: ${err.message}`);
+      }
       throw err;
+    } finally {
+      composed.dispose();
     }
   }
+}
+
+interface ComposedSignal {
+  signal: AbortSignal | undefined;
+  /** True once the composed timeout fired (vs a caller-driven abort). */
+  readonly timedOut: boolean;
+  dispose: () => void;
+}
+
+/**
+ * Compose a caller-provided signal with an optional timeout. Returns a single
+ * signal that fires when either source fires, a `timedOut` flag so the caller
+ * can distinguish a per-call timeout from a request-scoped cancel, plus a
+ * `dispose` that clears the timer. Avoids `AbortSignal.any` for Workers runtime
+ * compatibility (mirrors `tools/container-executor.ts`).
+ */
+function composeSignal(callerSignal: AbortSignal | undefined, timeoutMs?: number): ComposedSignal {
+  const hasTimeout = timeoutMs != null && timeoutMs > 0;
+  if (!callerSignal && !hasTimeout) {
+    return { signal: undefined, timedOut: false, dispose: () => {} };
+  }
+  if (callerSignal && !hasTimeout) {
+    return { signal: callerSignal, timedOut: false, dispose: () => {} };
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  if (hasTimeout) {
+    timeoutId = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      timedOut = true;
+      controller.abort(new DOMException('mcp call timed out', 'AbortError'));
+    }, timeoutMs);
+  }
+  const onAbort = () => controller.abort(callerSignal!.reason);
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort(callerSignal.reason);
+    else callerSignal.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    dispose: () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (callerSignal) callerSignal.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 // A remote MCP server's `description` text and `inputSchema` are injected
@@ -137,6 +211,9 @@ class McpExecutor implements ToolExecutor {
 const MAX_MCP_DESCRIPTION_CHARS = 4096;
 const MAX_MCP_SCHEMA_BYTES = 32 * 1024;
 const MCP_LIST_TIMEOUT_MS = 10_000;
+// Default per-call cap on `tools/call` — a slow/hung server otherwise hangs
+// until the request wall-clock limit fires, and only when one is configured.
+const MCP_CALL_TIMEOUT_MS = 30_000;
 
 function capDescription(desc: string): string {
   if (desc.length <= MAX_MCP_DESCRIPTION_CHARS) return desc;

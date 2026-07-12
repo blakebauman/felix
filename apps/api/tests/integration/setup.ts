@@ -47,12 +47,14 @@ import personalizationSql from '../../migrations/0017_personalization.sql?raw';
 import dynamicPricingSql from '../../migrations/0018_dynamic_pricing.sql?raw';
 // @ts-expect-error — see above.
 import approvalsTtlSql from '../../migrations/0019_approvals_ttl.sql?raw';
+// @ts-expect-error — see above.
+import evalGateSql from '../../migrations/0022_eval_gate.sql?raw';
 
 let cached: string[] | null = null;
 
 function loadStatements(): string[] {
   if (cached) return cached;
-  const combined = `${initSql as string}\n${hardenSql as string}\n${manifestsSql as string}\n${evalSql as string}\n${canarySql as string}\n${commerceSql as string}\n${acpSql as string}\n${brandsSql as string}\n${brandDomainsSql as string}\n${dataSourcesSql as string}\n${b2bSql as string}\n${quotesSql as string}\n${contractPricingSql as string}\n${billingSql as string}\n${geoSql as string}\n${consentSql as string}\n${personalizationSql as string}\n${dynamicPricingSql as string}\n${approvalsTtlSql as string}`;
+  const combined = `${initSql as string}\n${hardenSql as string}\n${manifestsSql as string}\n${evalSql as string}\n${canarySql as string}\n${commerceSql as string}\n${acpSql as string}\n${brandsSql as string}\n${brandDomainsSql as string}\n${dataSourcesSql as string}\n${b2bSql as string}\n${quotesSql as string}\n${contractPricingSql as string}\n${billingSql as string}\n${geoSql as string}\n${consentSql as string}\n${personalizationSql as string}\n${dynamicPricingSql as string}\n${approvalsTtlSql as string}\n${evalGateSql as string}`;
   const stripped = combined.replace(/--.*$/gm, '');
   cached = stripped
     .split(';')

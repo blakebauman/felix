@@ -65,6 +65,18 @@ const RunBody = z
   .object({
     candidate_manifest: z.string().min(1),
     /**
+     * Pin the candidate to a specific tenant-managed version instead of the
+     * active pointer. Use this to eval an inactive version before promoting
+     * it — the resulting run records the version so the `/manifests`
+     * activation gate can match a passing run to the exact version.
+     */
+    candidate_version: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .openapi({ description: 'Tenant-managed version to test (defaults to the active pointer).' }),
+    /**
      * When true, the runner uses the deterministic-only judge — substring
      * gates only, no Workers AI call. Useful for CI on a Worker without
      * the AI binding configured.
@@ -338,6 +350,7 @@ export function buildEvalRouter(deps: EvalRouterDeps) {
         runId: run.id,
         datasetName: name,
         candidateManifest: body.candidate_manifest,
+        candidateVersion: body.candidate_version,
         judge,
       });
       return c.json(

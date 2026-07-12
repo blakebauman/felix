@@ -10,6 +10,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditEvent } from '../../src/audit/models';
+import { recordEvent } from '../../src/audit/store';
+import { getContext } from '../../src/context';
 import type { Env } from '../../src/env';
 import * as judgeModule from '../../src/eval/judge';
 import { deterministicJudge } from '../../src/eval/judge';
@@ -49,14 +51,18 @@ function fakeAgent(reply: (input: string) => string): Agent {
 function fakeEnv(
   inputRows: Array<{ user_input: string; last_ts: number }>,
   sink: AuditEvent[],
+  sqlSink?: string[],
 ): Env {
   return {
     DB: {
-      prepare: () => ({
-        bind: () => ({
-          all: async () => ({ results: inputRows }),
-        }),
-      }),
+      prepare: (sql: string) => {
+        sqlSink?.push(sql);
+        return {
+          bind: () => ({
+            all: async () => ({ results: inputRows }),
+          }),
+        };
+      },
     },
     AUDIT_QUEUE: {
       send: (e: AuditEvent) => {
@@ -65,6 +71,40 @@ function fakeEnv(
       },
     },
   } as unknown as Env;
+}
+
+/**
+ * Agent that reproduces the react loop's `tool_call` audit stamping: it reads
+ * the active RequestContext and emits a `tool_call` row carrying `user_input`
+ * plus the `replay` marker (when the context is a replay). Lets a test assert
+ * where those incidental rows land.
+ */
+function toolCallEmittingAgent(): Agent {
+  return {
+    tools: [],
+    pattern: 'react',
+    manifestId: 'cand',
+    manifestVersion: '2',
+    async invoke(input: InvokeInput): Promise<InvokeResult> {
+      const userText =
+        typeof input.messages.at(-1)?.content === 'string'
+          ? (input.messages.at(-1)?.content as string)
+          : '';
+      const ctx = getContext();
+      const tenantId = ctx?.auth.principal.tenantId ?? 'default';
+      const replayField = ctx?.replay ? { replay: true as const } : {};
+      recordEvent({
+        tenantId,
+        eventType: 'tool_call',
+        manifestId: 'support',
+        status: 'ok',
+        payload: { tool: 'lookup', user_input: userText, ...replayField },
+      });
+      const final: ChatMessage = { role: 'assistant', content: `ok: ${userText}` };
+      return { messages: [final], final };
+    },
+    async *streamEvents() {},
+  };
 }
 
 function versionRow(canaryVersion: number): ManifestVersionRow {
@@ -178,5 +218,43 @@ describe('continuous eval — canary online benchmarking', () => {
     );
     expect(result.replayed).toBe(3);
     expect(sink.filter((e) => e.event_type === 'judge_score')).toHaveLength(3);
+  });
+
+  it('replays under the canary tenant (never default) and marks tool_call rows replay:true', async () => {
+    // Faithful react-loop stamping so we can assert where the incidental rows land.
+    vi.spyOn(builderModule, 'buildAgent').mockResolvedValue(toolCallEmittingAgent());
+    vi.spyOn(storeModule, 'listActiveCanaries').mockResolvedValue([
+      { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
+    ]);
+    const sink: AuditEvent[] = [];
+    const env = fakeEnv([{ user_input: 'my SSN is 123-45-6789', last_ts: 200 }], sink);
+
+    await runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000);
+
+    const toolCalls = sink.filter((e) => e.event_type === 'tool_call');
+    expect(toolCalls).toHaveLength(1);
+    // The tenant-A production text must NOT leak into `default`'s audit log.
+    expect(sink.some((e) => e.tenant_id === 'default')).toBe(false);
+    for (const tc of toolCalls) {
+      expect(tc.tenant_id).toBe('acme');
+      expect(tc.payload.user_input).toBe('my SSN is 123-45-6789');
+      // Marked so the sampler excludes it from future ticks (no feedback loop).
+      expect(tc.payload.replay).toBe(true);
+    }
+  });
+
+  it('sampler query excludes replay-origin rows', async () => {
+    vi.spyOn(storeModule, 'listActiveCanaries').mockResolvedValue([
+      { tenant_id: 'acme', name: 'support', version: 1, canary_version: 2, canary_weight: 25 },
+    ]);
+    const sink: AuditEvent[] = [];
+    const sql: string[] = [];
+    const env = fakeEnv([{ user_input: 'reset my password', last_ts: 200 }], sink, sql);
+
+    await runContinuousEvalTick(env, toolsStub, OPTS, 1_000_000);
+
+    const sampleSql = sql.find((s) => s.includes("event_type = 'tool_call'"));
+    expect(sampleSql).toBeDefined();
+    expect(sampleSql).toContain("json_extract(payload_json, '$.replay') IS NULL");
   });
 });

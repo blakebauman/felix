@@ -20,6 +20,8 @@ import {
 } from '@felix/harness/jobs/continuous-eval';
 import { runScheduledJobs } from '@felix/harness/jobs/cron';
 import { sweepOrphanQueueDispatches } from '@felix/harness/jobs/queue-orphan-cleanup';
+import { runRetentionSweep } from '@felix/harness/jobs/retention';
+import { recordCounter } from '@felix/harness/observability/metrics';
 import type { FelixPlugin } from '@felix/harness/plugins/types';
 import { federationStub } from '@felix/harness/policy/federation-do';
 import { compose, installedPlugins } from './composition';
@@ -73,21 +75,32 @@ export default {
             await federationStub(env).fetch('https://do/refresh');
           } catch (err) {
             console.error('federation refresh failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'federation_refresh' });
           }
           try {
             await runScheduledJobs(env);
           } catch (err) {
             console.error('scheduled jobs run failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'scheduled_jobs' });
           }
           try {
             await sweepOrphanQueueDispatches(env);
           } catch (err) {
             console.error('queue orphan cleanup failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'queue_orphan_cleanup' });
           }
           try {
             await runAnomalyScan(env);
           } catch (err) {
             console.error('anomaly scan failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'anomaly_scan' });
+          }
+          try {
+            // Retention / GC: prune audit_events past the retention window
+            // and expired plans, bounded per tick.
+            await runRetentionSweep(env, Date.now(), ctx);
+          } catch (err) {
+            console.error('retention sweep failed', err);
           }
           try {
             // Online benchmarking: replay sampled production inputs
@@ -102,6 +115,7 @@ export default {
             );
           } catch (err) {
             console.error('continuous eval tick failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'continuous_eval' });
           }
           // Feature-plugin cron tasks (e.g. commerce abandoned-cart scan,
           // GEO monitor). Each task is isolated so one failing plugin task
@@ -112,6 +126,9 @@ export default {
                 await task.run({ env, tools: toolsFor(env), now: Date.now(), execCtx: ctx });
               } catch (err) {
                 console.error(`${plugin.name} cron task ${task.name} failed`, err);
+                recordCounter('orchestrator_cron_task_failures', {
+                  task: `${plugin.name}:${task.name}`,
+                });
               }
             }
           }

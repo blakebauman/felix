@@ -30,6 +30,9 @@ import {
   type WakeState,
 } from './types';
 
+/** Non-retriable error — a 4xx (client) response the DO won't accept on retry. */
+class ClientError extends Error {}
+
 async function retryFetch(
   fn: () => Promise<Response>,
   attempts = 3,
@@ -41,9 +44,15 @@ async function retryFetch(
       const resp = await fn();
       if (resp.ok) return resp;
       const body = await resp.text().catch(() => '');
-      lastErr = new Error(`status ${resp.status}: ${body.slice(0, 200)}`);
-      if (resp.status < 500) throw lastErr;
+      const message = `status ${resp.status}: ${body.slice(0, 200)}`;
+      // A 4xx is a client error the DO will reject identically on retry —
+      // fail fast instead of burning the retry budget. Throwing a
+      // `ClientError` (rather than swallowing into `lastErr`) means the
+      // catch below rethrows it immediately, so no backoff/continue runs.
+      if (resp.status < 500) throw new ClientError(message);
+      lastErr = new Error(message);
     } catch (err) {
+      if (err instanceof ClientError) throw err;
       lastErr = err;
     }
     if (i < attempts - 1) {

@@ -56,6 +56,10 @@ interface TaskSendResult {
   error?: string;
 }
 
+// Default per-call cap on a peer `tasks/send` — a slow/hung peer otherwise
+// hangs until the request wall-clock limit fires, and only when one is set.
+const A2A_CALL_TIMEOUT_MS = 30_000;
+
 function peerEndpoint(base: string): string {
   // Safer than string concat — handles trailing slashes and rejects
   // anything URL-unparseable.
@@ -86,6 +90,10 @@ class A2AExecutor implements ToolExecutor {
         input: { messages: [{ role: 'user', content: message }] },
       },
     };
+    // Compose the request-scoped signal with a per-call timeout so a slow or
+    // hung peer can't hold the loop open until the request wall-clock limit
+    // fires (which is only configured on some manifests). Either source aborts.
+    const composed = composeSignal(ctx?.signal, A2A_CALL_TIMEOUT_MS);
     try {
       const resp = await fetch(peerEndpoint(this.ref.url), {
         method: 'POST',
@@ -102,10 +110,7 @@ class A2AExecutor implements ToolExecutor {
         // Don't follow redirects: the SSRF guard only validated the initial
         // peer URL, so a 3xx to an internal host would bypass it.
         redirect: 'manual',
-        // Cancellation propagates from the per-request abort signal —
-        // a wall-clock breach or request teardown will cancel the
-        // outbound peer call mid-flight instead of blocking the next one.
-        ...(ctx?.signal ? { signal: ctx.signal } : {}),
+        ...(composed.signal ? { signal: composed.signal } : {}),
       });
       if (isRedirect(resp)) {
         return toolErrorOutput(
@@ -133,6 +138,12 @@ class A2AExecutor implements ToolExecutor {
       return last?.content ?? '[peer returned no message]';
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') {
+        if (composed.timedOut) {
+          return toolErrorOutput(
+            'timeout',
+            `[peer timeout] ${this.ref.name}: exceeded ${A2A_CALL_TIMEOUT_MS}ms`,
+          );
+        }
         return toolErrorOutput(
           'user_aborted',
           `[peer cancelled] ${this.ref.name}: ${(err as Error).message}`,
@@ -142,8 +153,59 @@ class A2AExecutor implements ToolExecutor {
         return toolErrorOutput(err.code, `[peer error] ${this.ref.name}: ${err.message}`);
       }
       throw err;
+    } finally {
+      composed.dispose();
     }
   }
+}
+
+interface ComposedSignal {
+  signal: AbortSignal | undefined;
+  /** True once the composed timeout fired (vs a caller-driven abort). */
+  readonly timedOut: boolean;
+  dispose: () => void;
+}
+
+/**
+ * Compose a caller-provided signal with an optional timeout. Returns a single
+ * signal that fires when either source fires, a `timedOut` flag so the caller
+ * can distinguish a per-call timeout from a request-scoped cancel, plus a
+ * `dispose` that clears the timer. Avoids `AbortSignal.any` for Workers runtime
+ * compatibility (mirrors `tools/container-executor.ts`).
+ */
+function composeSignal(callerSignal: AbortSignal | undefined, timeoutMs?: number): ComposedSignal {
+  const hasTimeout = timeoutMs != null && timeoutMs > 0;
+  if (!callerSignal && !hasTimeout) {
+    return { signal: undefined, timedOut: false, dispose: () => {} };
+  }
+  if (callerSignal && !hasTimeout) {
+    return { signal: callerSignal, timedOut: false, dispose: () => {} };
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  if (hasTimeout) {
+    timeoutId = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      timedOut = true;
+      controller.abort(new DOMException('peer call timed out', 'AbortError'));
+    }, timeoutMs);
+  }
+  const onAbort = () => controller.abort(callerSignal!.reason);
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort(callerSignal.reason);
+    else callerSignal.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    dispose: () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (callerSignal) callerSignal.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 export function makePeerTool(

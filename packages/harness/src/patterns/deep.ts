@@ -1,15 +1,15 @@
 /**
  * deep pattern — react loop with plan_create / plan_get / plan_update_step
- * injected at build time and a heavier system prompt nudging the model to
- * plan before tool use.
+ * and a heavier system prompt nudging the model to plan before tool use.
  *
- * Plan-tool injection lives in the registered pattern adapter (not in the
- * core builder) so the builder stays unaware of pattern-specific tool
- * requirements; a new pattern with its own tool set just registers its
- * own adapter.
+ * `PLAN_TOOLS` are injected by the core builder (`buildAgent`) into
+ * `resolvedTools` BEFORE the governance pipeline, gated on
+ * `pattern === 'deep'`. They therefore arrive here already wrapped by
+ * policies/limits/guardrails/judges/approvals, exactly like every other
+ * tool — this adapter does NOT re-inject them (doing so post-pipeline let
+ * them escape every governance wrapper).
  */
 
-import { PLAN_TOOLS } from '../plans/tools';
 import { type BuildReactOptions, buildReactAgent } from './react';
 import { registerPattern } from './registry';
 import type { Agent } from './types';
@@ -25,19 +25,13 @@ export function buildDeepAgent(opts: BuildReactOptions): Agent {
   return { ...agent, pattern: 'deep' };
 }
 
-registerPattern('deep', (ctx) => {
-  const seen = new Set(ctx.tools.map((t) => t.name));
-  const tools = [...ctx.tools];
-  for (const p of PLAN_TOOLS) {
-    if (!seen.has(p.name)) {
-      tools.push(p);
-      seen.add(p.name);
-    }
-  }
-  return buildDeepAgent({
+registerPattern('deep', (ctx) =>
+  buildDeepAgent({
     env: ctx.env,
     modelSpec: ctx.modelSpec,
-    tools,
+    // `PLAN_TOOLS` are already present (and governance-wrapped) in
+    // `ctx.tools` — the builder injects them pre-pipeline for `deep`.
+    tools: ctx.tools,
     systemPrompt: ctx.systemPrompt,
     manifestId: ctx.manifestId,
     manifestVersion: ctx.manifestVersion,
@@ -45,6 +39,8 @@ registerPattern('deep', (ctx) => {
     sessionStore: ctx.sessionStore ?? null,
     sessionStrategy: ctx.sessionStrategy ?? null,
     limits: ctx.limits,
+    toolsRetrieval: ctx.manifest.spec.tools_retrieval,
+    artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
-  });
-});
+  }),
+);
