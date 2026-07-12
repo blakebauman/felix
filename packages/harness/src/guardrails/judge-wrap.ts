@@ -161,7 +161,20 @@ function wrapOne(inner: Tool, rules: JudgeRule[], manifestId: string): Tool {
 
       for (const rule of applicable) {
         const outcome = await judgeOne(rule, inner.name, args, outString, manifestId);
-        if (outcome === null) continue;
+        if (outcome === null) {
+          // Judge couldn't run (no AI binding). In development we skip so
+          // local runs / unit tests don't need the binding wired. In any
+          // other environment a declared judge that can't run is a
+          // misconfiguration — fail CLOSED (deny) rather than silently
+          // shipping unjudged output fleet-wide. The skip is still counted
+          // (orchestrator_judge_skipped) inside judgeOne.
+          if (getContext()?.env.ENVIRONMENT === 'development') continue;
+          return denyOutput(
+            `[judge unavailable] tool '${inner.name}' declares judge '${rule.name}' but the ` +
+              'judge model (AI binding) is not configured; denying to fail closed.',
+            'guardrails',
+          );
+        }
         const { tenantId, subject } = currentTenantSubject();
         recordEvent({
           tenantId,

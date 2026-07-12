@@ -1,4 +1,5 @@
 import { z } from '@hono/zod-openapi';
+import { FILTERS } from './pipeline';
 
 export const JudgeRuleSchema = z
   .object({
@@ -66,6 +67,15 @@ export const GuardrailsSchema = z
     providers: z
       .array(z.string())
       .default([])
+      .refine((ps) => ps.every((p) => p in FILTERS), {
+        // An unregistered provider name (typo, renamed provider, plugin not
+        // loaded) is silently skipped at runtime (`if (!fn) continue` in
+        // wrap.ts) — the operator believes a PII/credential filter is active
+        // while it does nothing (fail-open). Reject unknown names at
+        // validation time so the misconfiguration surfaces at deploy.
+        message:
+          'unknown guardrail provider (not in the filter registry); check for a typo. Known providers: pii',
+      })
       .refine((ps) => !ps.includes('bedrock'), {
         // `bedrock` is wired into the FILTERS registry but its filter is a
         // no-op today (src/guardrails/pipeline.ts). Accepting it would give a
@@ -79,7 +89,9 @@ export const GuardrailsSchema = z
         description:
           'Active guardrail providers. `pii` runs four regex patterns (email, SSN, US ' +
           'phone, credit card) with SHA-256 fingerprints written to audit (never the raw ' +
-          'value). `bedrock` is reserved for a future AI Gateway content policy hook and is ' +
+          'value). Unknown provider names are rejected at validation time (they would ' +
+          'otherwise be silently skipped, disabling filtering while appearing protected). ' +
+          '`bedrock` is reserved for a future AI Gateway content policy hook and is ' +
           'currently rejected at validation time.',
         example: ['pii'],
       }),

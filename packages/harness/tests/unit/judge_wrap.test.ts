@@ -10,8 +10,9 @@
  *   4. A `denyOutput` already returned by an inner wrapper bypasses
  *      the judge — judging a deny string is wasted compute.
  *   5. A `toolErrorOutput` (transport error) also bypasses the judge.
- *   6. Missing `env.AI` binding short-circuits the judge to "pass" so
- *      a misconfigured Worker doesn't silently block every tool call.
+ *   6. Missing `env.AI` binding short-circuits the judge to "pass" in
+ *      development, but FAILS CLOSED (denies) in any other environment so
+ *      a misconfigured Worker can't silently ship unjudged output fleet-wide.
  *   7. Each judge run emits exactly one `judge_score` audit event.
  */
 
@@ -154,12 +155,22 @@ describe('applyJudges', () => {
     expect(ai.run).not.toHaveBeenCalled();
   });
 
-  it('short-circuits to pass when env.AI is absent', async () => {
+  it('short-circuits to pass when env.AI is absent in development', async () => {
     const tool = fakeTool(async () => 'unverified');
     const wrapped = applyJudges([tool], baseGuardrails, 'm');
-    const env = {} as unknown as Env;
+    const env = { ENVIRONMENT: 'development' } as unknown as Env;
     const out = await runWithContext(makeCtx(env), () => wrapped[0]!.executor.execute({}));
     expect(out).toBe('unverified');
+  });
+
+  it('fails closed (denies) when env.AI is absent outside development', async () => {
+    const tool = fakeTool(async () => 'unverified');
+    const wrapped = applyJudges([tool], baseGuardrails, 'm');
+    const env = { ENVIRONMENT: 'production' } as unknown as Env;
+    const out = await runWithContext(makeCtx(env), () => wrapped[0]!.executor.execute({}));
+    // A declared judge that can't run is a misconfiguration — deny rather than
+    // ship unjudged output.
+    expect(typeof out === 'string' ? out : out.content).toMatch(/judge unavailable/i);
   });
 
   it('emits exactly one judge_score audit event per judge per call', async () => {

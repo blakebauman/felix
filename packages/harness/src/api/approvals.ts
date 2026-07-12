@@ -80,7 +80,8 @@ const decideApprovalRoute = createRoute({
   summary: 'Approve or deny a pending request',
   description:
     'Concurrent decisions on the same id are serialized through a per-(tenant, id) ' +
-    'Durable Object. The system of record stays D1.',
+    'Durable Object. The system of record stays D1. A decision is a one-way ' +
+    'transition — deciding an already-resolved request is rejected with 409.',
   security: BearerSecurity(),
   request: {
     params: z.object({ id: z.string() }),
@@ -96,6 +97,10 @@ const decideApprovalRoute = createRoute({
     },
     404: {
       description: 'No approval with that id for the caller’s tenant.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+    409: {
+      description: 'The request was already decided; the decision is final and unchanged.',
       content: { 'application/json': { schema: ErrorBodySchema } },
     },
     500: {
@@ -156,6 +161,13 @@ export function buildApprovalsRouter() {
       }),
     });
     if (resp.status === 404) return c.json({ error: 'not found' }, 404);
+    // Finality guard: the request was already resolved by an earlier
+    // decision. Surface the current (unchanged) state as a 409 rather than
+    // pretending the re-decision took effect.
+    if (resp.status === 409) {
+      const current = (await resp.json()) as ApprovalRequest;
+      return c.json({ error: 'already_decided', detail: current.status }, 409);
+    }
     if (!resp.ok) return c.json({ error: await resp.text() }, 500);
     const updated = (await resp.json()) as ApprovalRequest;
     recordEvent({

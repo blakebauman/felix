@@ -78,6 +78,22 @@ export async function createOrFetchRequest(
   });
 }
 
+/**
+ * Result of a decide attempt.
+ *
+ *   - `decided`         — the pending request transitioned to the new status.
+ *   - `already_decided` — the request exists but was NOT pending; nothing was
+ *                         changed. This is the finality guard: a decision is a
+ *                         one-way transition, so an operator can't flip an
+ *                         approved request to denied or re-approve it with
+ *                         different `edited_args` on a later call.
+ *   - `not_found`       — no such request for this tenant.
+ */
+export type DecideOutcome =
+  | { outcome: 'decided'; request: ApprovalRequest }
+  | { outcome: 'already_decided'; request: ApprovalRequest }
+  | { outcome: 'not_found' };
+
 export async function decideRequest(
   env: Env,
   tenantId: string,
@@ -88,12 +104,18 @@ export async function decideRequest(
     note?: string;
     editedArgs?: Record<string, unknown> | null;
   },
-): Promise<ApprovalRequest | null> {
+): Promise<DecideOutcome> {
   const now = Date.now();
-  await env.DB.prepare(
+  // `AND status = 'pending'` makes the decision a one-way transition: a
+  // second decide (or a concurrent one that lost the DO's critical-section
+  // race) changes zero rows instead of overwriting the resolved decision or
+  // its `edited_args`. Without this, any principal with `approvals:decide`
+  // could re-decide a resolved request and mutate the args the tool re-runs
+  // on retry.
+  const res = await env.DB.prepare(
     `UPDATE approvals
        SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?, edited_args_json = ?
-       WHERE tenant_id = ? AND id = ?`,
+       WHERE tenant_id = ? AND id = ? AND status = 'pending'`,
   )
     .bind(
       decision.status,
@@ -105,7 +127,11 @@ export async function decideRequest(
       id,
     )
     .run();
-  return getRequest(env, tenantId, id);
+
+  const current = await getRequest(env, tenantId, id);
+  if (!current) return { outcome: 'not_found' };
+  if ((res.meta?.changes ?? 0) === 0) return { outcome: 'already_decided', request: current };
+  return { outcome: 'decided', request: current };
 }
 
 export async function getRequest(

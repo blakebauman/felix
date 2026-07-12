@@ -4,6 +4,7 @@ import {
   assertSafeOutboundUrl,
   assertSafeOutboundUrlForEnv,
   isOutboundHostAllowed,
+  isRedirect,
 } from '../../src/security/ssrf';
 
 function fakeEnv(extra: Partial<Env> = {}): Env {
@@ -90,5 +91,12 @@ describe('ssrf guard', () => {
   it('isOutboundHostAllowed is a quiet predicate', () => {
     expect(isOutboundHostAllowed('https://api.example.com', fakeEnv())).toBe(true);
     expect(isOutboundHostAllowed('http://127.0.0.1', fakeEnv())).toBe(false);
+  });
+
+  it('isRedirect flags 3xx responses, not 2xx/5xx', () => {
+    expect(isRedirect(new Response(null, { status: 200 }))).toBe(false);
+    expect(isRedirect(new Response('err', { status: 500 }))).toBe(false);
+    expect(isRedirect(Response.redirect('https://elsewhere.example.com', 302))).toBe(true);
+    expect(isRedirect(Response.redirect('https://elsewhere.example.com', 301))).toBe(true);
   });
 });

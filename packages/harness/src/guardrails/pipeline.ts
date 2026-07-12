@@ -10,6 +10,8 @@
  *                  for the eventual AI Gateway content-policy hook.
  */
 
+import { recordCounter } from '../observability/metrics';
+
 export interface Match {
   provider: string;
   /** Stable fingerprint — *never* the raw matched text. */
@@ -84,7 +86,14 @@ export async function runFilters(providers: string[], value: string): Promise<Fi
   const matches: FilterResult['matches'] = [];
   for (const name of providers) {
     const fn = FILTERS[name];
-    if (!fn) continue;
+    if (!fn) {
+      // Should be unreachable — GuardrailsSchema rejects unknown providers at
+      // validation time. Count it anyway so a provider that slips through
+      // (e.g. a hand-built Manifest bypassing Zod) is alertable rather than
+      // silently disabling filtering.
+      recordCounter('orchestrator_guardrail_provider_unknown', { provider: name });
+      continue;
+    }
     const r = await fn(current);
     current = r.filtered;
     matches.push(...r.matches);

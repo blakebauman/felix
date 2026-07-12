@@ -22,6 +22,7 @@
  */
 
 import { getContext } from '../context';
+import type { Env } from '../env';
 
 export type MetricLabels = Record<string, string | number | undefined>;
 
@@ -30,9 +31,9 @@ function emit(
   kind: 'counter' | 'histogram',
   value: number,
   labels: MetricLabels,
+  explicitDataset?: AnalyticsEngineDataset,
 ): void {
-  const ctx = getContext();
-  const dataset = ctx?.env.METRICS;
+  const dataset = explicitDataset ?? getContext()?.env.METRICS;
   if (dataset) {
     const blobs: string[] = [name, kind];
     const keys = Object.keys(labels).sort();
@@ -59,6 +60,22 @@ function emit(
 
 export function recordCounter(name: string, labels: MetricLabels = {}, value = 1): void {
   emit(name, 'counter', value, labels);
+}
+
+/**
+ * Env-taking variant for call sites that run before or outside
+ * `runWithContext` (mirrors `recordEventDetached` in audit/store.ts): reads
+ * the Analytics Engine binding off the provided Env instead of
+ * AsyncLocalStorage, so the data point actually lands when no RequestContext
+ * is installed yet.
+ */
+export function recordCounterDetached(
+  env: Env,
+  name: string,
+  labels: MetricLabels = {},
+  value = 1,
+): void {
+  emit(name, 'counter', value, labels, env.METRICS);
 }
 
 export function recordHistogram(name: string, value: number, labels: MetricLabels = {}): void {

@@ -41,7 +41,7 @@ function b64ToBytes(b64: string): Uint8Array {
  * Deterministic JSON: sort object keys at every level. Sufficient for
  * Ed25519 over a bundle that has only primitive / object / array shapes.
  */
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) {
     return `[${value.map((v) => stableStringify(v)).join(',')}]`;

@@ -13,7 +13,7 @@ import type { ModelClient } from '../patterns/model';
 import type { ChatMessage } from '../patterns/types';
 import { wrapExecutor } from '../tools/executor';
 import { denyOutput, type Tool, type ToolInvocationCtx, type ToolOutput } from '../tools/types';
-import { anyLimit, type Limits } from './models';
+import { anyLimit, clampLimits, type Limits } from './models';
 import { currentLimitState, currentTenantSubject } from './state';
 
 type LimitName =
@@ -81,7 +81,8 @@ export async function checkPreflightTokenBudget(
   manifestId: string,
 ): Promise<string | undefined> {
   if (!limits.precount) return undefined;
-  if (limits.max_input_tokens == null) return undefined;
+  const clamped = clampLimits(limits);
+  if (clamped.max_input_tokens == null) return undefined;
   if (!model.countTokens) return undefined;
   const state = currentLimitState();
   if (!state) return undefined;
@@ -92,12 +93,12 @@ export async function checkPreflightTokenBudget(
     return undefined;
   }
   const total = state.tokens.input + projected;
-  if (total < limits.max_input_tokens) return undefined;
+  if (total < clamped.max_input_tokens) return undefined;
   const out = recordBreach({
     manifestId,
     toolName: '<model:preflight>',
     limit: 'max_input_tokens',
-    cap: limits.max_input_tokens,
+    cap: clamped.max_input_tokens,
     observed: total,
   });
   return typeof out === 'string' ? out : out.content;
@@ -112,22 +113,25 @@ export async function checkPreflightTokenBudget(
 export function checkTokenBudget(limits: Limits, manifestId: string): string | undefined {
   const state = currentLimitState();
   if (!state) return undefined;
-  if (limits.max_input_tokens != null && state.tokens.input >= limits.max_input_tokens) {
+  // Clamp to the absolute ceiling so a schema-bypassing caller can't raise the
+  // token budget past it (no-op on the Zod path, which is already ≤ ceiling).
+  const clamped = clampLimits(limits);
+  if (clamped.max_input_tokens != null && state.tokens.input >= clamped.max_input_tokens) {
     const out = recordBreach({
       manifestId,
       toolName: '<model>',
       limit: 'max_input_tokens',
-      cap: limits.max_input_tokens,
+      cap: clamped.max_input_tokens,
       observed: state.tokens.input,
     });
     return typeof out === 'string' ? out : out.content;
   }
-  if (limits.max_output_tokens != null && state.tokens.output >= limits.max_output_tokens) {
+  if (clamped.max_output_tokens != null && state.tokens.output >= clamped.max_output_tokens) {
     const out = recordBreach({
       manifestId,
       toolName: '<model>',
       limit: 'max_output_tokens',
-      cap: limits.max_output_tokens,
+      cap: clamped.max_output_tokens,
       observed: state.tokens.output,
     });
     return typeof out === 'string' ? out : out.content;
@@ -219,6 +223,10 @@ function wrapOne(inner: Tool, limits: Limits, manifestId: string): Tool {
 }
 
 export function applyLimits(tools: Tool[], limits: Limits, manifestId: string): Tool[] {
-  if (!anyLimit(limits)) return [...tools];
-  return tools.map((t) => wrapOne(t, limits, manifestId));
+  // Defense-in-depth: clamp every declared cap to its absolute ceiling so a
+  // caller that built the manifest without Zod can't exceed it. No-op on the
+  // Zod-validated path (already ≤ ceiling); preserves null (no-cap) semantics.
+  const clamped = clampLimits(limits);
+  if (!anyLimit(clamped)) return [...tools];
+  return tools.map((t) => wrapOne(t, clamped, manifestId));
 }

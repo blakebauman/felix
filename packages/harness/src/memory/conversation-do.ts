@@ -102,6 +102,35 @@ function parseKinds(raw: string | null): SessionEventKind[] | null {
 // `Number(...)`), turning one read into an unbounded memory/serialization cost.
 export const MAX_EVENTS = 1000;
 
+// Hard ceiling on how many events a single thread STORES. Every append does a
+// full get→push→put of the whole array, so an unbounded log grows O(n) per
+// append in both CPU and DO-storage-value size (the single-value put has a
+// platform size limit). A long-lived thread would otherwise let one tenant
+// drive unbounded storage/CPU growth. When exceeded we roll off the oldest
+// events, preserving pinned anchors (`metadata.pinned`) since strategies always
+// re-include those. `seq`/`nextSeq` stay monotonic so read cursors are
+// unaffected — pruned seqs simply return no rows.
+export const MAX_STORED_EVENTS = 5000;
+
+function isPinnedEvent(e: SessionEvent): boolean {
+  return (e.metadata as { pinned?: unknown } | undefined)?.pinned === true;
+}
+
+/**
+ * Trim a stored event array to at most `MAX_STORED_EVENTS`, dropping the oldest
+ * non-pinned events first. Pinned anchors are always retained; if pinned events
+ * alone exceed the cap they are all kept (correctness over the ceiling).
+ */
+export function rollOffEvents(events: SessionEvent[]): SessionEvent[] {
+  if (events.length <= MAX_STORED_EVENTS) return events;
+  const pinned = events.filter(isPinnedEvent);
+  const unpinned = events.filter((e) => !isPinnedEvent(e));
+  const keepUnpinned = Math.max(0, MAX_STORED_EVENTS - pinned.length);
+  const trimmedUnpinned = unpinned.slice(unpinned.length - keepUnpinned);
+  // Re-merge into seq order so slices stay monotonic.
+  return [...pinned, ...trimmedUnpinned].sort((a, b) => a.seq - b.seq);
+}
+
 /**
  * Parse a query-string cursor/limit into a clean bounded integer. Rejects
  * missing, non-numeric (`NaN`), non-finite (`Infinity`), and negative inputs
@@ -193,6 +222,9 @@ export class ConversationDO {
         stored.nextSeq += 1;
       }
       stored.updatedAt = now;
+      // Bound total stored events so a long-lived thread can't drive unbounded
+      // DO storage/CPU growth. nextSeq is untouched, so cursors keep working.
+      stored.events = rollOffEvents(stored.events);
       delete stored.messages; // shed legacy field once we've written events
       await this.state.storage.put('state', stored);
       return Response.json({ ok: true, count: incoming.length, head: stored.nextSeq });
