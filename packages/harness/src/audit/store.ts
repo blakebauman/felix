@@ -121,23 +121,45 @@ export function recordEventDetached(
 function enqueueOrFallback(env: Env, event: AuditEvent, execCtx?: ExecutionContext): void {
   const queue = env.AUDIT_QUEUE;
   if (queue) {
-    const send = queue
-      .send(event, { contentType: 'json' })
-      .catch((err: unknown) => console.error('audit enqueue failed', err));
+    // Happy path: enqueue and let the batched consumer persist. If the send
+    // REJECTS (queue pressure / transient error) we must not silently drop the
+    // event — fall back to the same direct-D1 write the no-queue path uses so
+    // the audit/compliance surface stays durable under load.
+    // NOTE: durable delivery for enqueue failures is best-effort D1 here; a
+    // dead-letter-queue consumer for the queue itself is a separate follow-up.
+    const send = queue.send(event, { contentType: 'json' }).catch((err: unknown) => {
+      console.error('audit enqueue failed', err);
+      recordCounter('orchestrator_audit_enqueue_fallback', { manifest_id: event.manifest_id });
+      return directWrite(env, event);
+    });
     if (execCtx) execCtx.waitUntil(send);
     else void send;
     return;
   }
-  // No queue binding and no DB binding (unit tests with a stub env):
-  // log the event and move on. Production envs always have either the
-  // queue or the DB wired.
+  // No queue binding: write directly (or log if no DB either — unit tests with
+  // a stub env). Production envs always have either the queue or the DB wired.
+  const write = directWrite(env, event);
+  if (execCtx) execCtx.waitUntil(write);
+  else void write;
+}
+
+/**
+ * Best-effort direct persistence used both when no queue is wired and as the
+ * fallback when `AUDIT_QUEUE.send` rejects. Guarded on `env.DB`; if D1 is
+ * absent (or the insert throws) the event is logged as a last resort so the
+ * loss is at least observable.
+ */
+async function directWrite(env: Env, event: AuditEvent): Promise<void> {
   if (!env.DB) {
     console.log(JSON.stringify({ audit: event }));
     return;
   }
-  const write = persistOne(env, event).catch((err) => console.error('audit persist failed', err));
-  if (execCtx) execCtx.waitUntil(write);
-  else void write;
+  try {
+    await persistOne(env, event);
+  } catch (err) {
+    console.error('audit persist failed', err);
+    console.log(JSON.stringify({ audit: event }));
+  }
 }
 
 async function persistOne(env: Env, event: AuditEvent): Promise<void> {
