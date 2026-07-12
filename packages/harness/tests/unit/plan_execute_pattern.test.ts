@@ -203,6 +203,29 @@ describe('buildPlanExecuteAgent', () => {
     expect(result.final.content).toBe('Here is your answer based on the search and summary.');
   });
 
+  it('records planner and synthesizer token usage against the request budget', async () => {
+    const exec = fakeExecutor(['searched for X']);
+    vi.spyOn(reactModule, 'buildReactAgent').mockReturnValue(exec);
+    const planner = fakeModel([
+      { content: '{"plan":[{"id":"s1","description":"search"}]}' },
+      { content: 'final synthesis' },
+    ]);
+    vi.spyOn(modelModule, 'buildModel').mockReturnValue(planner as never);
+    const recordUsageSpy = vi.spyOn(modelModule, 'recordUsage');
+
+    const wrapped = buildPlanExecuteAgent(buildArgs());
+    await runWithContext(ctx(), () =>
+      wrapped.invoke({ messages: [{ role: 'user', content: 'tell me about X' }] }),
+    );
+    // Both the planner call and the synthesizer call must flow through
+    // recordUsage so their tokens count against the request budget/metric.
+    expect(recordUsageSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ manifestId: 'test' }),
+    );
+    expect(recordUsageSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('short-circuits with apology when planner reply is unparseable', async () => {
     const exec = fakeExecutor([]);
     const execSpy = vi.spyOn(reactModule, 'buildReactAgent').mockReturnValue(exec);

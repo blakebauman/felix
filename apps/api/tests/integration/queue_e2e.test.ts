@@ -97,6 +97,29 @@ describe('queue transport end-to-end', () => {
     expect(String(stub)).toContain('job_id=job-e2e-1');
     expect(String(stub)).toContain('tasks/resubscribe');
 
+    // 2b. The write-back route pairs the inbound tool_result to an
+    // outstanding `queue_dispatch` audit row before it lands anything. That
+    // row is emitted through AUDIT_QUEUE and batched into D1 asynchronously;
+    // in production it is long settled by the time a long-running job
+    // completes. Land it synchronously here so the dispatch-pairing check
+    // sees it (simulates the audit consumer having flushed the dispatch row).
+    await testEnv.DB.prepare(
+      `INSERT INTO audit_events
+         (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+         VALUES (?, 'acme', ?, 'queue_dispatch', 'researcher', '', 'enqueued', ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        Date.now(),
+        JSON.stringify({
+          job_id: 'job-e2e-1',
+          tool: 'long_research',
+          tool_call_id: toolCallId,
+          thread_id: threadId,
+        }),
+      )
+      .run();
+
     // 3. Consumer arrives — POST the `tool_result` through the internal
     // endpoint with the shared secret. This is exactly what the
     // examples/queue-consumer Worker does in production.
@@ -180,5 +203,35 @@ describe('queue transport end-to-end', () => {
       },
     );
     expect(resp.status).toBe(400);
+  });
+
+  it('rejects a validly-authenticated write-back with no paired dispatch (409, writes nothing)', async () => {
+    // A holder of the shared secret with a valid-shaped tool_result but no
+    // matching `queue_dispatch` row must be rejected — this is the H4
+    // integrity floor. It also stands in for the cross-tenant case: a forged
+    // thread prefix resolves to a tenant with no dispatch for the id.
+    const threadId = 'acme:forged-thread';
+    const resp = await SELF.fetch(
+      `https://orchestrator.test/internal/sessions/${encodeURIComponent(threadId)}/events`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-consumer-secret': SECRET },
+        body: JSON.stringify({
+          events: [
+            {
+              kind: 'tool_result',
+              tool_call_id: 'never-dispatched',
+              name: 'long_research',
+              content: '[malicious] would have written',
+            },
+          ],
+        }),
+      },
+    );
+    expect(resp.status).toBe(409);
+
+    // Nothing landed on the forged thread.
+    const events = await readEvents(threadId);
+    expect(events).toEqual([]);
   });
 });

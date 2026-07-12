@@ -130,14 +130,15 @@ describe('multimodal vision — Anthropic image blocks', () => {
     ]);
   });
 
-  it('drops malformed attachments and keeps a plain string when none survive', async () => {
+  it('drops a malformed data: attachment and keeps a plain string when none survive', async () => {
     const fetchSpy = stubAnthropicJson();
     const client = buildModel(anthropicEnv(), modelSpec('claude-sonnet-4'));
     const messages: ChatMessage[] = [
       {
         role: 'user',
         content: 'hello',
-        attachments: [{ url: 'ftp://nope', media_type: 'image/png' }],
+        // Not base64-encoded → parseDataUrl returns null → dropped.
+        attachments: [{ url: 'data:image/png,notbase64', media_type: 'image/png' }],
       },
     ];
     await client.chat(messages, []);
@@ -145,6 +146,28 @@ describe('multimodal vision — Anthropic image blocks', () => {
     const content = (body.messages as Array<{ content: unknown }>)[0]?.content;
     // No surviving image blocks → text-only content array.
     expect(content).toEqual([{ type: 'text', text: 'hello' }]);
+  });
+
+  it('rejects a non-https (http://) image URL rather than fetching it over http', async () => {
+    stubAnthropicJson();
+    const client = buildModel(anthropicEnv(), modelSpec('claude-sonnet-4'));
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: 'peek',
+        attachments: [{ url: 'http://169.254.169.254/img.png', media_type: 'image/png' }],
+      },
+    ];
+    await expect(client.chat(messages, [])).rejects.toThrow(/https:/);
+  });
+
+  it('rejects a non-http(s) scheme (ftp://) image URL', async () => {
+    stubAnthropicJson();
+    const client = buildModel(anthropicEnv(), modelSpec('claude-sonnet-4'));
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'x', attachments: [{ url: 'ftp://nope', media_type: 'image/png' }] },
+    ];
+    await expect(client.chat(messages, [])).rejects.toThrow(/https:/);
   });
 
   it('leaves text-only user messages as a plain string', async () => {
@@ -177,5 +200,18 @@ describe('multimodal vision — OpenAI image_url parts', () => {
       { type: 'text', text: 'caption this' },
       { type: 'image_url', image_url: { url: PNG_DATA_URL } },
     ]);
+  });
+
+  it('rejects a non-https (http://) image_url instead of forwarding it', async () => {
+    stubOpenAIJson();
+    const client = buildModel(openaiEnv(), modelSpec('gpt-4o'));
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: 'caption',
+        attachments: [{ url: 'http://internal/img.png', media_type: 'image/png' }],
+      },
+    ];
+    await expect(client.chat(messages, [])).rejects.toThrow(/https:/);
   });
 });

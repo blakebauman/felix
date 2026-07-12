@@ -121,23 +121,45 @@ export function recordEventDetached(
 function enqueueOrFallback(env: Env, event: AuditEvent, execCtx?: ExecutionContext): void {
   const queue = env.AUDIT_QUEUE;
   if (queue) {
-    const send = queue
-      .send(event, { contentType: 'json' })
-      .catch((err: unknown) => console.error('audit enqueue failed', err));
+    // Happy path: enqueue and let the batched consumer persist. If the send
+    // REJECTS (queue pressure / transient error) we must not silently drop the
+    // event — fall back to the same direct-D1 write the no-queue path uses so
+    // the audit/compliance surface stays durable under load.
+    // NOTE: durable delivery for enqueue failures is best-effort D1 here; a
+    // dead-letter-queue consumer for the queue itself is a separate follow-up.
+    const send = queue.send(event, { contentType: 'json' }).catch((err: unknown) => {
+      console.error('audit enqueue failed', err);
+      recordCounter('orchestrator_audit_enqueue_fallback', { manifest_id: event.manifest_id });
+      return directWrite(env, event);
+    });
     if (execCtx) execCtx.waitUntil(send);
     else void send;
     return;
   }
-  // No queue binding and no DB binding (unit tests with a stub env):
-  // log the event and move on. Production envs always have either the
-  // queue or the DB wired.
+  // No queue binding: write directly (or log if no DB either — unit tests with
+  // a stub env). Production envs always have either the queue or the DB wired.
+  const write = directWrite(env, event);
+  if (execCtx) execCtx.waitUntil(write);
+  else void write;
+}
+
+/**
+ * Best-effort direct persistence used both when no queue is wired and as the
+ * fallback when `AUDIT_QUEUE.send` rejects. Guarded on `env.DB`; if D1 is
+ * absent (or the insert throws) the event is logged as a last resort so the
+ * loss is at least observable.
+ */
+async function directWrite(env: Env, event: AuditEvent): Promise<void> {
   if (!env.DB) {
     console.log(JSON.stringify({ audit: event }));
     return;
   }
-  const write = persistOne(env, event).catch((err) => console.error('audit persist failed', err));
-  if (execCtx) execCtx.waitUntil(write);
-  else void write;
+  try {
+    await persistOne(env, event);
+  } catch (err) {
+    console.error('audit persist failed', err);
+    console.log(JSON.stringify({ audit: event }));
+  }
 }
 
 async function persistOne(env: Env, event: AuditEvent): Promise<void> {
@@ -234,4 +256,81 @@ function safeJson(s: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/**
+ * The lifecycle state of a queue-transport dispatch, reconstructed from the
+ * tenant's `queue_dispatch` / `queue_complete` / `queue_expired` audit rows
+ * for a single `tool_call_id`.
+ *
+ * Used by the internal write-back route to prove that an inbound
+ * `tool_result` pairs to a REAL, still-outstanding dispatch on the caller's
+ * tenant + thread before it lands anything in a session. Without this a
+ * holder of the fleet-global `CONSUMER_SHARED_SECRET` could inject an
+ * arbitrary `tool_result` into any tenant's thread.
+ */
+export interface QueueDispatchState {
+  /**
+   * The originating `queue_dispatch` row, if one exists for this
+   * (tenant, tool_call_id). Absent when nothing was ever dispatched under
+   * that id — i.e. a forged / cross-tenant write-back.
+   */
+  dispatch?: { threadId: string; jobId: string; manifestId: string };
+  /**
+   * True when a `queue_complete` or `queue_expired` row already exists for
+   * this (tenant, tool_call_id) — the cycle is settled, so a further
+   * write-back is a replay and must be rejected (one-shot semantics).
+   */
+  resolved: boolean;
+}
+
+/**
+ * Reconstruct the {@link QueueDispatchState} for one `tool_call_id` from the
+ * tenant's queue-lifecycle audit rows. Tenant-scoped, prepared statement,
+ * matched on `tool_call_id` via SQLite's `json_extract`.
+ *
+ * NOTE (eventual consistency): `queue_dispatch` / `queue_complete` rows are
+ * emitted through `AUDIT_QUEUE` and batched into D1 by the audit consumer,
+ * so there is a short window (bounded by the audit batch timeout) where a
+ * just-emitted row is not yet visible here. A legitimate consumer that
+ * completes faster than that window should treat the resulting rejection as
+ * transient and retry; queue-transport tools are meant for long-running work
+ * where the dispatch row is long settled by completion time.
+ */
+export async function findQueueDispatchState(
+  env: Env,
+  tenantId: string,
+  toolCallId: string,
+): Promise<QueueDispatchState> {
+  const rows = await env.DB.prepare(
+    `SELECT event_type, manifest_id,
+            json_extract(payload_json, '$.thread_id') AS thread_id,
+            json_extract(payload_json, '$.job_id') AS job_id
+       FROM audit_events
+       WHERE tenant_id = ?
+         AND event_type IN ('queue_dispatch', 'queue_complete', 'queue_expired')
+         AND json_extract(payload_json, '$.tool_call_id') = ?`,
+  )
+    .bind(tenantId, toolCallId)
+    .all<{
+      event_type: string;
+      manifest_id: string;
+      thread_id: string | null;
+      job_id: string | null;
+    }>();
+
+  let dispatch: QueueDispatchState['dispatch'];
+  let resolved = false;
+  for (const row of rows.results ?? []) {
+    if (row.event_type === 'queue_dispatch') {
+      dispatch = {
+        threadId: row.thread_id ?? '',
+        jobId: row.job_id ?? '',
+        manifestId: row.manifest_id ?? '',
+      };
+    } else {
+      resolved = true;
+    }
+  }
+  return { dispatch, resolved };
 }

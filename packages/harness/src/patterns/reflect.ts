@@ -31,9 +31,11 @@
 
 import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
+import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
+import { checkTokenBudget } from '../limits/wrap';
 import type { Model } from '../manifests/schema';
-import { buildModel } from './model';
+import { buildModel, recordUsage } from './model';
 import { type BuildReactOptions, buildReactAgent } from './react';
 import { registerPattern } from './registry';
 import type { Agent, InvokeInput, InvokeResult, StreamEvent } from './types';
@@ -121,8 +123,16 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
   // but doesn't load tools, judges, or other heavyweight wrappers.
   // It just chats.
   const verifier = buildModel(opts.env, verifierSpec);
+  const limits: Limits = opts.limits ?? DEFAULT_LIMITS;
 
   async function verify(userGoal: string, response: string): Promise<VerifierVerdict> {
+    // Token budget participates just like the react loop's per-call check:
+    // if the request has already blown its cap, don't spend more verifying —
+    // accept the response so the reflect loop terminates deterministically.
+    const preDeny = checkTokenBudget(limits, opts.manifestId);
+    if (preDeny) {
+      return { score: 1, critique: preDeny, passed: true };
+    }
     const prompt = [
       `User goal: ${userGoal}`,
       `Response: ${response}`,
@@ -137,6 +147,7 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
         [],
         { signal: currentSignal() },
       );
+      recordUsage(result, { manifestId: opts.manifestId, modelId: verifierSpec.id });
       const parsed = parseVerifierReply(result.message.content);
       if (!parsed) {
         return {

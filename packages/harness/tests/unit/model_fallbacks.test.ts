@@ -16,7 +16,7 @@ import * as auditStore from '../../src/audit/store';
 import { ANONYMOUS } from '../../src/auth/context';
 import { newLimitState, type RequestContext, runWithContext } from '../../src/context';
 import type { Env } from '../../src/env';
-import { withModelFallbacks } from '../../src/patterns/model';
+import { ModelGatewayError, withModelFallbacks } from '../../src/patterns/model';
 import type { ChatMessage } from '../../src/patterns/types';
 
 type ChatFn = () => Promise<{
@@ -158,6 +158,53 @@ describe('withModelFallbacks', () => {
     const result = await runWithContext(makeCtx(), () => wrapped.chat([], []));
     expect(result.message.content).toBe('ok');
     expect(events.filter((e) => e === 'model_switch')).toHaveLength(1);
+  });
+
+  // Regression: the gateway clients throw a plain `ModelGatewayError`, NOT an
+  // error with an ad-hoc `.status` field fabricated by the test. Earlier the
+  // classifier only saw `.status`, so a REAL gateway 429/503 (message
+  // "anthropic gateway: 503 ...", no `.status` at the time) never triggered
+  // failover — this pins the actual production error shape.
+  it('cascades on a real ModelGatewayError (503) as thrown by the gateway client', async () => {
+    const primary = fakeModel('p', async () => {
+      throw new ModelGatewayError('anthropic gateway', 503, 'upstream overloaded');
+    });
+    const fb = fakeModel('f', async () => OK_REPLY);
+    const wrapped = withModelFallbacks(primary, [fb]);
+    const result = await runWithContext(makeCtx(), () => wrapped.chat([], []));
+    expect(result.message.content).toBe('ok');
+  });
+
+  it('cascades on a real ModelGatewayError (429 rate limit)', async () => {
+    const primary = fakeModel('p', async () => {
+      throw new ModelGatewayError('anthropic gateway', 429, 'rate_limit_error');
+    });
+    const fb = fakeModel('f', async () => OK_REPLY);
+    const wrapped = withModelFallbacks(primary, [fb]);
+    const result = await runWithContext(makeCtx(), () => wrapped.chat([], []));
+    expect(result.message.content).toBe('ok');
+  });
+
+  it('does NOT retry a ModelGatewayError 400 (client misuse)', async () => {
+    const primary = fakeModel('p', async () => {
+      throw new ModelGatewayError('openai gateway', 400, 'invalid_request');
+    });
+    let fbCalled = false;
+    const fb = fakeModel('f', async () => {
+      fbCalled = true;
+      return OK_REPLY;
+    });
+    const wrapped = withModelFallbacks(primary, [fb]);
+    await expect(runWithContext(makeCtx(), () => wrapped.chat([], []))).rejects.toThrow(/400/);
+    expect(fbCalled).toBe(false);
+  });
+
+  it('bounds the upstream body echoed into the error message', () => {
+    const big = 'x'.repeat(5000);
+    const err = new ModelGatewayError('anthropic gateway', 500, big);
+    // 200-char cap + label/status prefix — nowhere near the 5000-char body.
+    expect(err.message.length).toBeLessThan(300);
+    expect(err.status).toBe(500);
   });
 
   it('passes through when fallbacks array is empty', () => {

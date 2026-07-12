@@ -14,15 +14,22 @@
  *   6. `ctx.threadId` is propagated as `session` so multi-turn flows
  *      can namespace browser sessions.
  *   7. `path_prefix` lands in the constructed URL.
+ *   8. Best-effort SSRF pre-check rejects an internal-IP navigation
+ *      target with `permission_denied` before ever hitting the binding.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Env } from '../../../src/env';
 import {
   BrowserExecutor,
   type BrowserFetcher,
   makeBrowserTool,
 } from '../../../src/tools/browser-executor';
-import { readToolErrorCode, toolOutputContent } from '../../../src/tools/errors';
+import { readToolErrorCode, ToolError, toolOutputContent } from '../../../src/tools/errors';
+
+// Minimal env: ENVIRONMENT undefined (not development) so the guard is at its
+// strictest, SSRF_ALLOW_HOSTS undefined so nothing is allow-listed.
+const ENV = {} as Env;
 
 function fakeFetcher(handler: (req: Request) => Promise<Response>): BrowserFetcher {
   return {
@@ -42,6 +49,7 @@ describe('BrowserExecutor', () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response('', { status: 200 })),
       op: 'content',
+      env: ENV,
     });
     expect(exec.transport).toBe('browser');
   });
@@ -57,6 +65,7 @@ describe('BrowserExecutor', () => {
         });
       }),
       op: 'content',
+      env: ENV,
     });
     const out = await exec.execute({ url: 'https://example.com' }, { threadId: 'tenant:thr-1' });
     expect(out).toBe('<html><body>hi</body></html>');
@@ -73,6 +82,7 @@ describe('BrowserExecutor', () => {
         return new Response('ok', { status: 200 });
       }),
       op: 'content',
+      env: ENV,
     });
     await exec.execute({ url: 'https://example.com' });
     expect(seen).not.toHaveProperty('session');
@@ -82,6 +92,7 @@ describe('BrowserExecutor', () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response('boom', { status: 502 })),
       op: 'content',
+      env: ENV,
     });
     const out = await exec.execute({ url: 'https://example.com' });
     expect(toolOutputContent(out)).toContain('[browser error] content: 502');
@@ -93,6 +104,7 @@ describe('BrowserExecutor', () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response('slow', { status: 429 })),
       op: 'content',
+      env: ENV,
     });
     const out = await exec.execute({ url: 'https://example.com' });
     expect(readToolErrorCode(out)).toBe('rate_limited');
@@ -104,6 +116,7 @@ describe('BrowserExecutor', () => {
         throw new DOMException('aborted', 'AbortError');
       }),
       op: 'screenshot',
+      env: ENV,
     });
     const controller = new AbortController();
     controller.abort(new DOMException('user cancelled', 'AbortError'));
@@ -120,6 +133,7 @@ describe('BrowserExecutor', () => {
         return new Response('ok', { status: 200 });
       }),
       op: 'content',
+      env: ENV,
       pathPrefix: '/browser',
     });
     await exec.execute({ url: 'https://example.com' });
@@ -133,6 +147,7 @@ describe('BrowserExecutor', () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response(huge, { status: 200 })),
       op: 'content',
+      env: ENV,
     });
     await expect(exec.execute({ url: 'https://example.com' })).rejects.toThrow(/cap/);
   });
@@ -141,9 +156,57 @@ describe('BrowserExecutor', () => {
     const exec = new BrowserExecutor({
       binding: fakeFetcher(async () => new Response('', { status: 200 })),
       op: 'content',
+      env: ENV,
     });
     const out = await exec.execute({ url: 'https://example.com' });
     expect(out).toBe('[browser content returned empty body]');
+  });
+
+  it('rejects an internal-IP navigation target before dispatch (permission_denied)', async () => {
+    let hit = false;
+    const exec = new BrowserExecutor({
+      binding: fakeFetcher(async () => {
+        hit = true;
+        return new Response('secret', { status: 200 });
+      }),
+      op: 'content',
+      env: ENV,
+    });
+    // AWS/GCP IMDS — must never reach the binding.
+    await expect(exec.execute({ url: 'http://169.254.169.254/latest/meta-data/' })).rejects.toThrow(
+      ToolError,
+    );
+    expect(hit).toBe(false);
+  });
+
+  it('rejects an RFC1918 / loopback target with permission_denied code', async () => {
+    const exec = new BrowserExecutor({
+      binding: fakeFetcher(async () => new Response('nope', { status: 200 })),
+      op: 'content',
+      env: ENV,
+    });
+    let caught: unknown;
+    try {
+      await exec.execute({ url: 'http://127.0.0.1:8080/' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolError);
+    expect((caught as ToolError).code).toBe('permission_denied');
+  });
+
+  it('allows a normal https target through the pre-check', async () => {
+    let hit = false;
+    const exec = new BrowserExecutor({
+      binding: fakeFetcher(async () => {
+        hit = true;
+        return new Response('ok', { status: 200 });
+      }),
+      op: 'content',
+      env: ENV,
+    });
+    await exec.execute({ url: 'https://example.com/page' });
+    expect(hit).toBe(true);
   });
 });
 

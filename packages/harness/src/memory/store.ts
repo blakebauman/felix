@@ -4,7 +4,8 @@
  * On `remember(text)` we embed via Workers AI (`@cf/baai/bge-base-en-v1.5`,
  * 768 dims) and upsert into the `MEMORY_VEC` index with metadata
  * `{ tenant, manifest, ts, kind }`. On `recall(query, k)` we embed the
- * query and pull the top-k matches scoped to the caller's tenant.
+ * query and pull the top-k matches scoped to the caller's tenant AND the
+ * calling agent's manifest (per-agent memory isolation).
  *
  * The index is provisioned in wrangler.jsonc. If a deploy hasn't created it
  * yet, calls degrade to no-op + log so a missing binding doesn't break the
@@ -78,7 +79,13 @@ class VectorizeMemoryStore implements MemoryStore {
       const matches = await this.env.MEMORY_VEC.query(values, {
         topK: k,
         returnMetadata: 'all',
-        filter: { tenant },
+        // Scope recall to the calling agent's own memory pool. Upsert stores
+        // `manifest` alongside `tenant`; without it here, two manifests under
+        // the same tenant would share a semantic-memory pool (an internal
+        // agent's facts recallable by a public-facing agent of the same
+        // tenant). Tenant isolation holds regardless; this restores the
+        // documented per-agent boundary.
+        filter: { tenant, manifest: this.manifestId },
       });
       return (matches.matches ?? []).map((m) => {
         const meta = (m.metadata ?? {}) as Record<string, unknown>;

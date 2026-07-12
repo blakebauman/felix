@@ -3,6 +3,7 @@ import type { Env } from '../../src/env';
 import type { McpServerRef } from '../../src/manifests/schema';
 import { bindExternalMcp } from '../../src/mcp/client';
 import { getToolInputSchema } from '../../src/patterns/zod-to-json-schema';
+import { readToolErrorCode } from '../../src/tools/errors';
 
 function ref(name: string): McpServerRef {
   return { name, url: 'https://mcp.example.com/rpc', auth: '', transport: 'http' };
@@ -87,6 +88,70 @@ describe('bindExternalMcp — remote inputSchema handling', () => {
     );
     await expect(bindExternalMcp(ref('evil'), fakeEnv())).rejects.toThrow(/redirect/i);
   });
+});
+
+describe('bindExternalMcp — per-call timeout', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // Fetch mock: resolve `tools/list` immediately, hang `tools/call` until its
+  // signal aborts (rejecting with the signal reason, like the real platform).
+  function listThenHangFetch() {
+    return vi.fn((_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string };
+      if (body.method === 'tools/list') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'slow' }] } }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        signal.addEventListener('abort', () =>
+          reject(signal.reason ?? new DOMException('aborted', 'AbortError')),
+        );
+      });
+    });
+  }
+
+  it('aborts a hung tools/call at the default timeout and surfaces a `timeout` error', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', listThenHangFetch());
+    const [tool] = await bindExternalMcp(ref('srv'), fakeEnv());
+    if (!tool) throw new Error('expected one tool');
+
+    const p = tool.executor.execute({ q: 'x' });
+    // The 30s default per-call timeout fires and cancels the in-flight fetch.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const out = await p;
+    expect(readToolErrorCode(out)).toBe('timeout');
+  });
+
+  it('maps a caller-driven abort to `user_aborted`, not `timeout`', async () => {
+    vi.stubGlobal('fetch', listThenHangFetch());
+    const [tool] = await bindExternalMcp(ref('srv'), fakeEnv());
+    if (!tool) throw new Error('expected one tool');
+
+    const controller = new AbortController();
+    const p = tool.executor.execute({ q: 'x' }, { signal: controller.signal });
+    controller.abort(new DOMException('request torn down', 'AbortError'));
+    const out = await p;
+    expect(readToolErrorCode(out)).toBe('user_aborted');
+  });
+});
+
+describe('bindExternalMcp — trailing schema cases', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it('drops a malformed inputSchema and falls back to the Zod compile path', async () => {
     vi.stubGlobal(
@@ -105,5 +170,71 @@ describe('bindExternalMcp — remote inputSchema handling', () => {
       const advertised = getToolInputSchema(t);
       expect(advertised).toBeTypeOf('object');
     }
+  });
+});
+
+describe('McpExecutor.execute — tools/call error taxonomy', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // fetch mock: answer `tools/list` (build time) with one tool, then answer the
+  // subsequent `tools/call` with the given non-2xx status.
+  function mockCallStatus(status: number) {
+    return vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = JSON.parse(String(init?.body ?? '{}')).method;
+      if (method === 'tools/list') {
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'search' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('upstream boom', { status });
+    });
+  }
+
+  async function callWithStatus(status: number) {
+    vi.stubGlobal('fetch', mockCallStatus(status));
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    const tool = tools[0];
+    if (!tool) throw new Error('expected one tool from bindExternalMcp');
+    return tool.executor.execute({ q: 'hi' });
+  }
+
+  it('surfaces rate_limited (not internal) on a 429 tools/call', async () => {
+    const out = await callWithStatus(429);
+    expect(readToolErrorCode(out)).toBe('rate_limited');
+  });
+
+  it('surfaces provider_error (not internal) on a 500 tools/call', async () => {
+    const out = await callWithStatus(500);
+    expect(readToolErrorCode(out)).toBe('provider_error');
+  });
+
+  it('surfaces permission_denied on a 403 tools/call', async () => {
+    const out = await callWithStatus(403);
+    expect(readToolErrorCode(out)).toBe('permission_denied');
+  });
+
+  it('surfaces provider_error on a JSON-RPC error object', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const method = JSON.parse(String(init?.body ?? '{}')).method;
+        if (method === 'tools/list') {
+          return new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { tools: [{ name: 'search' }] } }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: 'x', error: { code: -32000, message: 'nope' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+    const tools = await bindExternalMcp(ref('srv'), fakeEnv());
+    const out = await tools[0]!.executor.execute({ q: 'hi' });
+    expect(readToolErrorCode(out)).toBe('provider_error');
   });
 });
