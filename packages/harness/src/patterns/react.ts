@@ -43,6 +43,7 @@ import { ABSOLUTE_LIMITS, clampLimit, DEFAULT_LIMITS, type Limits } from '../lim
 import { currentSignal } from '../limits/state';
 import { checkPreflightTokenBudget, checkTokenBudget } from '../limits/wrap';
 import type { Model } from '../manifests/schema';
+import { DEFAULT_PROCEDURAL_OPTS, type ProceduralOpts, storeProcedure } from '../memory/procedural';
 import { recordCounter } from '../observability/metrics';
 import { withSpan } from '../observability/tracing';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
@@ -120,6 +121,14 @@ export interface BuildReactOptions {
    * the model's final answer before returning / streaming it.
    */
   guardrails?: Guardrails | null;
+  /**
+   * Procedural memory. When `enabled: true`, a clean end-of-turn success
+   * (a terminal assistant turn, not a fatal tool error) whose transcript
+   * contains a tool-call sequence is distilled into a Vectorize vector so
+   * future runs can `recall_procedure` what worked. Fire-and-forget; a
+   * failure never affects the response. Disabled by default.
+   */
+  procedural?: ProceduralOpts | null;
 }
 
 const DEFAULT_RECURSION = 10;
@@ -139,6 +148,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
   const artifactsOpts: ArtifactsOpts = opts.artifacts ?? DEFAULT_ARTIFACTS_OPTS;
   const guardrails: Guardrails = opts.guardrails ?? DEFAULT_GUARDRAILS;
   const guardFinal = finalResponseGuardEnabled(guardrails);
+  const proceduralOpts: ProceduralOpts = opts.procedural ?? DEFAULT_PROCEDURAL_OPTS;
 
   /**
    * Dispatch a single tool call. Returns `{ kind: 'ok', message }` for the
@@ -363,6 +373,24 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
     persistFireAndForget(session, events, { manifestId: opts.manifestId });
   }
 
+  // Distill a successful run's (intent → tool sequence) into procedural
+  // memory. Fire-and-forget through `waitUntil` so it never blocks the
+  // response; `storeProcedure` no-ops when procedural memory is disabled,
+  // when there was no tool-call sequence, or on any embedding/upsert error.
+  function rememberProcedureAsync(messages: readonly ChatMessage[]): void {
+    if (!proceduralOpts.enabled) return;
+    const reqCtx = getContext();
+    const tenantId = reqCtx?.auth.principal.tenantId ?? 'default';
+    const p = storeProcedure(opts.env, proceduralOpts, {
+      tenantId,
+      manifestId: opts.manifestId,
+      messages,
+    }).catch((err) => {
+      console.warn('procedural memory store failed', (err as Error).message);
+    });
+    if (reqCtx?.execCtx) reqCtx.execCtx.waitUntil(p);
+  }
+
   function trackUsage(result: ModelChatResult): void {
     recordUsage(result, { manifestId: opts.manifestId, modelId: opts.modelSpec.id });
   }
@@ -413,6 +441,8 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
           const guarded = await guardFinalResponse(result.message, guardrails, opts.manifestId);
           messages[messages.length - 1] = guarded;
           persistAsync(session, [guarded]);
+          // Clean terminal turn — eligible for procedural distillation.
+          rememberProcedureAsync(messages);
           return { messages, final: guarded };
         }
 
@@ -568,6 +598,8 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
             }
           }
           persistAsync(session, [finalMsg]);
+          // Clean terminal turn — eligible for procedural distillation.
+          rememberProcedureAsync(messages);
           yield {
             event: 'on_chain_end',
             data: { output: withUsage({ messages, final: finalMsg }) },
@@ -635,5 +667,6 @@ registerPattern('react', (ctx) =>
     toolsRetrieval: ctx.manifest.spec.tools_retrieval,
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
+    procedural: ctx.manifest.spec.procedural_memory,
   }),
 );
