@@ -42,6 +42,9 @@ Set under `vars` in `wrangler.jsonc` (per-env overrides supported).
 | `POLICY_BUNDLE_KEY` | optional | R2 key for the active signed `PolicyBundle` (default `bundles/active.json`). |
 | `SSRF_ALLOW_HOSTS` | optional | Comma-separated hostname allow-list for outbound (mcp/peers). |
 | `CONTINUOUS_EVAL` | optional | JSON tuning for the continuous-eval cron (`sample_rate` / `max_replays_per_tick` / `window_ms`); bad values degrade to defaults. |
+| `AUDIT_RETENTION_DAYS` | optional | Retention window (days) for the `retention_sweep` cron's `audit_events` prune. Parsed defensively (default 90, clamped `[7, 3650]`). |
+| `ARTIFACT_RETENTION_DAYS` | optional | Retention window (days) for the `retention_sweep` cron's R2 artifact-spill prune. Parsed defensively (default 30, clamped `[1, 3650]`). |
+| `CONVERSATION_IDLE_TTL_DAYS` | optional | Idle-TTL (days) after which a `ConversationDO` thread's storage is deleted by its DO alarm. Parsed defensively (default 90, clamped `[1, 3650]`). |
 | `GEO_MONITOR` | optional | JSON tuning for the GEO monitor cron (engine model, `max_queries_per_tick`, window). |
 | `ACP_MERCHANT_TENANT` | optional | Tenant that owns the ACP merchant surface (default `default`). |
 | `COMMERCE_*` / `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` / `STRIPE_AUTOMATIC_TAX` / `BILLING_PROVIDER_DEFAULT` | optional | Commerce configuration (tax bps, shipping/carrier JSON, ship countries, recovery webhook, consent gate + terms/privacy, checkout redirects, billing default). See [the commerce data model + configuration docs](../../../commerce/docs/data-model.md). |

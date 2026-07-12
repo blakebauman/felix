@@ -222,6 +222,14 @@
             "max_batch_timeout": 5,
             "max_retries": 5,
             "dead_letter_queue": "felix-audit-dlq-staging"
+          },
+          // Drains audit events the main consumer exhausted retries on. The
+          // `queue()` handler branches on the `-dlq` queue name and best-effort
+          // re-persists each event to D1 so the audit log stays durable.
+          {
+            "queue": "felix-audit-dlq-staging",
+            "max_batch_size": 50,
+            "max_batch_timeout": 5
           }
         ]
       },
@@ -295,6 +303,14 @@
             "max_batch_timeout": 5,
             "max_retries": 5,
             "dead_letter_queue": "felix-audit-dlq-prod"
+          },
+          // Drains audit events the main consumer exhausted retries on. The
+          // `queue()` handler branches on the `-dlq` queue name and best-effort
+          // re-persists each event to D1 so the audit log stays durable.
+          {
+            "queue": "felix-audit-dlq-prod",
+            "max_batch_size": 50,
+            "max_batch_timeout": 5
           }
         ]
       },

@@ -31,6 +31,25 @@ export interface Env {
    * → default 90; valid values are floored and clamped to `[7, 3650]`.
    */
   AUDIT_RETENTION_DAYS?: string;
+  /**
+   * Optional retention window (in days) for R2 artifact spills
+   * (`artifacts/<tenant>/<thread>/<tool_call>.txt`) pruned by the
+   * `retention_sweep` cron. Objects whose `uploaded` timestamp is older than
+   * this are deleted, BOUNDED per tick. Parsed defensively by
+   * `parseArtifactRetentionDays`: unset/non-numeric → default 30; valid values
+   * are floored and clamped to `[1, 3650]`.
+   */
+  ARTIFACT_RETENTION_DAYS?: string;
+  /**
+   * Optional idle-TTL (in days) after which a `ConversationDO` thread's stored
+   * events/state are deleted by the DO's `alarm()` handler. The alarm is
+   * set/renewed on every append; when it fires and the thread has been idle
+   * ≥ TTL its storage is wiped, otherwise the alarm reschedules to the exact
+   * expiry point. Parsed defensively by `parseConversationIdleTtlDays`:
+   * unset/non-numeric → default 90; valid values are floored and clamped to
+   * `[1, 3650]`.
+   */
+  CONVERSATION_IDLE_TTL_DAYS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   /**
