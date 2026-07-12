@@ -4,6 +4,10 @@
  *   - multi-agent patterns (`kind: 'multi-agent'` in the pattern registry)
  *     require `sub_agents` and forbid `peers`
  *   - `sub_agents` is forbidden on non-multi-agent patterns
+ *   - tool-targeted governance (`policies`, `approvals`, tool-scanning
+ *     guardrail providers, tool-scoped judges) is forbidden on multi-agent
+ *     patterns — the parent drives no tools, so it would wrap nothing;
+ *     response-level (`final_response`) guardrails are still allowed
  *   - `aggregator_prompt` is parallel-only
  *   - tool / skill name existence checks against an optional registry
  *
@@ -68,6 +72,40 @@ export function validateManifest(
     if (spec.sub_agents.length === 0) {
       throw new ManifestValidationError(
         `pattern=${spec.pattern} requires sub_agents=[...] listing the in-process agent manifests to dispatch to.`,
+      );
+    }
+
+    // Governance that hangs off the tool-executor seam is INERT on a
+    // multi-agent parent: the parent loop drives no tools of its own (it
+    // dispatches to sub-agents), so the builder wraps its policy / approval /
+    // tool-guardrail pipeline around an empty tool list. Declaring it on the
+    // parent gives the operator a false sense the whole fleet is governed
+    // while nothing is — reject it and point them at the leaf manifests.
+    // Response-level guardrails (final-response filters / judges) still run
+    // over the aggregated answer in parallel/groupchat, so those are left
+    // alone.
+    if (spec.policies.length > 0) {
+      throw new ManifestValidationError(
+        `pattern=${spec.pattern} is mutually exclusive with policies=[...] — a multi-agent parent dispatches to sub-agents and drives no tools of its own, so tool scope policies wrap nothing. Declare policies on the leaf/sub-agent manifests.`,
+      );
+    }
+    if (spec.approvals.length > 0) {
+      throw new ManifestValidationError(
+        `pattern=${spec.pattern} is mutually exclusive with approvals=[...] — a multi-agent parent drives no tools of its own, so approval gates wrap nothing. Declare approvals on the leaf/sub-agent manifests.`,
+      );
+    }
+    const g = spec.guardrails;
+    if (g.providers.length > 0 && g.targets.some((t) => t === 'input' || t === 'output')) {
+      throw new ManifestValidationError(
+        `pattern=${spec.pattern} guardrails scan tool input/output, but a multi-agent parent drives no tools of its own — the content filter wraps nothing. Move the guardrail providers to the leaf/sub-agent manifests, or scope guardrails.targets to ['final_response'] to scan the aggregated answer.`,
+      );
+    }
+    const toolJudges = g.judges.filter((j) => !j.final_response);
+    if (toolJudges.length > 0) {
+      throw new ManifestValidationError(
+        `pattern=${spec.pattern} declares tool-scoped guardrail judges (${JSON.stringify(
+          toolJudges.map((j) => j.name).sort(),
+        )}), but a multi-agent parent drives no tools of its own, so these judges score nothing. Declare them on the leaf/sub-agent manifests, or set final_response: true to score the aggregated answer.`,
       );
     }
   }
