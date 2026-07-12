@@ -24,6 +24,13 @@ export interface Env {
    * a redeploy via `wrangler secret put` / the dashboard. Unset = defaults.
    */
   CONTINUOUS_EVAL?: string;
+  /**
+   * Optional retention window (in days) for the `retention_sweep` cron
+   * (`jobs/retention.ts`). Audit events older than this are pruned each
+   * tick. Parsed defensively by `parseAuditRetentionDays`: unset/non-numeric
+   * → default 90; valid values are floored and clamped to `[7, 3650]`.
+   */
+  AUDIT_RETENTION_DAYS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   /**
