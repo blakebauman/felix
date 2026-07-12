@@ -15,6 +15,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from '@hono/zod-openapi';
+import type { Context } from 'hono';
 import { BearerSecurity, StreamEventSchema } from '../api/openapi-shared';
 import type { AuthContext } from '../auth/context';
 import { enforceManifestAuth } from '../auth/middleware';
@@ -197,11 +198,8 @@ export function buildA2ARouter(deps: { tools: ToolProvider; defaultManifest: str
   router.openapi(a2aRoute, async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    // tasks/send and tasks/sendSubscribe instantiate the manifest;
-    // gate them with the manifest's inbound auth requirements. tasks/get
-    // and tasks/cancel are tenant-scoped via the DO key — they still
-    // need an authenticated principal so the DO key resolves to the right
-    // tenant.
+    // tasks/send and tasks/sendSubscribe instantiate a manifest by name;
+    // gate them with that manifest's inbound auth requirements.
     if (body.method === 'tasks/send' || body.method === 'tasks/sendSubscribe') {
       const manifestName = body.params.task.manifest ?? deps.defaultManifest;
       let resolved: ResolvedManifest;
@@ -220,11 +218,37 @@ export function buildA2ARouter(deps: { tools: ToolProvider; defaultManifest: str
         case 'tasks/sendSubscribe':
           return tasksSendSubscribe(c.env, auth, body, deps) as never;
         case 'tasks/get':
-          return c.json(await tasksGet(c.env, auth, body));
         case 'tasks/cancel':
-          return c.json(await tasksCancel(c.env, auth, body));
-        case 'tasks/resubscribe':
-          return tasksResubscribe(c.env, auth, body) as never;
+        case 'tasks/resubscribe': {
+          // Read/mutate an existing task. Cross-tenant access is already
+          // blocked structurally (the DO id embeds the tenant). But within
+          // a single tenant — notably the anonymous `default` tenant of a
+          // public deployment — task ids are caller-suppliable, so gate
+          // these the same way send does: against the inbound auth of the
+          // manifest that owns the task. An `allow_anonymous` manifest
+          // still permits anonymous reads by design; a non-anonymous one
+          // rejects them.
+          const gate = await gateTaskAccess(c, auth, body.params.id);
+          if (!gate.ok) {
+            if (gate.kind === 'denied') return gate.response as never;
+            if (gate.kind === 'unknown_manifest') {
+              return c.json(jrpcError(body.id, -32602, `unknown manifest ${gate.manifestName}`));
+            }
+            // not found (incl. cross-tenant) — don't leak existence.
+            if (body.method === 'tasks/resubscribe') {
+              return sseTaskError(body.params.id, 'task not found') as never;
+            }
+            return c.json(jrpcError(body.id, -32001, 'task not found'));
+          }
+          switch (body.method) {
+            case 'tasks/get':
+              return c.json(jrpcResult(body.id, gate.state));
+            case 'tasks/cancel':
+              return c.json(await tasksCancel(c.env, auth, body));
+            case 'tasks/resubscribe':
+              return tasksResubscribe(c.env, auth, body, gate.state) as never;
+          }
+        }
       }
     } catch (err) {
       return c.json(jrpcError(body.id, -32000, (err as Error).message));
@@ -349,11 +373,57 @@ async function tasksSendSubscribe(
   });
 }
 
-async function tasksGet(env: Env, auth: AuthContext, body: A2AIdRequest) {
-  const stub = taskDoStub(env, auth.principal.tenantId, body.params.id);
-  const resp = await stub.fetch('https://do/get');
-  if (!resp.ok) return jrpcError(body.id, -32001, 'task not found');
-  return jrpcResult(body.id, await resp.json());
+/** Full task state as persisted by A2ATaskDO (carries the owning manifest). */
+type TaskState = TaskStateLite & { manifestName: string };
+
+type TaskGateResult =
+  | { ok: true; state: TaskState }
+  | { ok: false; kind: 'not_found' }
+  | { ok: false; kind: 'unknown_manifest'; manifestName: string }
+  | { ok: false; kind: 'denied'; response: Response };
+
+/**
+ * Authorize a read/mutate against an existing A2A task. Resolves the manifest
+ * that created the task (stored on the DO) and applies its inbound auth
+ * requirements via `enforceManifestAuth` — the same gate `tasks/send` uses —
+ * so a manifest that disallows anonymous rejects anonymous callers even when
+ * they can reach the tenant DO. Cross-tenant lookups miss the DO and surface
+ * as `not_found`, preserving the no-existence-leak contract.
+ */
+async function gateTaskAccess(
+  c: Context<{ Bindings: Env; Variables: { auth: AuthContext } }>,
+  auth: AuthContext,
+  taskId: string,
+): Promise<TaskGateResult> {
+  const resp = await taskDoStub(c.env, auth.principal.tenantId, taskId).fetch('https://do/get');
+  if (!resp.ok) return { ok: false, kind: 'not_found' };
+  const state = (await resp.json()) as TaskState;
+  let resolved: ResolvedManifest;
+  try {
+    resolved = await resolveManifest(c.env, auth.principal.tenantId, state.manifestName);
+  } catch {
+    return { ok: false, kind: 'unknown_manifest', manifestName: state.manifestName };
+  }
+  const denied = enforceManifestAuth(c, resolved.manifest);
+  if (denied) return { ok: false, kind: 'denied', response: denied };
+  return { ok: true, state };
+}
+
+/** One-shot SSE stream carrying an error event, then close (parity with the
+ * resubscribe stream's own error framing). */
+function sseTaskError(taskId: string, error: string): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ id: taskId, status: 'error', error })}\n\n`),
+      );
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+  });
 }
 
 async function tasksCancel(env: Env, auth: AuthContext, body: A2AIdRequest) {
@@ -384,23 +454,20 @@ interface TaskStateLite {
  * spin up a background runner inside a Worker request, so a fresh client
  * request is the natural carrier for the next step.
  */
-function tasksResubscribe(env: Env, auth: AuthContext, body: A2AIdRequest): Response {
+function tasksResubscribe(
+  env: Env,
+  auth: AuthContext,
+  body: A2AIdRequest,
+  task: TaskStateLite,
+): Response {
   const tenantId = auth.principal.tenantId;
   const taskId = body.params.id;
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const taskResp = await taskDoStub(env, tenantId, taskId).fetch('https://do/get');
-        if (!taskResp.ok) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ id: taskId, status: 'error', error: 'task not found' })}\n\n`,
-            ),
-          );
-          return;
-        }
-        const task = (await taskResp.json()) as TaskStateLite;
+        // Existence + auth were verified by the caller's gate; `task` is the
+        // pre-fetched DO state.
         // Replay persisted events. The session id matches what tasks/send
         // and tasks/sendSubscribe use for the same task.
         const session = getSessionStore(env, 'do').open(`${tenantId}:a2a-${taskId}`);
