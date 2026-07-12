@@ -122,16 +122,22 @@ export function disposeLimitState(state: LimitState): void {
 }
 
 /**
- * Close the per-request Postgres client, if `getDb` created one. Best-effort
- * and fire-and-forget: production Workers tear request sockets down anyway,
- * but long-lived local runtimes (wrangler dev, the vitest workers pool) reuse
- * the isolate across many requests and would otherwise accumulate one
- * client's connections per request until the server's max_connections is
- * exhausted. Fakes without an `end` (unit-test doubles) are skipped.
+ * Close the per-request Postgres client, if `getDb` created one. Long-lived
+ * local runtimes (wrangler dev, the vitest workers pool) reuse the isolate
+ * across many requests and would otherwise accumulate one client's
+ * connections per request until the server's max_connections is exhausted.
+ *
+ * Skipped in staging/production: deployed Workers tear request sockets down
+ * automatically (current Cloudflare guidance is to NOT call `.end()`), and
+ * an explicit end there only produces a "Stream was cancelled" unhandled
+ * rejection from the postgres.js workerd polyfill's pending socket read.
+ * Fakes without an `end` (unit-test doubles) are also skipped.
  */
 export function disposeContextDb(ctx: RequestContext): void {
   const db = ctx.db;
   if (!db || typeof db.end !== 'function') return;
+  const environment = (ctx.env as { ENVIRONMENT?: string }).ENVIRONMENT;
+  if (environment === 'staging' || environment === 'production') return;
   ctx.db = undefined;
   void db.end({ timeout: 5 }).catch(() => {});
 }
