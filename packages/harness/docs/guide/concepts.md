@@ -160,7 +160,7 @@ The `orchestrator_durable_fallback` counter fires whenever durable mode degrades
 
 ## Eval harness
 
-The eval surface is three D1 tables (`eval_datasets`, `eval_dataset_items`, `eval_runs`) backing `/eval/datasets`, `/eval/datasets/{name}/items`, `/eval/datasets/{name}/run`, and `/eval/runs`. Each item carries:
+The eval surface is three D1 tables (`eval_datasets`, `eval_dataset_items`, `eval_runs`) backing `/eval/datasets`, `/eval/datasets/{name}/items`, `/eval/datasets/{name}/run`, and `/eval/runs`. A run executes off the request path: `POST …/run` returns `202 { run_id }` and the scoring happens in a background job (`execCtx.waitUntil`) so a large dataset can't blow the Worker CPU / subrequest ceiling — poll `GET /eval/runs/{id}` for the terminal `completed` / `failed` status. Each item carries:
 
 - `user_input` — the prompt to drive through the candidate manifest
 - `rubric` — pass criteria. Layered scoring:

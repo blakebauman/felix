@@ -580,7 +580,7 @@ List items in a dataset, ordered by creation time.
 
 ### POST /eval/datasets/:name/run
 
-Execute the dataset against a candidate manifest. Synchronous; returns a summary. Per-item scores are persisted; fetch via `GET /eval/runs/:id`.
+Create a run and execute it **in the background**. The route returns `202` immediately so large datasets don't hit the Worker CPU / subrequest ceiling; the actual scoring runs in a detached job (`execCtx.waitUntil`) that finalizes the run row when it settles. Poll `GET /eval/runs/:id` for the terminal status and per-item scores.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $JWT" \
@@ -592,17 +592,24 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 ```json
 {
   "run_id": "uuid",
-  "pass_count": 23,
-  "fail_count": 2,
-  "pass_rate": 0.92
+  "status": "in_progress"
 }
+```
+
+Then poll until the run finalizes:
+
+```bash
+curl -s -H "Authorization: Bearer $JWT" $BASE_URL/eval/runs/<run_id> | jq '{status, pass_count, fail_count}'
+# → { "status": "completed", "pass_count": 23, "fail_count": 2 }
 ```
 
 `deterministic_judge: true` uses substring + trajectory gates only — no `env.AI` calls. Useful for CI environments without an AI binding wired.
 
 `candidate_version: N` pins the run to a specific tenant-managed manifest version instead of the active pointer — the only way to eval an inactive version before promoting it. The version the run tested is stored on the run row as `manifest_version` (null for bundled / R2 candidates) and is what the `/manifests` activate + canary eval gate matches against.
 
-If the run throws before it finalizes (candidate not found, agent build error), the row is finalized `failed` rather than left `in_progress`.
+Because execution is deferred, a candidate manifest that cannot be resolved (or an agent build error) surfaces as a run that finalizes `failed` — **not** as a 4xx on this call. The only 4xx here is `404` when the dataset itself does not exist for the tenant. The run row moves `in_progress → completed | failed`; it is never left stuck `in_progress`.
+
+> **Ideal upgrade:** the detached `waitUntil` job is bounded by the request's overall lifetime. For very large / long-running batches a dedicated Cloudflare Workflow (`EvalRunWorkflow`, bound as `EVAL_WORKFLOW`, mirroring `AgentWorkflow`) would survive a Worker eviction mid-run and replay from the last completed step. It is a drop-in swap for `runDatasetDetached` once the binding is wired in `wrangler.jsonc` (all envs) and the vitest miniflare config.
 
 ### GET /eval/runs
 
@@ -614,7 +621,7 @@ Fetch one run with per-item `ItemScore` rows: `{item_id, score, verdict, reasoni
 
 ### `pnpm eval` — the CI gate
 
-`scripts/eval.ts` is the merge-blocking gate. It POSTs to `/eval/datasets/:name/run`, then `GET /eval/runs/:id` for cost dimensions, and compares against a `--baseline` JSON file:
+`scripts/eval.ts` is the merge-blocking gate. It POSTs to `/eval/datasets/:name/run`, polls `GET /eval/runs/:id` until the background run finalizes (deriving `pass_rate` and cost dimensions from the terminal row), and compares against a `--baseline` JSON file:
 
 ```bash
 pnpm eval -- --base-url https://staging-make.felix.run \

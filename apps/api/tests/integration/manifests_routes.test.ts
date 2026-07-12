@@ -27,6 +27,37 @@ function manifestBody(name: string, description: string): Record<string, unknown
   };
 }
 
+/**
+ * Kick off an eval run (now 202 + background execution) and poll the run
+ * row until it finalizes, returning the terminal record. The eval
+ * activation gate only reads `completed` runs, so callers must wait.
+ */
+async function runEvalAndWait(
+  base: string,
+  body: Record<string, unknown>,
+): Promise<{ id: string; status: string; fail_count: number; manifest_version: number | null }> {
+  const resp = await SELF.fetch(`${base}/eval/datasets/gate_set/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  expect(resp.status).toBe(202);
+  const { run_id } = (await resp.json()) as { run_id: string };
+  for (let i = 0; i < 50; i += 1) {
+    const detail = await SELF.fetch(`${base}/eval/runs/${run_id}`);
+    expect(detail.status).toBe(200);
+    const row = (await detail.json()) as {
+      id: string;
+      status: string;
+      fail_count: number;
+      manifest_version: number | null;
+    };
+    if (row.status !== 'in_progress') return row;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`eval run ${run_id} did not finalize`);
+}
+
 beforeAll(async () => {
   await applyMigrations(testEnv.DB);
 });
@@ -162,42 +193,31 @@ describe('/manifests CRUD', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'gate_set', description: '' }),
     });
-    // Passing run pinned to version 1.
-    const runV1Resp = await SELF.fetch(`${base}/eval/datasets/gate_set/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        candidate_manifest: name,
-        candidate_version: 1,
-        deterministic_judge: true,
-      }),
+    // Passing run pinned to version 1 (background job polled to terminal).
+    const runV1 = await runEvalAndWait(base, {
+      candidate_manifest: name,
+      candidate_version: 1,
+      deterministic_judge: true,
     });
-    expect(runV1Resp.status).toBe(200);
-    const runV1 = (await runV1Resp.json()) as { run_id: string; fail_count: number };
+    expect(runV1.status).toBe('completed');
     expect(runV1.fail_count).toBe(0);
 
     // Passing run pinned to version 2 (used for the version-mismatch case).
-    const runV2Resp = await SELF.fetch(`${base}/eval/datasets/gate_set/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        candidate_manifest: name,
-        candidate_version: 2,
-        deterministic_judge: true,
-      }),
+    const runV2 = await runEvalAndWait(base, {
+      candidate_manifest: name,
+      candidate_version: 2,
+      deterministic_judge: true,
     });
-    expect(runV2Resp.status).toBe(200);
-    const runV2 = (await runV2Resp.json()) as { run_id: string };
+    expect(runV2.status).toBe('completed');
 
     // The run records the version it tested.
-    const runDetail = await SELF.fetch(`${base}/eval/runs/${runV1.run_id}`);
-    expect(((await runDetail.json()) as { manifest_version: number }).manifest_version).toBe(1);
+    expect(runV1.manifest_version).toBe(1);
 
     // require_eval + a passing run for version 1 → activation succeeds.
     const ok = await SELF.fetch(`${base}/manifests/${name}/activate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ version: 1, require_eval: true, eval_run_id: runV1.run_id }),
+      body: JSON.stringify({ version: 1, require_eval: true, eval_run_id: runV1.id }),
     });
     expect(ok.status).toBe(200);
     expect(((await ok.json()) as { active_version: number }).active_version).toBe(1);
@@ -216,7 +236,7 @@ describe('/manifests CRUD', () => {
     const mismatch = await SELF.fetch(`${base}/manifests/${name}/activate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ version: 1, eval_run_id: runV2.run_id }),
+      body: JSON.stringify({ version: 1, eval_run_id: runV2.id }),
     });
     expect(mismatch.status).toBe(409);
     const mismatchBody = (await mismatch.json()) as { error: string; detail: string };

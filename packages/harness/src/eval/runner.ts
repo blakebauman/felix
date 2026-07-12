@@ -2,18 +2,31 @@
  * Eval runner — drive a candidate manifest through a dataset's items,
  * judge each response, persist the resulting `EvalRun`.
  *
- * Single-flight by design: a run completes synchronously inside the
- * caller's HTTP request. The dataset size is bounded (typical golden
- * sets are <50 items), and the runner does not parallelize — keeping
- * audit ordering and token spend predictable. The Workflows adapter
- * is the natural home for larger / longer-running eval batches.
+ * Execution is off the request path. `runDataset` iterates the dataset
+ * items serially (no parallelism — keeps audit ordering and token spend
+ * predictable), but the `/eval` run route does NOT await it: it creates
+ * the `in_progress` run row, hands `runDatasetDetached` to
+ * `execCtx.waitUntil`, and returns `202 { run_id }` immediately. This
+ * keeps large datasets from blowing the Worker CPU / subrequest ceiling
+ * that a synchronous-in-request run hit. `GET /eval/runs/:id` reflects
+ * live status; the row finalizes to `completed` / `failed` when the
+ * background job settles, which is exactly what the `/manifests`
+ * activation gate reads.
+ *
+ * A dedicated Cloudflare Workflow (`EvalRunWorkflow`, bound as
+ * `EVAL_WORKFLOW`) is the ideal home for very large / long-running
+ * batches — it would survive a Worker eviction mid-run and replay from
+ * the last completed step, the same way `AgentWorkflow` backs durable
+ * agent invokes. `waitUntil` is used here instead because it needs no
+ * new binding to verify end-to-end; the Workflow variant is a drop-in
+ * upgrade to `runDatasetDetached` once the binding is wired.
  *
  * Each scored item emits a `judge_score` audit event so an operator can
  * trace a regression back to the exact input, response, and rubric.
  */
 
 import { recordEvent } from '../audit/store';
-import { getContext } from '../context';
+import { buildAnonymousContext, disposeLimitState, getContext, runWithContext } from '../context';
 import type { Env } from '../env';
 import { buildAgent } from '../manifests/builder';
 import { resolveManifest } from '../manifests/resolver';
@@ -174,5 +187,48 @@ export async function runDataset(
       manifestVersion: opts.candidateVersion ?? null,
     });
     throw err;
+  }
+}
+
+/**
+ * Run a dataset in a detached background context — the body handed to
+ * `execCtx.waitUntil` by the `/eval` run route.
+ *
+ * The request's AsyncLocalStorage scope (installed by `authMiddleware`)
+ * has already unwound and its `LimitState` been disposed by the time
+ * `waitUntil` fires, so this installs a FRESH anonymous `RequestContext`
+ * scoped to the run's tenant + principal. Without it, `recordEvent`
+ * falls back to `console.log` instead of enqueueing `judge_score` rows,
+ * and `buildAgent` / `agent.invoke` would run without a `LimitState`.
+ *
+ * Never throws: `runDataset` already finalizes the run row to `failed`
+ * on any error before re-raising, so a background failure still leaves a
+ * terminal row for the activation gate to read. This wrapper additionally
+ * swallows so a rejected `waitUntil` promise can't surface as an
+ * unhandled rejection, and disposes the fresh `LimitState` in `finally`.
+ */
+export async function runDatasetDetached(
+  env: Env,
+  tools: ToolProvider,
+  opts: RunOptions,
+  execCtx?: ExecutionContext,
+): Promise<void> {
+  const reqCtx = buildAnonymousContext(env, execCtx);
+  reqCtx.auth = {
+    ...reqCtx.auth,
+    principal: {
+      ...reqCtx.auth.principal,
+      tenantId: opts.tenantId,
+      subject: opts.principalSubject,
+    },
+  };
+  try {
+    await runWithContext(reqCtx, () => runDataset(env, tools, opts));
+  } catch (err) {
+    // runDataset already finalized the row `failed`; log so the failure
+    // is observable but don't reject the waitUntil promise.
+    console.error(`detached eval run ${opts.runId} failed`, err);
+  } finally {
+    disposeLimitState(reqCtx.limitState);
   }
 }
