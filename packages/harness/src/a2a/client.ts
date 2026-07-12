@@ -19,8 +19,9 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { A2APeerRef } from '../manifests/schema';
+import { readCappedJson } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
-import { codeForStatus, toolErrorOutput } from '../tools/errors';
+import { codeForStatus, ToolError, toolErrorOutput } from '../tools/errors';
 import type { ToolExecutor } from '../tools/executor';
 import {
   defineToolWithExecutor,
@@ -118,10 +119,11 @@ class A2AExecutor implements ToolExecutor {
           `[peer error] ${this.ref.name}: ${resp.status}`,
         );
       }
-      const data = (await resp.json()) as {
+      // Byte-cap the read so a hostile peer can't OOM the isolate.
+      const data = await readCappedJson<{
         result?: TaskSendResult;
         error?: { message: string };
-      };
+      }>(resp);
       if (data.error)
         return toolErrorOutput(
           'provider_error',
@@ -135,6 +137,9 @@ class A2AExecutor implements ToolExecutor {
           'user_aborted',
           `[peer cancelled] ${this.ref.name}: ${(err as Error).message}`,
         );
+      }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[peer error] ${this.ref.name}: ${err.message}`);
       }
       throw err;
     }

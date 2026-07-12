@@ -34,8 +34,9 @@
 
 import { z } from 'zod';
 import type { Env } from '../env';
+import { readCappedJson, readCappedText } from '../security/response-limit';
 import { assertSafeOutboundUrlForEnv, isRedirect } from '../security/ssrf';
-import { codeForStatus, toolErrorOutput } from './errors';
+import { codeForStatus, ToolError, toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
   defineToolWithExecutor,
@@ -105,13 +106,16 @@ export class ContainerExecutor implements ToolExecutor {
         );
       }
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
+        // Error bodies get the same byte cap — only 200 chars are surfaced,
+        // so a hostile gateway can't OOM the isolate via a huge non-2xx body.
+        const body = await readCappedText(resp, 4096).catch(() => '');
         return toolErrorOutput(
           codeForStatus(resp.status),
           `[container error] ${this.opts.image}: ${resp.status} ${body.slice(0, 200)}`,
         );
       }
-      const data = (await resp.json()) as ContainerResponse;
+      // Byte-cap the read so a hostile/compromised gateway can't OOM the isolate.
+      const data = await readCappedJson<ContainerResponse>(resp);
       if (data.exit_code != null && data.exit_code !== 0) {
         const detail = (data.stderr || data.content || '').slice(0, 1000);
         return toolErrorOutput(
@@ -126,6 +130,9 @@ export class ContainerExecutor implements ToolExecutor {
           'user_aborted',
           `[container cancelled] ${this.opts.containerToolName}: ${(err as Error).message}`,
         );
+      }
+      if (err instanceof ToolError) {
+        return toolErrorOutput(err.code, `[container error] ${this.opts.image}: ${err.message}`);
       }
       throw err;
     } finally {
