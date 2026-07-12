@@ -1,12 +1,14 @@
 /**
- * Competitor-price store (D1) + `competitor_price` entity-type registration.
+ * Competitor-price store (Postgres) + `competitor_price` entity-type
+ * registration.
  *
  * Registering on the entity seam means a tenant can keep competitor prices
- * native (D1, populated by a feed job) OR federate them from an external
+ * native (Postgres, populated by a feed job) OR federate them from an external
  * pricing-intelligence service (http/mcp connector) without changing the
  * dynamic-pricing caller — the same treatment accounts/buyers/quotes get.
  */
 
+import { getDb } from '@felix/harness/db/client';
 import type { Env } from '@felix/harness/env';
 import { registerEntityType } from '../entities/registry';
 import type { ListOpts, NativeStore, Page, RawRecord } from '../entities/types';
@@ -44,36 +46,35 @@ function num(v: unknown, fallback = 0): number {
 
 export const competitorPriceStore: NativeStore<CompetitorPrice> = {
   async get(env, tenant, id) {
-    const row = await env.DB.prepare(
-      'SELECT * FROM competitor_prices WHERE tenant_id = ? AND id = ? LIMIT 1',
-    )
-      .bind(tenant, id)
-      .first<Row>();
-    return row ? rowToCompetitorPrice(row) : null;
+    const sql = getDb(env);
+    const rows = await sql<Row[]>`
+      SELECT * FROM competitor_prices WHERE tenant_id = ${tenant} AND id = ${id} LIMIT 1
+    `;
+    return rows[0] ? rowToCompetitorPrice(rows[0]) : null;
   },
   async list(env, tenant, opts?: ListOpts): Promise<Page<CompetitorPrice>> {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const rows = await env.DB.prepare(
-      'SELECT * FROM competitor_prices WHERE tenant_id = ? ORDER BY observed_at DESC LIMIT ?',
-    )
-      .bind(tenant, limit)
-      .all<Row>();
-    return { items: (rows.results ?? []).map(rowToCompetitorPrice) };
+    const sql = getDb(env);
+    const rows = await sql<Row[]>`
+      SELECT * FROM competitor_prices WHERE tenant_id = ${tenant}
+        ORDER BY observed_at DESC LIMIT ${limit}
+    `;
+    return { items: rows.map(rowToCompetitorPrice) };
   },
   async upsert(env, tenant, cp) {
-    await env.DB.prepare(
-      `INSERT INTO competitor_prices
-         (tenant_id, id, product_id, source, price_cents, currency, observed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (tenant_id, id) DO UPDATE SET
-         product_id = excluded.product_id,
-         source = excluded.source,
-         price_cents = excluded.price_cents,
-         currency = excluded.currency,
-         observed_at = excluded.observed_at`,
-    )
-      .bind(tenant, cp.id, cp.product_id, cp.source, cp.price_cents, cp.currency, cp.observed_at)
-      .run();
+    const sql = getDb(env);
+    await sql`
+      INSERT INTO competitor_prices
+          (tenant_id, id, product_id, source, price_cents, currency, observed_at)
+        VALUES (${tenant}, ${cp.id}, ${cp.product_id}, ${cp.source}, ${cp.price_cents},
+                ${cp.currency}, ${cp.observed_at})
+        ON CONFLICT (tenant_id, id) DO UPDATE SET
+          product_id = excluded.product_id,
+          source = excluded.source,
+          price_cents = excluded.price_cents,
+          currency = excluded.currency,
+          observed_at = excluded.observed_at
+    `;
   },
 };
 
@@ -100,12 +101,12 @@ export async function minCompetitorPriceCents(
   tenant: string,
   productId: string,
 ): Promise<number | null> {
-  const row = await env.DB.prepare(
-    'SELECT MIN(price_cents) AS min_cents FROM competitor_prices WHERE tenant_id = ? AND product_id = ?',
-  )
-    .bind(tenant, productId)
-    .first<{ min_cents: number | null }>();
-  return row?.min_cents ?? null;
+  const sql = getDb(env);
+  const rows = await sql<{ min_cents: number | null }[]>`
+    SELECT MIN(price_cents) AS min_cents FROM competitor_prices
+      WHERE tenant_id = ${tenant} AND product_id = ${productId}
+  `;
+  return rows[0]?.min_cents ?? null;
 }
 
 registerEntityType<CompetitorPrice>({

@@ -23,7 +23,6 @@ import { registerBillingProvider } from '@felix/commerce/billing/registry';
 import { upsertProduct } from '@felix/commerce/catalog-store';
 import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -90,7 +89,6 @@ async function quoteToInvoice(tenant: string): Promise<Invoice> {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   // A custom PSP — proves the seam isn't Stripe-only.
   registerBillingProvider('mock-psp', () => ({
     kind: 'mock-psp',

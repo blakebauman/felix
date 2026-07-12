@@ -26,16 +26,12 @@ import {
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { defineTool, isWrapperDeny, type Tool, type ToolOutput } from '@felix/harness/tools/types';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { applyMigrations, withPgContext } from './setup';
+import { withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const TENANT = 'default';
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 function ctxFor(subject: string): RequestContext {
   const auth: AuthContext = {

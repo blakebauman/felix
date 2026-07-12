@@ -5,13 +5,11 @@
 import { env, SELF } from 'cloudflare:test';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await SELF.fetch('https://o.test/brands', {
     method: 'POST',
     headers: JSON_HEADERS,

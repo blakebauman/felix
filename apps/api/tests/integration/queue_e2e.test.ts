@@ -32,15 +32,10 @@ import type { Env as AppEnv } from '@felix/harness/env';
 import { conversationStub } from '@felix/harness/memory/conversation-do';
 import { analyzeWake, type SessionEvent } from '@felix/harness/session/types';
 import { QueueExecutor } from '@felix/harness/tools/queue-executor';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
+import { describe, expect, it } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
 const SECRET = 'test-shared-secret';
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 async function readEvents(threadId: string): Promise<SessionEvent[]> {
   const resp = await conversationStub(testEnv, threadId).fetch('https://do/events');

@@ -17,8 +17,8 @@ import { runAnomalyScan } from '@felix/harness/jobs/anomaly-detector';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { ManifestSchema } from '@felix/harness/manifests/schema';
 import { createVersion } from '@felix/harness/manifests/store';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations, withPgContext } from './setup';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { withPgContext } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -29,10 +29,6 @@ const testSql = () => {
   _sql ??= getDb(testEnv);
   return _sql;
 };
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 beforeEach(() => {
   _clearResolverCache();

@@ -24,14 +24,9 @@ import { dispatchRecovery } from '@felix/commerce/personalization/recovery';
 import { identifyCustomerTool, recommendProductsTool } from '@felix/commerce/personalization/tools';
 import { buildAnonymousContext, runWithContext } from '@felix/harness/context';
 import type { Env as AppEnv } from '@felix/harness/env';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { applyMigrations } from './setup';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const testEnv = env as unknown as AppEnv;
-
-beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
-});
 
 describe('customer identity + behavior store', () => {
   it('upserts a customer, links a thread, and resolves it back', async () => {

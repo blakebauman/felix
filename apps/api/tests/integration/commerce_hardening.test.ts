@@ -16,7 +16,6 @@ import type { Product } from '@felix/commerce/models';
 import { handleCheckoutCompleted } from '@felix/commerce/webhook';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 
@@ -38,7 +37,6 @@ function product(tenant: string, id: string, inventory: number): Product {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await upsertProduct(testEnv, product('harden', 'h-a', 10));
   await upsertProduct(testEnv, product('harden', 'h-b', -1)); // unlimited
   for (let i = 0; i < 5; i += 1) {

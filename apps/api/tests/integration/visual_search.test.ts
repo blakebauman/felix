@@ -12,7 +12,6 @@ import type { Product } from '@felix/commerce/models';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { _clearResolverCache } from '@felix/harness/manifests/resolver';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applyMigrations } from './setup';
 
 const testEnv = env as unknown as AppEnv;
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -41,7 +40,6 @@ function imageForm(): FormData {
 }
 
 beforeAll(async () => {
-  await applyMigrations(testEnv.DB);
   await SELF.fetch('https://o.test/brands', {
     method: 'POST',
     headers: JSON_HEADERS,
