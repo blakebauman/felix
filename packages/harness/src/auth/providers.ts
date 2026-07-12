@@ -18,7 +18,7 @@
 
 import type { Env } from '../env';
 import { decryptAtRest, encryptAtRest } from '../security/at-rest';
-import { isOutboundHostAllowed } from '../security/ssrf';
+import { assertSafeOutboundUrlForEnv, isOutboundHostAllowed } from '../security/ssrf';
 
 export interface OAuthProviderConfig {
   client_id: string;
@@ -46,9 +46,10 @@ interface TokenRow {
 }
 
 /**
- * Cap the cached lifetime regardless of the issuer's `expires_in`. The
- * token is at-rest in D1 in cleartext; shorter TTL bounds the exposure
- * window if a row leaks. 1 hour matches the JWKS TTL for symmetry.
+ * Cap the cached lifetime regardless of the issuer's `expires_in`. The token
+ * is AES-256-GCM encrypted at rest in D1 (see `security/at-rest.ts`); the
+ * shorter TTL still bounds the exposure window if a row and the key both leak.
+ * 1 hour matches the JWKS TTL for symmetry.
  */
 const MAX_CACHED_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -82,10 +83,17 @@ export async function getClientCredentialsToken(
   });
   if (cfg.scope) body.set('scope', cfg.scope);
   if (cfg.audience) body.set('audience', cfg.audience);
+  // SSRF guard on the operator-configured token endpoint — the one auth-layer
+  // outbound path; throws on a private/loopback/non-https target.
+  assertSafeOutboundUrlForEnv(cfg.token_url, env);
   const resp = await fetch(cfg.token_url, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
+    // Don't follow redirects: the SSRF guard only validated the initial
+    // token_url, so a 3xx to an internal address would bypass it. A redirect
+    // surfaces as a non-2xx and is rejected by the `!resp.ok` check below.
+    redirect: 'manual',
   });
   if (!resp.ok) {
     // Don't reflect the upstream body — providers sometimes leak debug
