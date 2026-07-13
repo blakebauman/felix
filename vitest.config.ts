@@ -82,6 +82,8 @@ export default defineConfig({
                 CONSUMER_SHARED_SECRET: 'test-shared-secret',
                 ACP_API_KEY: 'test-acp-key',
                 ACP_MERCHANT_TENANT: 'default',
+                UCP_API_KEY: 'test-ucp-key',
+                UCP_MERCHANT_TENANT: 'default',
                 JWKS_PUBLIC: '{"keys":[{"kid":"test-kid","kty":"RSA","use":"sig"}]}',
               },
             },
