@@ -91,6 +91,20 @@ declare module '@felix/harness/env' {
      */
     ACP_MERCHANT_TENANT?: string;
     /**
+     * Bearer API key the merchant (us) issues to platforms calling the
+     * Universal Commerce Protocol endpoints under `/ucp/*`. Compared in
+     * constant time against the request `Authorization: Bearer …`. When unset,
+     * all `/ucp` routes return 503 and the `/.well-known/ucp` discovery
+     * document 404s (the protocol surface is disabled).
+     */
+    UCP_API_KEY?: string;
+    /**
+     * Merchant tenant that owns the UCP catalog + orders. UCP is single-merchant;
+     * sessions, products, and orders all resolve under this tenant. Defaults to
+     * `default` (the same catalog the ACP surface sells).
+     */
+    UCP_MERCHANT_TENANT?: string;
+    /**
      * Optional JSON override for the GEO-monitoring cron knobs:
      * `{ "max_queries_per_tick"?: number, "gen_model"?: string, "extract_model"?: string }`.
      * Missing/invalid fields fall back to `DEFAULT_GEO_MONITOR_OPTS`; see
