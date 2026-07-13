@@ -152,6 +152,32 @@ describe('UCP checkout lifecycle', () => {
     expect(s2.line_items).toHaveLength(1);
   });
 
+  it('PUT with only a selected_option_id keeps the stored destination', async () => {
+    const created = await create({
+      line_items: [{ item: { id: 'ucp-mug' }, quantity: 1 }],
+      fulfillment: FULFILLMENT,
+    });
+    const s = (await created.json()) as UcpCheckoutSession;
+    expect(s.status).toBe('ready_for_complete');
+
+    // Flip the shipping option without re-sending the destination — the
+    // session must not lose the address or drop back to incomplete.
+    const updated = await SELF.fetch(`https://o.test/ucp/checkout-sessions/${s.id}`, {
+      method: 'PUT',
+      headers: AUTH,
+      body: JSON.stringify({
+        fulfillment: {
+          methods: [{ type: 'shipping', groups: [{ selected_option_id: 'express' }] }],
+        },
+      }),
+    });
+    const s2 = (await updated.json()) as UcpCheckoutSession;
+    expect(s2.status).toBe('ready_for_complete');
+    const method = s2.fulfillment!.methods!.find((m) => m.type === 'shipping')!;
+    expect(method.selected_destination_id).toBe('dest_1');
+    expect(method.groups![0]!.selected_option_id).toBe('express');
+  });
+
   it('unknown product yields an error message and incomplete status', async () => {
     const r = await create({
       line_items: [{ item: { id: 'nope' }, quantity: 1 }],

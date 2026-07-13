@@ -291,10 +291,13 @@ export function inputsFromSession(
 
 /**
  * Persist a paid order from a completed session + the settled payment ref.
- * Returns the order fields to stamp onto the session. Idempotent per session:
- * the deterministic order id means a retried/concurrent `complete` (which
- * already reuses the same Stripe PaymentIntent via the idempotency key) does
- * not create a duplicate order or double-decrement inventory.
+ * Returns the order fields to stamp onto the session. Idempotent per session
+ * for sequential retries: the deterministic order id means a retried
+ * `complete` (which already reuses the same Stripe PaymentIntent via the
+ * idempotency key) does not create a duplicate order or re-decrement
+ * inventory. Two *racing* completes can still double-decrement inventory
+ * (check-then-act, same as the ACP sibling) — the charge stays single either
+ * way.
  */
 export async function finalizeUcpOrder(
   env: Env,

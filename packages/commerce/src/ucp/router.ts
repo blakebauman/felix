@@ -146,7 +146,12 @@ export function buildUcpRouter(): Hono<{ Bindings: Env }> {
           }))
         : prev.items,
       buyer: parsed.data.buyer ?? prev.buyer,
-      destination: parsed.data.fulfillment ? next.destination : prev.destination,
+      // Keep the stored destination when the new fulfillment block doesn't
+      // carry one — platforms flip `selected_option_id` without re-sending
+      // the address.
+      destination: parsed.data.fulfillment
+        ? (next.destination ?? prev.destination)
+        : prev.destination,
       selectedOptionId: parsed.data.fulfillment
         ? (next.selectedOptionId ?? prev.selectedOptionId)
         : prev.selectedOptionId,
