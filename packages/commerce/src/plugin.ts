@@ -2,9 +2,10 @@
  * commercePlugin — Felix Commerce packaged as a FelixPlugin. Everything the
  * commerce layer (src/commerce/, src/entities/, src/geo/) contributes to the
  * harness is assembled here: HTTP routers, tool factories, cron tasks, the
- * `/acp` self-auth mount, storefront/ACP rate-limit keying, and the body-size
- * floor for the visual-search image upload. Core wires it in through
- * `composition.ts:installedPlugins()` and never names commerce elsewhere.
+ * `/acp` + `/ucp` self-auth mounts, storefront/protocol rate-limit keying, and
+ * the body-size floor for the visual-search image upload. Core wires it in
+ * through `composition.ts:installedPlugins()` and never names commerce
+ * elsewhere.
  */
 
 import type { FelixPlugin, FelixRequestContext } from '@felix/harness/plugins/types';
@@ -29,6 +30,8 @@ import { buildWidgetRouter } from './storefront/widget';
 import { commerceCheckoutTool } from './stripe-tool';
 import { buildStructuredRootRouter, buildStructuredRouter } from './structured/router';
 import { commerceToolFactories } from './tools';
+import { buildUcpDiscoveryRouter } from './ucp/discovery';
+import { buildUcpRouter } from './ucp/router';
 import { visualToolFactories } from './visual/tools';
 import { buildCommerceRouter } from './webhook';
 
@@ -47,6 +50,7 @@ const STOREFRONT_HOST_ACTIONS = new Set(['config', 'chat', 'visual-search']);
 function rateLimitKey(c: FelixRequestContext): string | undefined {
   const path = new URL(c.req.url).pathname;
   if (path === '/acp' || path.startsWith('/acp/')) return 'acp';
+  if (path === '/ucp' || path.startsWith('/ucp/')) return 'ucp';
 
   if (path.startsWith('/shop/')) {
     const first = path.slice('/shop/'.length).split('/')[0] ?? '';
@@ -68,6 +72,9 @@ export const commercePlugin: FelixPlugin = {
     app.route('/commerce', buildCommerceRouter());
     app.route('/commerce', buildConsentRouter());
     app.route('/acp', buildAcpRouter());
+    app.route('/ucp', buildUcpRouter());
+    // UCP discovery document at the root well-known path platforms fetch.
+    app.route('/', buildUcpDiscoveryRouter());
     app.route('/brands', buildBrandsRouter());
     app.route('/shop', buildStorefrontRouter({ tools: opts.tools }));
     app.route('/widget', buildWidgetRouter());
@@ -110,9 +117,10 @@ export const commercePlugin: FelixPlugin = {
     }
   },
 
-  // `/acp` carries its own bearer API key (ACP_API_KEY, constant-time checked
-  // in the router) — the JWT middleware must pass it through as anonymous.
-  selfAuthenticatingMounts: ['/acp'],
+  // `/acp` and `/ucp` carry their own bearer API keys (ACP_API_KEY /
+  // UCP_API_KEY, constant-time checked in each router) — the JWT middleware
+  // must pass them through as anonymous.
+  selfAuthenticatingMounts: ['/acp', '/ucp'],
 
   rateLimitKey,
 

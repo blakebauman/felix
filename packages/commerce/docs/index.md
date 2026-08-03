@@ -6,7 +6,7 @@ description: "Felix Commerce — conversational shopping, ACP, D2C storefronts, 
 
 Felix Commerce is the conversational-commerce layer built on the harness. It adds no new harness abstractions — it is a vertical assembled from the existing seams: commerce capabilities are ordinary `Tool`s, the cart lives in the append-only session log, checkout rides the human-in-the-loop approvals pipeline, brand storefronts are per-tenant manifests resolved through the standard 4-layer resolver, and B2B data flows through a pluggable entity data-source seam. All money is integer cents. Everything is tenant-scoped.
 
-The whole layer is the **`@felix/commerce`** workspace package (`packages/commerce/`), exporting a single **`FelixPlugin`** (`packages/commerce/src/plugin.ts`; contract in `packages/harness/src/plugins/types.ts`): its routers, tool factories, cron tasks (abandoned-cart scan, GEO monitor), the `/acp` self-authenticating mount, the storefront/ACP rate-limit keying, and the 12 MB body-size floor for visual-search uploads are all declared there. The `@felix/api` Worker wires it in through the one `commercePlugin` entry in `apps/api/src/composition.ts:installedPlugins()`; the harness itself is commerce-blind — enforced by `apps/api/tests/unit/plugin_boundary.test.ts`. The package consumes harness seams via `@felix/harness/<path>` source exports (both packages export TS source; no build step), and commerce env vars merge into the harness `Env` interface via module augmentation in `packages/commerce/src/env.ts`.
+The whole layer is the **`@felix/commerce`** workspace package (`packages/commerce/`), exporting a single **`FelixPlugin`** (`packages/commerce/src/plugin.ts`; contract in `packages/harness/src/plugins/types.ts`): its routers, tool factories, cron tasks (abandoned-cart scan, GEO monitor), the `/acp` + `/ucp` self-authenticating mounts, the storefront/protocol rate-limit keying, and the 12 MB body-size floor for visual-search uploads are all declared there. The `@felix/api` Worker wires it in through the one `commercePlugin` entry in `apps/api/src/composition.ts:installedPlugins()`; the harness itself is commerce-blind — enforced by `apps/api/tests/unit/plugin_boundary.test.ts`. The package consumes harness seams via `@felix/harness/<path>` source exports (both packages export TS source; no build step), and commerce env vars merge into the harness `Env` interface via module augmentation in `packages/commerce/src/env.ts`.
 
 ## Layer map
 
@@ -20,6 +20,11 @@ The whole layer is the **`@felix/commerce`** workspace package (`packages/commer
     title="ACP Merchant Endpoint"
     href="/commerce/acp/"
     description="/acp — Agentic Commerce Protocol feed + checkout sessions for external buyer agents."
+  />
+  <LinkCard
+    title="UCP Merchant Endpoint"
+    href="/commerce/ucp/"
+    description="/ucp + /.well-known/ucp — Universal Commerce Protocol checkout sessions and discovery for UCP platforms."
   />
   <LinkCard
     title="D2C Storefronts"
