@@ -22,6 +22,7 @@ export const AuditEventType = z
   .enum([
     'tool_call',
     'policy_decision',
+    'command_screened',
     'limit_exceeded',
     'guardrail_block',
     'plan_step',

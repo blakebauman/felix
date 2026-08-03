@@ -15,7 +15,8 @@
  *     BEFORE the governance pipeline so pattern-injected tools are gated
  *     by policies/limits/guardrails/judges/approvals like any other.
  * 10. Governance pipeline: `mergeWithManifest` → `applyPolicies`
- *     → `applyLimits` → `applyGuardrails` → `applyApprovals`.
+ *     → `applyCommandScreening` → `applyLimits` → `applyGuardrails`
+ *     → `applyJudges` → `applyApprovals`.
  *     Each wrapper replaces `tool.executor` via `wrapExecutor(...)` so
  *     the inner `transport` label survives.
  * 11. Hand off to pattern builder (open registry dispatch) → `Agent`
@@ -58,6 +59,8 @@ import { getPattern, listPatterns } from '../patterns/registry';
 import type { Agent, InvokeInput, InvokeResult, StreamEvent } from '../patterns/types';
 import { PLAN_TOOLS } from '../plans/tools';
 import { mergeWithManifest } from '../policy/bundle';
+import { commandScreeningEnabled } from '../policy/command-models';
+import { applyCommandScreening } from '../policy/command-wrap';
 import { ensureFederationSynced } from '../policy/federation-do';
 import { applyPolicies } from '../policy/wrap';
 import { getSessionStore } from '../session/do-session';
@@ -278,7 +281,7 @@ export async function buildAgent(
     }
 
     // -------------------------------------------------------------------
-    // Governance pipeline: policies → limits → guardrails → approvals
+    // Governance pipeline: policies → command screening → limits → guardrails → approvals
     // -------------------------------------------------------------------
     // Mirror the FederationDO's active bundle into this isolate before
     // merging so centrally-distributed policies actually apply. Without this
@@ -290,6 +293,16 @@ export async function buildAgent(
 
     if (merged.policies.length) {
       resolvedTools = applyPolicies(resolvedTools, merged.policies, manifest.metadata.name);
+    }
+    // Command screening runs after the scope check and before everything that
+    // costs money or time: a command the operator has forbidden should never
+    // spend a limits budget, a guardrail scan, or a judge's model call.
+    if (commandScreeningEnabled(manifest.spec.command_screening)) {
+      resolvedTools = applyCommandScreening(
+        resolvedTools,
+        manifest.spec.command_screening,
+        manifest.metadata.name,
+      );
     }
     if (anyLimit(manifest.spec.limits)) {
       resolvedTools = applyLimits(resolvedTools, manifest.spec.limits, manifest.metadata.name);

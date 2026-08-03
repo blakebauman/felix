@@ -13,6 +13,7 @@ import { z } from '@hono/zod-openapi';
 import { ApprovalRuleSchema } from '../approvals/models';
 import { GuardrailsSchema } from '../guardrails/models';
 import { ABSOLUTE_LIMITS, LimitsSchema } from '../limits/models';
+import { CommandScreeningSchema } from '../policy/command-models';
 import { PolicySchema } from '../policy/models';
 import { assertSafeOutboundUrl } from '../security/ssrf';
 
@@ -1240,6 +1241,13 @@ export const AgentSpec = z
     }),
     guardrails: GuardrailsSchema.default(GuardrailsSchema.parse({})).openapi({
       description: 'Input/output content guardrails (PII regex, AI Gateway hook).',
+    }),
+    command_screening: CommandScreeningSchema.default(CommandScreeningSchema.parse({})).openapi({
+      description:
+        'Shell-aware screening of commands sent to `sandbox` / `container` tools. Normalizes each ' +
+        'command (resolving quoting, `eval`, nested interpreters, pipe-to-shell, wrapper chains) ' +
+        'before matching rules, so a destructive command cannot slip past a rule by rewriting its ' +
+        'syntax. Matches route to deny or to the human approval surface.',
     }),
     anomaly: AnomalySpec.default(AnomalySpec.parse({})).openapi({
       description:
