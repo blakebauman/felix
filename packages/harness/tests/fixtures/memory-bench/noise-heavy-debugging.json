@@ -1,0 +1,26 @@
+{
+  "id": "noise-heavy-debugging",
+  "description": "A long debugging session where almost everything is one-off. Storing the transient details is the failure; one or two durable facts are legitimate.",
+  "turns": [
+    {
+      "input": "The build is failing with 'cannot find module ./bundled'.",
+      "reply": "That usually means the generated bundle is missing. Try rebuilding it."
+    },
+    {
+      "input": "Ran the build, now it says exit code 137.",
+      "reply": "137 is an out-of-memory kill. Try lowering the worker count."
+    },
+    {
+      "input": "Lowered it to 2, now the test on line 412 fails.",
+      "reply": "That test asserts ordering; the lower worker count changed it. It should be order-independent."
+    },
+    {
+      "input": "Fixed. By the way we always run tests with 2 workers in CI because our runners are small.",
+      "reply": "Noted \u2014 2 workers in CI due to runner size."
+    },
+    {
+      "input": "Now the snapshot on line 88 is stale.",
+      "reply": "Re-run with the snapshot update flag."
+    }
+  ]
+}

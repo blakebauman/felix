@@ -1,0 +1,18 @@
+{
+  "id": "nothing-memorable",
+  "description": "An exchange with no durable facts at all. An empty memory is the CORRECT outcome; inventing facts here is the failure.",
+  "turns": [
+    {
+      "input": "What's 17 times 23?",
+      "reply": "391."
+    },
+    {
+      "input": "And what's that divided by 4?",
+      "reply": "97.75."
+    },
+    {
+      "input": "Thanks.",
+      "reply": "You're welcome."
+    }
+  ]
+}

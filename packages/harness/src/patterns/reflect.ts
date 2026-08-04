@@ -35,7 +35,9 @@ import { DEFAULT_LIMITS, type Limits } from '../limits/models';
 import { currentSignal } from '../limits/state';
 import { checkTokenBudget } from '../limits/wrap';
 import type { Model } from '../manifests/schema';
+import { captureMemories } from '../memory/capture';
 import { DEFAULT_PROCEDURAL_OPTS, type ProceduralOpts, storeProcedure } from '../memory/procedural';
+import { getMemoryStore } from '../memory/store';
 import { buildModel, recordUsage } from './model';
 import { type BuildReactOptions, buildReactAgent } from './react';
 import { registerPattern } from './registry';
@@ -117,11 +119,14 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
   // inner loop's own success path record the procedure once.
   if (reflect.max_iterations <= 1) return buildReactAgent(opts);
 
-  // Reflection active: build the inner react WITHOUT procedural writes so a
-  // procedure isn't recorded once per react replay. The reflect wrapper
-  // records exactly once, on the verifier-accepted (or final-iteration)
-  // terminal result — see `rememberProcedureAsync`.
-  const inner = buildReactAgent({ ...opts, procedural: null });
+  // Reflection active: build the inner react WITHOUT procedural writes or
+  // memory capture, so neither is recorded once per react replay. The reflect
+  // wrapper records each exactly once, on the verifier-accepted (or
+  // final-iteration) terminal result — see `rememberProcedureAsync` and
+  // `captureMemoriesAsync`. Capturing per iteration would also mine REJECTED
+  // drafts for facts, permanently storing claims from an answer the verifier
+  // threw away.
+  const inner = buildReactAgent({ ...opts, procedural: null, memoryCapture: null });
   const proceduralOpts: ProceduralOpts = opts.procedural ?? DEFAULT_PROCEDURAL_OPTS;
 
   const verifierSpec: Model = {
@@ -225,6 +230,19 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
     if (ctx?.execCtx) ctx.execCtx.waitUntil(p);
   }
 
+  /** Mirror of react's capture hook, fired once on the accepted answer. */
+  function captureMemoriesAsync(messages: readonly ChatMessage[]): void {
+    const captureOpts = opts.memoryCapture;
+    if (!captureOpts?.enabled) return;
+    const ctx = getContext();
+    if (ctx?.replay) return;
+    const store = getMemoryStore(opts.env, opts.memoryStoreMode ?? 'none', opts.manifestId);
+    const p = captureMemories(opts.env, captureOpts, store, messages).catch((err) => {
+      console.warn('memory capture failed', (err as Error).message);
+    });
+    if (ctx?.execCtx) ctx.execCtx.waitUntil(p);
+  }
+
   return {
     tools: inner.tools,
     pattern: `reflect:${inner.pattern}`,
@@ -248,8 +266,10 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
           critique: verdict.critique,
         });
         if (verdict.passed || i === reflect.max_iterations - 1) {
-          // Terminal accepted answer — record the procedure exactly once.
+          // Terminal accepted answer — record the procedure and capture memory
+          // exactly once, from the answer that was actually accepted.
           rememberProcedureAsync(result.messages);
+          captureMemoriesAsync(result.messages);
           return result;
         }
         // Append the critique as a synthetic user turn and replay.
@@ -292,8 +312,10 @@ export function buildReflectAgent(opts: BuildReflectOptions): Agent {
           critique: verdict.critique,
         });
         if (verdict.passed || i === reflect.max_iterations - 1) {
-          // Terminal accepted answer — record the procedure exactly once.
+          // Terminal accepted answer — record the procedure and capture memory
+          // exactly once, from the answer that was actually accepted.
           rememberProcedureAsync(result.messages);
+          captureMemoriesAsync(result.messages);
           yield { event: 'on_chain_end', data: { output: result } };
           return;
         }
@@ -319,6 +341,8 @@ registerPattern('reflect', (ctx) =>
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
     procedural: ctx.manifest.spec.procedural_memory,
+    memoryCapture: ctx.manifest.spec.memory.capture,
+    memoryStoreMode: ctx.manifest.spec.memory.store,
     primaryModel: ctx.modelSpec,
     reflect: ctx.manifest.spec.reflect,
   }),

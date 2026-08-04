@@ -1,0 +1,26 @@
+{
+  "id": "stale-fact-supersession",
+  "description": "Facts change mid-conversation (timezone, project name, meeting day). Memory should reflect only the latest state, not both values.",
+  "turns": [
+    {
+      "input": "I'm in Berlin, so schedule things in CET.",
+      "reply": "Got it \u2014 I'll use CET for scheduling."
+    },
+    {
+      "input": "The project is called Bluebird internally.",
+      "reply": "Noted, I'll refer to it as Bluebird."
+    },
+    {
+      "input": "Actually I've relocated to Lisbon, so it's WET now, not CET.",
+      "reply": "Updated \u2014 I'll use WET going forward."
+    },
+    {
+      "input": "And we renamed Bluebird to Kingfisher last week.",
+      "reply": "Understood, Kingfisher it is."
+    },
+    {
+      "input": "Standup moved from Mondays to Thursdays too.",
+      "reply": "Thanks, I'll assume Thursday standups from now on."
+    }
+  ]
+}
