@@ -27,7 +27,8 @@
     "db:down": "docker compose down",
     "eval": "pnpm --filter @felix/api run eval",
     "chat:dev": "pnpm --filter @felix/chat-ui dev",
-    "chat:deploy": "pnpm --filter @felix/chat-ui run deploy"
+    "chat:deploy": "pnpm --filter @felix/chat-ui run deploy",
+    "bench:memory": "tsx apps/api/scripts/memory-bench.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

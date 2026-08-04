@@ -1,0 +1,22 @@
+{
+  "id": "preferences-and-identity",
+  "description": "Clearly-stated durable preferences and identity facts. Failing to capture these is the failure mode; this is the positive control.",
+  "turns": [
+    {
+      "input": "I'm the platform lead here, and I prefer concise answers without preamble.",
+      "reply": "Understood \u2014 concise, no preamble."
+    },
+    {
+      "input": "Always use TypeScript examples rather than JavaScript when you show code.",
+      "reply": "Got it, TypeScript only."
+    },
+    {
+      "input": "And we deploy on Cloudflare Workers, so keep examples runtime-appropriate.",
+      "reply": "Noted \u2014 Workers-appropriate examples."
+    },
+    {
+      "input": "What's the best way to cache a computed value per request?",
+      "reply": "Store it on the request context so it lives exactly as long as the request."
+    }
+  ]
+}

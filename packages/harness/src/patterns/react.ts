@@ -43,7 +43,9 @@ import { ABSOLUTE_LIMITS, clampLimit, DEFAULT_LIMITS, type Limits } from '../lim
 import { currentSignal } from '../limits/state';
 import { checkPreflightTokenBudget, checkTokenBudget } from '../limits/wrap';
 import type { Model } from '../manifests/schema';
+import { type CaptureConfig, captureMemories } from '../memory/capture';
 import { DEFAULT_PROCEDURAL_OPTS, type ProceduralOpts, storeProcedure } from '../memory/procedural';
+import { getMemoryStore } from '../memory/store';
 import { recordCounter } from '../observability/metrics';
 import { withSpan } from '../observability/tracing';
 import { noopSessionStore, persistFireAndForget } from '../session/do-session';
@@ -129,6 +131,15 @@ export interface BuildReactOptions {
    * failure never affects the response. Disabled by default.
    */
   procedural?: ProceduralOpts | null;
+  /**
+   * Automatic post-turn memory capture. When enabled, a completed turn is
+   * handed to a small model that extracts durable facts and writes them to the
+   * long-term store. Fire-and-forget, like procedural memory — the user
+   * already has their answer, and capture failing must not change it.
+   */
+  memoryCapture?: CaptureConfig | null;
+  /** `spec.memory.store` value, so capture can resolve the same backend. */
+  memoryStoreMode?: string;
 }
 
 const DEFAULT_RECURSION = 10;
@@ -149,6 +160,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
   const guardrails: Guardrails = opts.guardrails ?? DEFAULT_GUARDRAILS;
   const guardFinal = finalResponseGuardEnabled(guardrails);
   const proceduralOpts: ProceduralOpts = opts.procedural ?? DEFAULT_PROCEDURAL_OPTS;
+  const captureOpts = opts.memoryCapture ?? null;
 
   /**
    * Dispatch a single tool call. Returns `{ kind: 'ok', message }` for the
@@ -401,6 +413,28 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
     if (reqCtx?.execCtx) reqCtx.execCtx.waitUntil(p);
   }
 
+  /**
+   * Extract durable facts from a finished turn into long-term memory.
+   * Deferred through `waitUntil` so the extraction model call never sits on
+   * the response path, and swallowed on failure for the same reason.
+   */
+  function captureMemoriesAsync(messages: readonly ChatMessage[]): void {
+    if (!captureOpts?.enabled) return;
+    const reqCtx = getContext();
+    // A continuous-eval replay regenerates an answer to a historical input
+    // under the real tenant. Capturing from it would write facts derived from
+    // a synthetic reply into that tenant's live memory, duplicating whatever
+    // the original conversation already stored — from a benchmarking pass
+    // nobody sees. The tool_call audit path excludes replays for the same
+    // reason.
+    if (reqCtx?.replay) return;
+    const store = getMemoryStore(opts.env, opts.memoryStoreMode ?? 'none', opts.manifestId);
+    const p = captureMemories(opts.env, captureOpts, store, messages).catch((err) => {
+      console.warn('memory capture failed', (err as Error).message);
+    });
+    if (reqCtx?.execCtx) reqCtx.execCtx.waitUntil(p);
+  }
+
   function trackUsage(result: ModelChatResult): void {
     recordUsage(result, { manifestId: opts.manifestId, modelId: opts.modelSpec.id });
   }
@@ -453,6 +487,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
           persistAsync(session, [guarded]);
           // Clean terminal turn — eligible for procedural distillation.
           rememberProcedureAsync(messages);
+          captureMemoriesAsync(messages);
           return { messages, final: guarded };
         }
 
@@ -610,6 +645,7 @@ export function buildReactAgent(opts: BuildReactOptions): Agent {
           persistAsync(session, [finalMsg]);
           // Clean terminal turn — eligible for procedural distillation.
           rememberProcedureAsync(messages);
+          captureMemoriesAsync(messages);
           yield {
             event: 'on_chain_end',
             data: { output: withUsage({ messages, final: finalMsg }) },
@@ -678,5 +714,7 @@ registerPattern('react', (ctx) =>
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
     procedural: ctx.manifest.spec.procedural_memory,
+    memoryCapture: ctx.manifest.spec.memory.capture,
+    memoryStoreMode: ctx.manifest.spec.memory.store,
   }),
 );

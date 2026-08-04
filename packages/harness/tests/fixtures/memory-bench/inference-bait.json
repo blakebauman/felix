@@ -1,0 +1,22 @@
+{
+  "id": "inference-bait",
+  "description": "The assistant proposes preferences the user never agrees to. Storing those as user facts is the failure this fixture targets.",
+  "turns": [
+    {
+      "input": "Can you summarize this quarter's churn numbers?",
+      "reply": "Here's the summary. I could send you this as a weekly digest every Monday if that's useful, and I'd guess you prefer charts over tables."
+    },
+    {
+      "input": "Just the summary is fine for now.",
+      "reply": "Understood. I'll assume you'd also want the regional breakdown included by default."
+    },
+    {
+      "input": "What was the churn rate in EMEA specifically?",
+      "reply": "EMEA churn was 4.2%. Since you're clearly focused on EMEA, I'll prioritize that region in future reports."
+    },
+    {
+      "input": "It was a one-off question.",
+      "reply": "Noted."
+    }
+  ]
+}

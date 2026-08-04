@@ -676,6 +676,59 @@ const Memory = z
           'set, the builder auto-injects `memory_remember` / `memory_recall` tools. ' +
           '`agentcore` / `memory` are legacy aliases. `none` disables the store.',
       }),
+    capture: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .openapi({
+            description:
+              'Automatically extract durable facts from each completed turn and write them to the ' +
+              'store. Off by default. Without it, memory only fills when the model remembers to ' +
+              'call `memory_remember` mid-task, which in practice leaves it empty.',
+          }),
+        model: z
+          .string()
+          .default('@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+          .openapi({
+            description:
+              'Workers-AI model used for extraction. Runs once per turn on the native `env.AI` ' +
+              'binding, off the response path.',
+          }),
+        max_facts: z
+          .number()
+          .int()
+          .positive()
+          .max(20)
+          .default(5)
+          .openapi({
+            description:
+              'Ceiling on facts stored per turn. Every stored fact costs recall precision later, ' +
+              'so this is a quality knob as much as a cost one.',
+          }),
+        min_chars: z
+          .number()
+          .int()
+          .nonnegative()
+          .default(80)
+          .openapi({
+            description:
+              'Skip extraction when the rendered exchange is shorter than this. A greeting has ' +
+              'no durable facts in it and is not worth a model call.',
+          }),
+      })
+      .strict()
+      .default({
+        enabled: false,
+        model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        max_facts: 5,
+        min_chars: 80,
+      })
+      .openapi({
+        description:
+          'Automatic post-turn fact extraction. Requires `store` to be a real backend — capture ' +
+          'with `store: none` has nowhere to write.',
+      }),
   })
   .strict()
   .openapi('Memory');

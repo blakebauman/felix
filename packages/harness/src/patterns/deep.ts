@@ -43,5 +43,7 @@ registerPattern('deep', (ctx) =>
     artifacts: ctx.manifest.spec.artifacts,
     guardrails: ctx.manifest.spec.guardrails,
     procedural: ctx.manifest.spec.procedural_memory,
+    memoryCapture: ctx.manifest.spec.memory.capture,
+    memoryStoreMode: ctx.manifest.spec.memory.store,
   }),
 );

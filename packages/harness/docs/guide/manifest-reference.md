@@ -263,11 +263,47 @@ Used by `groupchat` for the number of turns and by `parallel` indirectly (each c
 memory:
   checkpointer: do             # default; aliases: agentcore, sqlite; "none" disables
   store: vectorize             # default; aliases: agentcore; legacy: memory; "none" disables
+  capture:
+    enabled: false             # default: false
+    model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    max_facts: 5               # per turn
+    min_chars: 80              # skip extraction below this exchange length
 ```
 
 - `checkpointer` controls the per-thread session event log backing (`ConversationDO`).
 - `store` controls long-term semantic memory in the `memory_vectors` pgvector table.
 - When `store` resolves to `vectorize`, the builder auto-injects `memory_remember` and `memory_recall` tools.
+
+### Automatic capture
+
+Without `capture`, memory only fills when the model *remembers* to call `memory_remember` in the middle of doing something else. In practice it stays empty, and `memory_recall` returns nothing — the feature exists but never engages.
+
+With `capture.enabled: true`, each completed turn is handed to a small Workers-AI model that extracts durable facts and writes them to the store. It runs through `waitUntil` after the response, so the extra model call is off the response path and a capture failure can never change an answer the user already has.
+
+Two properties of the extraction prompt are load-bearing:
+
+- **Provenance.** A preference, intent, or instruction counts only when the *user's own message* states it. Models will readily turn their own suggestion ("I could send this weekly") into a remembered user preference, and that fabricated fact then steers every later turn with no trace of where it came from.
+- **Nothing is free to store.** Every stored fact costs recall precision later, so one-off trivia, restatements of the current task, secrets, and anything already obvious are excluded. An empty capture is a correct outcome, not a failure.
+
+On an [unattended run](../internals/governance.md#approvals) — a cron tick, a replay — an addendum forbids preference/intent facts about any person entirely: no human spoke, so anything preference-shaped is the model narrating its own behavior, and storing it would let an automated run quietly rewrite what the agent believes about someone who was never there.
+
+Capture requires a real `store`; with `store: none` there is nowhere to write. Set `max_facts` low — it is a quality knob more than a cost one.
+
+Three things capture deliberately does **not** do. It does not run on a [continuous-eval replay](../internals/observability.md), which regenerates an answer to a historical input under the real tenant — capturing there would write facts derived from a synthetic reply into live memory from a benchmarking pass nobody sees. Under `pattern: reflect` it fires once on the verifier-**accepted** answer rather than once per iteration, so claims from rejected drafts are never stored. And it checks the store before writing, so a fact that stays in the extraction window across several turns is not written once per turn — though a fact that genuinely *conflicts* with a stored one is still written, because reconciling those is consolidation's job and nearness in embedding space is not sameness (`in Berlin` and `in Lisbon` are neighbours and opposites).
+
+Every capture writes a `memory_captured` audit event carrying the stored facts, so what the agent decided to believe is reconstructable from `/audit` rather than visible only as a counter.
+
+### Measuring capture quality
+
+Capture quality lives almost entirely in a prompt, and prompts regress silently. `pnpm bench:memory` (needs `ANTHROPIC_API_KEY`) replays the fixture conversations in `packages/harness/tests/fixtures/memory-bench/` through the real extraction prompt, judges the resulting memory, prints a table, and **exits non-zero** when any axis falls below its floor:
+
+| Axis | Failure it catches |
+|---|---|
+| `signalToNoise` | storing one-off trivia, duplicates, or restatements of the task |
+| `staleness` | keeping a superseded value alongside the current one |
+| `inferenceVsObservation` | writing down speculation as if it were stated |
+
+The fixtures are chosen to make each failure visible: one supersedes facts mid-conversation, one has the assistant proposing preferences the user never agrees to, one pastes credentials in passing, and one contains nothing memorable at all — where an empty memory is the correct answer. Run it before and after any change to the extraction prompt and compare. It measures the prompt rather than the exact production model, since a Workers-AI binding isn't reachable from a plain Node script.
 
 ## spec.session
 
