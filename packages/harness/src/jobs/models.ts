@@ -45,9 +45,26 @@ export const JobRecordSchema = z
       .number()
       .int()
       .openapi({ readOnly: true, description: 'Server timestamp (ms since epoch).' }),
-    payload: z.record(z.string(), z.unknown()).default({}).openapi({
-      description: 'Free-form payload passed to the manifest on each run.',
-    }),
+    payload: z
+      .record(z.string(), z.unknown())
+      .default({})
+      .openapi({
+        description:
+          'Free-form payload. `payload.input` (a non-empty string) is the prompt the run sends ' +
+          'to the manifest; a job without it is never executed, only bookkept.',
+        example: { input: "Summarize yesterday's orders and flag anything unusual." },
+      }),
+    enabled: z
+      .boolean()
+      .default(false)
+      .openapi({
+        description:
+          'Whether the cron sweep actually invokes `manifest_id` for this job. Rows that existed ' +
+          'before execution was implemented are false, so upgrading the runtime cannot start ' +
+          'spending model tokens on them. On `POST /jobs` an explicit value wins; omitting it ' +
+          "preserves an existing job's setting, and a brand-new job defaults to enabled. A " +
+          'disabled job is still swept and still records a run — it just does not execute.',
+      }),
   })
   .strict()
   .openapi('JobRecord');

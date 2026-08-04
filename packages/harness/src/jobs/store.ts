@@ -19,6 +19,7 @@ interface JobRow {
   last_error: string;
   created_at: number;
   payload_json: Record<string, unknown>;
+  enabled: boolean;
 }
 
 function rowToJob(row: JobRow): JobRecord {
@@ -33,6 +34,7 @@ function rowToJob(row: JobRow): JobRecord {
     last_error: row.last_error,
     created_at: row.created_at,
     payload: row.payload_json ?? {},
+    enabled: row.enabled ?? false,
   });
 }
 
@@ -56,15 +58,17 @@ export async function upsertJob(env: Env, job: JobRecord): Promise<void> {
   const sql = getDb(env);
   await sql`
     INSERT INTO jobs (tenant_id, name, schedule, manifest_id, last_run_at, next_run_at,
-                      last_status, last_error, created_at, payload_json)
+                      last_status, last_error, created_at, payload_json, enabled)
       VALUES (${job.tenant_id}, ${job.name}, ${job.schedule}, ${job.manifest_id},
               ${job.last_run_at ?? null}, ${job.next_run_at ?? null}, ${job.last_status},
-              ${job.last_error}, ${job.created_at}, ${job.payload as Record<string, unknown>})
+              ${job.last_error}, ${job.created_at}, ${job.payload as Record<string, unknown>},
+              ${job.enabled})
       ON CONFLICT (tenant_id, name) DO UPDATE SET
         schedule = excluded.schedule,
         manifest_id = excluded.manifest_id,
         next_run_at = excluded.next_run_at,
-        payload_json = excluded.payload_json
+        payload_json = excluded.payload_json,
+        enabled = excluded.enabled
   `;
 }
 
@@ -106,4 +110,37 @@ export async function listDueJobs(env: Env, asOfMs: number, limit = 500): Promis
       LIMIT ${limit}
   `;
   return rows.map(rowToJob);
+}
+
+/**
+ * Claim one firing slot, compare-and-swap style.
+ *
+ * `next_run_at` doubles as the claim token: the update only lands if the row
+ * still shows the value this sweep selected, so when two overlapping ticks see
+ * the same due job exactly one wins and the loser skips it. Without this a
+ * slow tick overlapping the next one would run the same job twice — harmless
+ * while the sweep only bookkept, but not once it invokes a model.
+ *
+ * Advancing the slot BEFORE the run makes this at-most-once: an isolate that
+ * dies mid-run loses that firing rather than repeating it. That is the right
+ * bias for work that spends money and may have external side effects; a missed
+ * run shows up as a gap in `job_run` audit rows, whereas a duplicated one can
+ * be indistinguishable from an intentional second run.
+ */
+export async function claimJobSlot(
+  env: Env,
+  tenantId: string,
+  name: string,
+  expectedNextRunAt: number,
+  advancedNextRunAt: number | null,
+): Promise<boolean> {
+  const sql = getDb(env);
+  const rows = await sql<{ name: string }[]>`
+    UPDATE jobs
+      SET next_run_at = ${advancedNextRunAt}
+      WHERE tenant_id = ${tenantId} AND name = ${name}
+        AND next_run_at = ${expectedNextRunAt}
+      RETURNING name
+  `;
+  return rows.length > 0;
 }
