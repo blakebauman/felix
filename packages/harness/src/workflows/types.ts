@@ -21,4 +21,15 @@ export interface AgentWorkflowParams {
   manifestId: string;
   threadId?: string;
   messages: ChatMessage[];
+  /**
+   * Whether the invocation that created this workflow had a human present.
+   *
+   * The workflow runs in a fresh isolate and rebuilds its own RequestContext
+   * from these params, so anything the governance wrappers read from context
+   * has to be carried across explicitly. Dropping this would silently restore
+   * attended behavior — a durable-mode manifest invoked from a cron tick would
+   * consult and consume human approval grants exactly as if someone were
+   * waiting on it.
+   */
+  unattended?: boolean;
 }

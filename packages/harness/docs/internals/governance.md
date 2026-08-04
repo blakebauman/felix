@@ -321,6 +321,14 @@ approvals:
     tools: ["create_record", "update_record"]
 ```
 
+### Unattended runs are refused first
+
+Before any of the steps below, the wrapper checks whether a human is present. A cron tick, a continuous-eval replay, a detached eval run, or a plugin scheduled task installs a `RequestContext` flagged `unattended` (`buildBackgroundContext` in [src/context.ts](../../src/context.ts)); on such a run an approval-gated tool is denied **before the store is consulted**, so a live grant is neither read nor consumed.
+
+The rationale: approving a call is a point-in-time human judgment about the call in front of the operator, not a standing authorization for a background job to replay the same signature indefinitely. Because the default signature is tenant-wide and non-expiring, the pre-existing behavior was for a scheduled run to silently inherit whatever a person had approved earlier in a chat.
+
+Opt a specific rule out with `allow_unattended: true` — the run then rejoins the normal flow, still needing a real grant, and pairs well with `ttl_seconds` / `one_shot` to bound the standing authorization. Refusals emit `approval_decision` with `reason: 'unattended_run'` and the `orchestrator_approval_decisions{outcome=denied_unattended}` counter.
+
 ### First invocation
 
 1. Parse args through the tool's Zod schema (rejects unknown keys, normalizes order).

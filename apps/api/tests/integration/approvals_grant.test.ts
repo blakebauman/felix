@@ -205,3 +205,101 @@ describe('legacy (no new fields) approval grants', () => {
     expect(await statusOf(id1)).toBe('approved'); // still live, never consumed
   });
 });
+
+describe('unattended runs cannot spend a human approval', () => {
+  /** Same as `run`, but the context is flagged as having no human present. */
+  async function runUnattended(
+    wrapped: Tool,
+    args: Record<string, unknown>,
+    subject: string,
+  ): Promise<ToolOutput> {
+    const ctx: RequestContext = { ...ctxFor(subject), unattended: true };
+    try {
+      return await runWithContext(ctx, () => wrapped.executor.execute(args));
+    } finally {
+      disposeContextDb(ctx);
+    }
+  }
+
+  it('denies even when a live approved grant exists', async () => {
+    const { tool, state } = makeTool('unattended-danger');
+    const rule = { id: 'r', tools: ['unattended-danger'] } as ApprovalRule;
+    const wrapped = applyApprovals([tool], [rule], 'm-unattended')[0]!;
+    const args = { target: 'prod' };
+
+    // A human approves the call in an interactive run.
+    const first = await run(wrapped, args, 'alice');
+    const id = approvalIdOf(first)!;
+    await approve(id);
+    expect(content(await run(wrapped, args, 'alice'))).toBe('ran:prod');
+    expect(state.count).toBe(1);
+
+    // The same signature from a scheduled job must NOT ride that grant: the
+    // operator answered for the call in front of them, not for a background
+    // job replaying it forever.
+    const unattended = await runUnattended(wrapped, args, 'alice');
+    expect(isWrapperDeny(unattended)).toBe(true);
+    expect(content(unattended)).toContain('unattended');
+    expect(state.count).toBe(1);
+
+    // The grant is untouched and still works for a real user.
+    expect(content(await run(wrapped, args, 'alice'))).toBe('ran:prod');
+    expect(state.count).toBe(2);
+  });
+
+  it('denies without a grant and does not hang waiting for one', async () => {
+    const { tool, state } = makeTool('unattended-fresh');
+    const rule = { id: 'r', tools: ['unattended-fresh'] } as ApprovalRule;
+    const wrapped = applyApprovals([tool], [rule], 'm-unattended-fresh')[0]!;
+
+    const out = await runUnattended(wrapped, { target: 'prod' }, 'alice');
+    expect(isWrapperDeny(out)).toBe(true);
+    expect(content(out)).toContain('[approval unavailable]');
+    expect(state.count).toBe(0);
+  });
+
+  it('allows an unattended run when the rule opts in and a grant exists', async () => {
+    const { tool, state } = makeTool('unattended-allowed');
+    const rule = {
+      id: 'r',
+      tools: ['unattended-allowed'],
+      allow_unattended: true,
+    } as ApprovalRule;
+    const wrapped = applyApprovals([tool], [rule], 'm-unattended-ok')[0]!;
+    const args = { target: 'prod' };
+
+    const first = await runUnattended(wrapped, args, 'alice');
+    expect(isWrapperDeny(first)).toBe(true);
+    // Opting in does not mean skipping approval — it means the grant, once a
+    // human has given it, remains valid for unsupervised runs.
+    const id = approvalIdOf(first)!;
+    expect(id).toBeTruthy();
+    await approve(id);
+
+    const second = await runUnattended(wrapped, args, 'alice');
+    expect(content(second)).toBe('ran:prod');
+    expect(state.count).toBe(1);
+  });
+
+  it('still honors one_shot semantics under an opted-in unattended run', async () => {
+    const { tool, state } = makeTool('unattended-oneshot');
+    const rule = {
+      id: 'r',
+      tools: ['unattended-oneshot'],
+      allow_unattended: true,
+      one_shot: true,
+    } as ApprovalRule;
+    const wrapped = applyApprovals([tool], [rule], 'm-unattended-oneshot')[0]!;
+    const args = { target: 'prod' };
+
+    const first = await runUnattended(wrapped, args, 'alice');
+    await approve(approvalIdOf(first)!);
+    expect(content(await runUnattended(wrapped, args, 'alice'))).toBe('ran:prod');
+    expect(state.count).toBe(1);
+
+    // Grant consumed — the next unattended fire re-requests rather than replaying.
+    const third = await runUnattended(wrapped, args, 'alice');
+    expect(isWrapperDeny(third)).toBe(true);
+    expect(state.count).toBe(1);
+  });
+});

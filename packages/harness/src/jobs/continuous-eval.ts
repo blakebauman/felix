@@ -46,7 +46,7 @@
 
 import { recordEventDetached } from '../audit/store';
 import {
-  buildAnonymousContext,
+  buildBackgroundContext,
   disposeContextDb,
   disposeLimitState,
   type RequestContext,
@@ -201,13 +201,8 @@ async function replayAndJudge(
   judge: Judge,
   input: string,
 ): Promise<{ score: number; verdict: 'pass' | 'fail'; reasoning: string }> {
-  const base = buildAnonymousContext(env, execCtx);
   const ctx: RequestContext = {
-    ...base,
-    auth: {
-      ...base.auth,
-      principal: { ...base.auth.principal, tenantId },
-    },
+    ...buildBackgroundContext(env, { tenantId, execCtx }),
     replay: true,
   };
   try {

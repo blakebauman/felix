@@ -34,7 +34,8 @@ export class AgentWorkflow extends WorkflowEntrypoint<Env, AgentWorkflowParams> 
     event: WorkflowEvent<AgentWorkflowParams>,
     step: WorkflowStep,
   ): Promise<string> {
-    const { tenantId, principalSubject, manifestId, threadId, messages } = event.payload;
+    const { tenantId, principalSubject, manifestId, threadId, messages, unattended } =
+      event.payload;
     // The step returns a JSON-encoded `InvokeResult`. Workflows'
     // `Serializable<T>` constraint is structural and rejects the
     // recursive object shapes we use for messages / tool_calls; a
@@ -77,7 +78,16 @@ export class AgentWorkflow extends WorkflowEntrypoint<Env, AgentWorkflowParams> 
             execution: { ...resolved.manifest.spec.execution, mode: 'transient' as const },
           },
         };
-        const reqCtx = contextMod.buildAnonymousContext(this.env);
+        // Rebuild the caller's context inside the workflow isolate. `unattended`
+        // has to be restored from params, not re-derived: a durable manifest
+        // invoked from a cron tick or an eval replay must keep failing closed
+        // on human-gated tools rather than reverting to attended behavior here.
+        const reqCtx = unattended
+          ? contextMod.buildBackgroundContext(this.env, {
+              tenantId,
+              subject: principalSubject,
+            })
+          : contextMod.buildAnonymousContext(this.env);
         reqCtx.auth = {
           ...reqCtx.auth,
           principal: { ...reqCtx.auth.principal, tenantId, subject: principalSubject },

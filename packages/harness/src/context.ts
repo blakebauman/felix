@@ -67,6 +67,22 @@ export interface RequestContext {
    */
   replay?: boolean;
   /**
+   * True when nothing is driving this run in real time — a cron tick, a
+   * continuous-eval replay, a detached eval run, a plugin's scheduled task.
+   *
+   * The distinction matters because several controls are built on the
+   * assumption that a person is present to see a result and react. A
+   * human-in-the-loop approval is the clearest case: an operator approving a
+   * tool call during a chat consented to *that* call, not to a background
+   * sweep replaying the same signature at 3am forever. Governance wrappers
+   * read this to decide whether a human-mediated authorization still applies.
+   *
+   * Deliberately distinct from an anonymous principal: an unauthenticated HTTP
+   * request in development is anonymous but still has a person behind it. Only
+   * background entrypoints set this.
+   */
+  unattended?: boolean;
+  /**
    * Per-request Postgres client, lazily created by `getDb` (db/client.ts) on
    * first use and reused by every store for the rest of the request. Never
    * closed explicitly — Hyperdrive owns connection lifecycle.
@@ -157,4 +173,39 @@ export function buildAnonymousContext(env: Env, execCtx?: ExecutionContext): Req
     auth: ANONYMOUS,
     limitState: newLimitState(),
   };
+}
+
+/**
+ * Context for a background entrypoint: cron ticks, continuous-eval replays,
+ * detached eval runs, plugin scheduled tasks.
+ *
+ * Two things every such caller needs and can silently get wrong on its own:
+ * the tenant must be set explicitly (the anonymous principal is tenant
+ * `default`, so a background run that forgets writes another tenant's rows),
+ * and `unattended` must be set so human-in-the-loop controls know nobody is
+ * watching. Both are easy to omit when hand-rolling the object, which is why
+ * this exists as one helper rather than a convention.
+ */
+export function buildBackgroundContext(
+  env: Env,
+  opts: { tenantId?: string; subject?: string; execCtx?: ExecutionContext } = {},
+): RequestContext {
+  const base = buildAnonymousContext(env, opts.execCtx);
+  return {
+    ...base,
+    auth: {
+      ...base.auth,
+      principal: {
+        ...base.auth.principal,
+        ...(opts.tenantId !== undefined ? { tenantId: opts.tenantId } : {}),
+        ...(opts.subject !== undefined ? { subject: opts.subject } : {}),
+      },
+    },
+    unattended: true,
+  };
+}
+
+/** True when the current run has no human watching it. Safe outside a context. */
+export function isUnattended(): boolean {
+  return getContext()?.unattended === true;
 }

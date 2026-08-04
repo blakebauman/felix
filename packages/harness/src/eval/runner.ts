@@ -26,7 +26,7 @@
  */
 
 import { recordEvent } from '../audit/store';
-import { buildAnonymousContext, disposeLimitState, getContext, runWithContext } from '../context';
+import { buildBackgroundContext, disposeLimitState, getContext, runWithContext } from '../context';
 import type { Env } from '../env';
 import { buildAgent } from '../manifests/builder';
 import { resolveManifest } from '../manifests/resolver';
@@ -213,15 +213,11 @@ export async function runDatasetDetached(
   opts: RunOptions,
   execCtx?: ExecutionContext,
 ): Promise<void> {
-  const reqCtx = buildAnonymousContext(env, execCtx);
-  reqCtx.auth = {
-    ...reqCtx.auth,
-    principal: {
-      ...reqCtx.auth.principal,
-      tenantId: opts.tenantId,
-      subject: opts.principalSubject,
-    },
-  };
+  const reqCtx = buildBackgroundContext(env, {
+    tenantId: opts.tenantId,
+    subject: opts.principalSubject,
+    execCtx,
+  });
   try {
     await runWithContext(reqCtx, () => runDataset(env, tools, opts));
   } catch (err) {
