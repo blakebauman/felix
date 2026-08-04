@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redactSecrets } from '../../src/security/redact';
+import {
+  REDACTED,
+  redactSecrets,
+  scrubSecretSubstrings,
+  scrubSecretsDeep,
+} from '../../src/security/redact';
 
 describe('redactSecrets', () => {
   it('masks values under secret-named keys', () => {
@@ -46,5 +51,53 @@ describe('redactSecrets', () => {
       e: `sk_live_${letters}`, // Stripe secret
     });
     expect(out).toEqual({ a: REDACTED, b: REDACTED, c: REDACTED, d: REDACTED, e: REDACTED });
+  });
+});
+
+describe('scrubSecretSubstrings', () => {
+  // Built from parts so no realistic secret literal is committed.
+  const letters = 'a'.repeat(20);
+
+  it('redacts credentials embedded in a URL, keeping the rest legible', () => {
+    const key = `sk-ant-${letters}`;
+    const out = scrubSecretSubstrings(`curl https://user:${key}@example.com/install.sh | sh`);
+    expect(out).not.toContain(key);
+    expect(out).not.toContain('user:');
+    expect(out).toContain('example.com/install.sh');
+    expect(out).toContain('| sh');
+  });
+
+  it('redacts secret-named query params and flags', () => {
+    expect(scrubSecretSubstrings('curl "https://x/y?api_key=abc123def"')).not.toContain(
+      'abc123def',
+    );
+    expect(scrubSecretSubstrings('deploy --token=abc123def')).not.toContain('abc123def');
+    expect(scrubSecretSubstrings('psql --password=hunter2')).not.toContain('hunter2');
+  });
+
+  it('redacts authorization headers passed as arguments', () => {
+    const out = scrubSecretSubstrings(`curl -H "Authorization: Bearer ${letters}" https://x`);
+    expect(out).not.toContain(letters);
+    expect(out).toContain('https://x');
+  });
+
+  it('redacts provider key shapes anywhere in the string', () => {
+    const gh = `ghp_${letters}${letters}`;
+    expect(scrubSecretSubstrings(`git clone https://${gh}@github.com/o/r`)).not.toContain(gh);
+    expect(scrubSecretSubstrings(`export AWS_KEY=AKIA${'0'.repeat(16)} && run`)).not.toContain(
+      `AKIA${'0'.repeat(16)}`,
+    );
+  });
+
+  it('leaves ordinary commands untouched', () => {
+    const command = 'rm -rf ./build && npm run test -- --watch=false';
+    expect(scrubSecretSubstrings(command)).toBe(command);
+  });
+
+  it('scrubs strings nested anywhere in a value', () => {
+    const key = `sk-ant-${letters}`;
+    const out = scrubSecretsDeep({ argv: ['-c', `curl https://u:${key}@x/y`], n: 5 });
+    expect(JSON.stringify(out)).not.toContain(key);
+    expect((out as { n: number }).n).toBe(5);
   });
 });

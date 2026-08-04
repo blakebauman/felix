@@ -1,10 +1,10 @@
 ---
-description: "Five governance layers — policies, limits, guardrails, LLM judges, approvals — compose at build time and run on every tool invocation."
+description: "Six governance layers — policies, command screening, limits, guardrails, LLM judges, approvals — compose at build time and run on every tool invocation."
 ---
 
 # Governance
 
-Felix applies five governance layers to every tool call: policies, limits, guardrails, llm_judge, approvals. They compose at build time and run on every invocation. A federated `PolicyBundle` overlays manifest-declared policies and approvals.
+Felix applies six governance layers to every tool call: policies, command screening, limits, guardrails, llm_judge, approvals. They compose at build time and run on every invocation. A federated `PolicyBundle` overlays manifest-declared policies and approvals.
 
 ## Composition
 
@@ -14,6 +14,7 @@ Felix applies five governance layers to every tool call: policies, limits, guard
 const merged = mergeWithManifest(manifest.spec.policies, manifest.spec.approvals);
 
 if (merged.policies.length)              tools = applyPolicies(tools,    merged.policies,   manifestId);
+if (commandScreeningEnabled(screening))  tools = applyCommandScreening(tools, screening,    manifestId);
 if (anyLimit(manifest.spec.limits))      tools = applyLimits(tools,      manifest.spec.limits, manifestId);
 if (guardrailsEnabled(guardrails))       tools = applyGuardrails(tools,  guardrails,        manifestId);
 if (judgesEnabled(guardrails))           tools = applyJudges(tools,      guardrails,        manifestId);
@@ -28,9 +29,12 @@ model call -> tool dispatch
             -> LLM Judge     (post-call score)
             -> Guardrails    (filter)
             -> Limits        (cap)
+            -> Command screen (shell-aware command rules)
             -> Policies      (scope-check)
             -> inner tool
 ```
+
+Command screening sits directly above the scope check so a forbidden command is refused before it can spend a limits budget, a guardrail scan, or a judge's model call. It only wraps tools on command-executing transports (`sandbox` / `container`) unless `command_screening.tools` says otherwise — screening a `local` tool's string arguments would be pure false-positive surface. See [spec.command_screening](../guide/manifest-reference.md#speccommand_screening) for the rule model and the explicit statement of what it does *not* protect against.
 
 Read top-to-bottom for the call direction; bottom-to-top for which layer was applied first at build time.
 

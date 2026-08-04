@@ -531,6 +531,43 @@ By default a grant is a **permanent, tenant-wide, replayable** authorization: th
 
 When several rules match one tool, the **first** matching rule (manifest declaration order) supplies these settings. A consumed or expired grant is archived (its row stays for the audit trail) and no longer authorizes; consumption emits an `approval_consumed` audit event + `orchestrator_approval_grants_consumed` counter, expiry emits `approval_expired` + `orchestrator_approval_grants_expired`.
 
+## spec.command_screening
+
+Screens the commands a manifest's `sandbox` / `container` tools are asked to run, before they run.
+
+```yaml
+command_screening:
+  enabled: true                # default: false
+  mode: denylist               # denylist (default) | allowlist
+  tools: []                    # default: []; empty = every sandbox/container tool
+  arg_names: []                # default: []; empty = every string argument
+  include_defaults: true       # default: true; prepend the built-in floor rules
+  rules:
+    - pattern: "\\bterraform\\s+destroy\\b"   # case-insensitive regex
+      decision: require_approval              # allow | deny | require_approval
+      reason: "infrastructure teardown"
+```
+
+Each command-shaped argument is **normalized before matching**, so a rule can't be dodged by rewriting the command's syntax. Quoting (`r"m" -rf`), ANSI-C escapes (`$'\x72m'`), nested interpreters (`bash -c '…'`), `eval`, command substitution, pipe-to-shell (`echo … | sh`), here-strings (`sh <<< '…'`), wrapper chains (`sudo -u root …`, `timeout 5 …`, `env -S '…'`), and single-level variable indirection (`X=rm; $X -rf /`) all resolve to the same projection, which is what the rules match.
+
+**This is defense in depth, not a sandbox boundary.** Base64-then-decode, writing a script and running it later, or fetching a payload at runtime will all still get through. Treat it as a guard against mistakes and prompt injection on top of an isolated execution environment — never as the only thing between a model and the host.
+
+**Decisions.** `deny` refuses outright with no approval path. `require_approval` opens a request on the same surface as [`spec.approvals`](#specapprovals) (`POST /approvals/:id/decide`); the grant is keyed on the matched **rule**, not the literal command, so approving `rm -rf ./dist` clears the recursive-delete rule for that manifest + tool rather than re-prompting on every path variation. `allow` short-circuits later rules.
+
+**Rule order.** Built-in floor rules are evaluated **before** manifest rules, so a manifest `allow` cannot shadow them; first match wins overall. The floor covers recursive delete, force push, destructive SQL, and pipe-to-shell — any of `curl` / `wget` / `fetch` piped into any shell, including `sudo sh` and absolute paths like `/bin/bash` — all as `require_approval`; plus `mkfs` / fork bombs and raw block-device writes (`dd of=/dev/…`, covering `sd`/`nvme`/`disk`/`vd`/`xvd`/`hd`/`mmcblk`/`loop`/`ram`) as `deny`. Opt out with `include_defaults: false` — an explicit, reviewable choice rather than a silent override.
+
+Rules are matched case-insensitively and **multi-line**, so `^` and `$` anchor to each payload line in the normalized projection rather than only to its start.
+
+**Argument selection.** By default every string argument is screened, including strings nested inside arrays and objects, because a tool taking `{ argv: ["-c", "rm -rf /"] }` would walk straight past a name-based check.
+
+The cost of that default is false positives, and it is worth planning for. `screensTool` selects **every** tool on a `sandbox` or `container` transport, and `container` is a generic RPC transport — a manifest may well expose non-exec tools (translate, summarize, OCR) on it. Combined with screening every string, prose that merely *mentions* a dangerous command (`"rm -rf / is dangerous, never run it"`) will trip `require_approval`. Narrow with `tools` (list only the tools that actually execute shell commands) and `arg_names` (name the argument that carries the command) whenever a manifest mixes exec and non-exec tools on the same transport. Note also that quoted text which isn't a plain word is matched as its own line — that is what lets `psql -c "DROP TABLE users"` trip the destructive-SQL rule.
+
+`mode: allowlist` inverts the default: anything no rule matches is denied. Only commands matched by an explicit `allow` rule run.
+
+Placement in the chain is after policies and before limits, so a forbidden command never spends a limits budget, a guardrail scan, or a judge's model call. Note that `spec.approvals` wraps *outside* command screening, so a tool covered by both gates prompts twice: the approvals gate clears first, then command screening opens its own request. A hard `deny` is still unconditional — no approval unblocks it.
+
+Every non-allow outcome writes a `command_screened` audit event and increments `orchestrator_command_screened`. The event's `matched` field carries the matched substring, capped at 200 characters and passed through a credential scrubber — a greedy rule can match most of a command line, and a command line is exactly where a secret shows up as a *substring* (`https://user:sk-…@host`), which whole-value redaction misses. The command stored on an approval request is scrubbed the same way and stays otherwise legible, since an operator has to read it to decide. If a screened tool is ever invoked with no request context the call is **denied**, not run unscreened.
+
 ## spec.recursion_limit
 
 ```yaml
