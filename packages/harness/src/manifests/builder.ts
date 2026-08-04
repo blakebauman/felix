@@ -15,8 +15,8 @@
  *     BEFORE the governance pipeline so pattern-injected tools are gated
  *     by policies/limits/guardrails/judges/approvals like any other.
  * 10. Governance pipeline: `mergeWithManifest` → `applyPolicies`
- *     → `applyCommandScreening` → `applyLimits` → `applyGuardrails`
- *     → `applyJudges` → `applyApprovals`.
+ *     → `applyCommandScreening` → `applyContentScreening` → `applyLimits`
+ *     → `applyGuardrails` → `applyJudges` → `applyApprovals`.
  *     Each wrapper replaces `tool.executor` via `wrapExecutor(...)` so
  *     the inner `transport` label survives.
  * 11. Hand off to pattern builder (open registry dispatch) → `Agent`
@@ -63,6 +63,8 @@ import { commandScreeningEnabled } from '../policy/command-models';
 import { applyCommandScreening } from '../policy/command-wrap';
 import { ensureFederationSynced } from '../policy/federation-do';
 import { applyPolicies } from '../policy/wrap';
+import { contentScreeningEnabled } from '../screening/models';
+import { applyContentScreening } from '../screening/wrap';
 import { getSessionStore } from '../session/do-session';
 import { getSessionStrategy } from '../session/strategies';
 import { getActivated } from '../skills/activation-store';
@@ -281,7 +283,8 @@ export async function buildAgent(
     }
 
     // -------------------------------------------------------------------
-    // Governance pipeline: policies → command screening → limits → guardrails → approvals
+    // Governance pipeline: policies → command screening → content screening →
+    // limits → guardrails → judges → approvals
     // -------------------------------------------------------------------
     // Mirror the FederationDO's active bundle into this isolate before
     // merging so centrally-distributed policies actually apply. Without this
@@ -301,6 +304,18 @@ export async function buildAgent(
       resolvedTools = applyCommandScreening(
         resolvedTools,
         manifest.spec.command_screening,
+        manifest.metadata.name,
+      );
+    }
+    // Content screening is applied here — inner — so that on the OUTPUT path it
+    // post-processes the raw tool result before the guardrail filter, the
+    // judges, and the approvals wrapper. A judge is itself a model reading the
+    // same text, so screening has to come first or hostile content simply
+    // reaches a different LLM.
+    if (contentScreeningEnabled(manifest.spec.content_screening)) {
+      resolvedTools = applyContentScreening(
+        resolvedTools,
+        manifest.spec.content_screening,
         manifest.metadata.name,
       );
     }

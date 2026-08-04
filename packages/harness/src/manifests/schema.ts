@@ -15,6 +15,7 @@ import { GuardrailsSchema } from '../guardrails/models';
 import { ABSOLUTE_LIMITS, LimitsSchema } from '../limits/models';
 import { CommandScreeningSchema } from '../policy/command-models';
 import { PolicySchema } from '../policy/models';
+import { ContentScreeningSchema } from '../screening/models';
 import { assertSafeOutboundUrl } from '../security/ssrf';
 
 export const API_VERSION = 'orchestrator/v1';
@@ -1241,6 +1242,13 @@ export const AgentSpec = z
     }),
     guardrails: GuardrailsSchema.default(GuardrailsSchema.parse({})).openapi({
       description: 'Input/output content guardrails (PII regex, AI Gateway hook).',
+    }),
+    content_screening: ContentScreeningSchema.default(ContentScreeningSchema.parse({})).openapi({
+      description:
+        'Provenance-labelled screening of untrusted tool output for prompt-injection. Each result ' +
+        'is labelled with where it came from and classified by a Workers-AI model before the ' +
+        'model loop reads it; flagged content is quarantined or blocked so it never reaches the ' +
+        'context window or the session transcript.',
     }),
     command_screening: CommandScreeningSchema.default(CommandScreeningSchema.parse({})).openapi({
       description:

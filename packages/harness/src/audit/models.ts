@@ -23,6 +23,7 @@ export const AuditEventType = z
     'tool_call',
     'policy_decision',
     'command_screened',
+    'content_screened',
     'limit_exceeded',
     'guardrail_block',
     'plan_step',
