@@ -299,7 +299,7 @@ export function createApp(
   app.route('/audit', buildAuditRouter());
   app.route('/approvals', buildApprovalsRouter());
   app.route('/plans', buildPlansRouter());
-  app.route('/jobs', buildJobsRouter());
+  app.route('/jobs', buildJobsRouter({ tools: opts.tools }));
   app.route('/manifests', buildManifestsRouter());
   app.route('/eval', buildEvalRouter({ tools: opts.tools }));
   app.route('/a2a', buildA2ARouter({ tools: opts.tools, defaultManifest: opts.defaultManifest }));

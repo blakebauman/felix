@@ -86,7 +86,7 @@ export default {
             recordCounter('orchestrator_cron_task_failures', { task: 'federation_refresh' });
           }
           try {
-            await runScheduledJobs(env);
+            await runScheduledJobs(env, toolsFor(env), new Date(), ctx);
           } catch (err) {
             console.error('scheduled jobs run failed', err);
             recordCounter('orchestrator_cron_task_failures', { task: 'scheduled_jobs' });

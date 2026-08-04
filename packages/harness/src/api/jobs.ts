@@ -14,8 +14,10 @@ import type { AuthContext } from '../auth/context';
 import { requireScope } from '../auth/middleware';
 import type { Env } from '../env';
 import { nextRunAfter } from '../jobs/cron';
+import { jobExecutes, runJobAndAudit } from '../jobs/execute';
 import { JobRecordSchema } from '../jobs/models';
 import { getJob, listJobs, recordRun, upsertJob } from '../jobs/store';
+import type { ToolProvider } from '../tools/provider';
 import { BearerSecurity, ErrorBodySchema } from './openapi-shared';
 
 const READ_SCOPE = 'jobs:read';
@@ -27,6 +29,20 @@ const JobCreateRequestSchema = JobRecordSchema.pick({
   manifest_id: true,
   payload: true,
 })
+  .extend({
+    // A bare optional boolean, NOT `JobRecordSchema.shape.enabled.optional()`:
+    // that field carries `.default(false)`, which still fires for a missing key
+    // and would make "omitted" indistinguishable from an explicit `false`.
+    // The handler needs to tell them apart to preserve an existing setting.
+    enabled: z
+      .boolean()
+      .optional()
+      .openapi({
+        description:
+          'Whether the cron sweep invokes this job. Explicit value wins; omitted preserves an ' +
+          "existing job's setting and enables a brand-new one.",
+      }),
+  })
   .strict()
   .openapi('JobCreateRequest', {
     example: { name: 'nightly-digest', schedule: '0 9 * * *', manifest_id: 'quick' },
@@ -98,8 +114,19 @@ const runJobRoute = createRoute({
   request: { params: z.object({ name: z.string().min(1).max(128) }) },
   responses: {
     200: {
-      description: 'Run recorded.',
-      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+      description:
+        'Run recorded. `executed` is false when the job is not configured to run a manifest ' +
+        '(disabled, no `manifest_id`, or no `payload.input`) — the trigger is still audited.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            executed: z.boolean(),
+            status: z.string().optional(),
+            duration_ms: z.number().optional(),
+          }),
+        },
+      },
     },
     404: {
       description: 'No job with that name for the caller’s tenant.',
@@ -108,7 +135,7 @@ const runJobRoute = createRoute({
   },
 });
 
-export function buildJobsRouter() {
+export function buildJobsRouter(opts: { tools: ToolProvider }) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
 
   router.openapi(listJobsRoute, async (c) => {
@@ -134,9 +161,19 @@ export function buildJobsRouter() {
     const auth = c.get('auth');
     const raw = c.req.valid('json');
     const now = Date.now();
+    // `enabled` resolves in three steps, because `upsertJob` is a full replace
+    // and the naive readings are both wrong: defaulting to false would make a
+    // freshly-created job silently never run, and defaulting to true would
+    // silently re-enable a job an operator had turned off when they re-POST to
+    // tweak its schedule. So: an explicit value wins, otherwise keep whatever
+    // the existing row says, otherwise a brand-new job is enabled — creating a
+    // job with a manifest is a statement of intent.
+    const existing = await getJob(c.env, auth.principal.tenantId, raw.name);
+    const enabled = raw.enabled ?? existing?.enabled ?? true;
     const job = JobRecordSchema.parse({
-      created_at: now,
+      created_at: existing?.created_at ?? now,
       ...raw,
+      enabled,
       tenant_id: auth.principal.tenantId,
       next_run_at: raw.schedule ? nextRunAfter(raw.schedule, new Date(now)) : null,
     });
@@ -151,21 +188,42 @@ export function buildJobsRouter() {
     const { name } = c.req.valid('param');
     const job = await getJob(c.env, auth.principal.tenantId, name);
     if (!job) return c.json({ error: 'not found' }, 404);
+    const at = Date.now();
+
+    // A manual run happens inside the caller's own request context, so it is
+    // ATTENDED: a person is standing here waiting for it. Approval-gated tools
+    // therefore behave exactly as they would in a chat turn, unlike the cron
+    // sweep which runs unattended and fails those closed.
+    const outcome = jobExecutes(job)
+      ? await runJobAndAudit(c.env, opts.tools, job, at, 'manual')
+      : null;
+
     await recordRun(c.env, auth.principal.tenantId, name, {
-      last_run_at: Date.now(),
-      last_status: 'manual',
-      last_error: '',
+      last_run_at: at,
+      last_status: outcome ? outcome.status : 'manual',
+      last_error: outcome ? outcome.error.slice(0, 1000) : '',
       next_run_at: job.schedule ? nextRunAfter(job.schedule, new Date()) : null,
     });
-    recordEvent({
-      tenantId: auth.principal.tenantId,
-      eventType: 'job_run',
-      principalSubject: auth.principal.subject,
-      manifestId: job.manifest_id,
-      status: 'manual',
-      payload: { job: name },
-    });
-    return c.json({ ok: true as const }, 200);
+    if (!outcome) {
+      // Nothing was executed — record the trigger so the audit trail still
+      // shows someone asked for it.
+      recordEvent({
+        tenantId: auth.principal.tenantId,
+        eventType: 'job_run',
+        principalSubject: auth.principal.subject,
+        manifestId: job.manifest_id,
+        status: 'manual',
+        payload: { job: name, trigger: 'manual', executed: false },
+      });
+    }
+    return c.json(
+      {
+        ok: true as const,
+        executed: outcome !== null,
+        ...(outcome ? { status: outcome.status, duration_ms: outcome.durationMs } : {}),
+      },
+      200,
+    );
   });
 
   return router;

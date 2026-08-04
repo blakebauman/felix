@@ -86,7 +86,7 @@ Every tool-related event (`tool_call`, `policy_decision`, `limit_exceeded`, `gua
 | `guardrail_block` | `guardrails/wrap.ts` (tool side, `surface: input`/`output`) and `guardrails/final-response.ts` (`surface: final_response`, no `tool`/`transport`) — payload `{ surface, matches, [tool, transport] }` | `matched`, `clean` |
 | `judge_score` | `guardrails/judge-wrap.ts` (tool judges) + `guardrails/final-response.ts` (`source: 'final_response'`) + eval runner + reflect pattern. Payload `{ judge?, tool?, transport?, score, threshold?, reasoning, source? }`. The `source` field disambiguates: absent for the tool-side governance wrapper, `'final_response'` for a judge scoring the model's final answer, `'reflect'` for the reflection pattern's per-iteration scores, set by the eval runner when scoring dataset items. | `pass`, `fail` |
 | `plan_step` | `plans/tools.ts` `plan_update_step` — one per step transition. Payload `{ plan_id, step_id, result_present }`. | `pending`, `in_progress`, `completed`, `skipped`, `failed` |
-| `job_run` | Cron sweep + manual triggers | `scheduled`, `manual`, `error` |
+| `job_run` | Cron sweep + manual triggers | `ok`, `error`, `skipped`, `scheduled`, `manual` |
 | `approval_request` | `approvals/wrap.ts` first invocation — payload `{ approval_id, tool, transport }` | `pending` |
 | `approval_decision` | `/approvals/:id/decide` and retry-time wrapper — payload `{ approval_id, tool, transport }` | `approved`, `denied`, `pending` |
 | `checkpoint_failure` | Session `appendBatch` failed after retry | `failed` |
@@ -287,7 +287,8 @@ Upsert a job. The caller cannot impersonate another tenant — `tenant_id` is ov
   "name": "nightly-research",
   "schedule": "0 9 * * 1-5",
   "manifest_id": "research",
-  "payload_json": "{\"messages\":[{\"role\":\"user\",\"content\":\"Daily roundup.\"}]}"
+  "enabled": true,
+  "payload": { "input": "Summarize yesterday's orders and flag anything unusual." }
 }
 ```
 
@@ -295,14 +296,20 @@ Upsert a job. The caller cannot impersonate another tenant — `tenant_id` is ov
 curl -s -X POST -H "Authorization: Bearer $JWT" \
   -H 'content-type: application/json' \
   $BASE_URL/jobs \
-  -d '{"name":"nightly","schedule":"0 9 * * 1-5","manifest_id":"research"}' | jq
+  -d '{"name":"nightly","schedule":"0 9 * * 1-5","manifest_id":"research","enabled":true,"payload":{"input":"Daily roundup."}}' | jq
 ```
 
 The server computes `next_run_at` from the schedule and persists the row. `schedule: ""` makes the job on-demand only (it will never be returned by the cron sweep). Schedules use the standard 5-field cron syntax — see [deploy.md](deploy.md) for the supported syntax.
 
+**What makes a job actually run.** Three things together: `enabled: true`, a non-empty `manifest_id`, and a `payload.input` string, which is the prompt sent to the manifest. Miss any one and the job is still swept and still records a run — it just doesn't execute, reported as `skipped` (or `scheduled` for the cron path). Rows that predate execution support are `enabled: false`, so upgrading the runtime cannot start spending model tokens on jobs created when the sweep was bookkeeping-only. On this endpoint an explicit `enabled` wins; **omitting it preserves an existing job's setting**, and a brand-new job defaults to enabled. That three-way rule exists because the endpoint is a full upsert: defaulting to `false` would make a freshly-created job silently never run, and defaulting to `true` would silently re-enable a job you had turned off when you re-POST to tweak its schedule.
+
+Each firing gets its **own thread** (`<tenant>:job-<name>-<slot>`) rather than appending to a long-lived one — a job running hourly for a year would otherwise accumulate a session no context strategy could render. State a job needs across firings belongs in memory or a store the agent writes to explicitly.
+
 ### POST /jobs/run/:name
 
-Manually trigger a job, recording it as an audit event with `status: manual`. The server updates `last_run_at`, `last_status: manual`, and recomputes `next_run_at`.
+Trigger a job now. If the job is configured to execute (see above) the agent runs **inline** and the response reports the outcome; otherwise the trigger is recorded without executing.
+
+A manual run is **attended** — it happens inside your request, with you waiting on it — so approval-gated tools behave exactly as they do in a chat turn. The cron sweep is unattended and fails those closed instead (see [governance](../internals/governance.md#approvals)). That difference is deliberate: it lets an operator manually drive a job whose tools need a human, without that authorization silently carrying over to the unsupervised schedule.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $JWT" \
@@ -310,7 +317,7 @@ curl -s -X POST -H "Authorization: Bearer $JWT" \
 ```
 
 ```json
-{ "ok": true }
+{ "ok": true, "executed": true, "status": "ok", "duration_ms": 4210 }
 ```
 
 ## Manifests
