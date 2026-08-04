@@ -428,6 +428,11 @@ export function wrapDurableAgent(inner: Agent, env: Env, manifestId: string): Ag
         manifestId,
         ...(input.threadId ? { threadId: input.threadId } : {}),
         messages: [...input.messages],
+        // Carried across the isolate boundary: the workflow rebuilds its own
+        // context from these params, so a background caller's `unattended`
+        // state has to travel with them or the inner run silently becomes
+        // attended and human approval grants apply again.
+        ...(reqCtx?.unattended ? { unattended: true } : {}),
       };
       const instance = await binding.create({ params });
       recordCounter('orchestrator_durable_started', { manifest_id: manifestId });

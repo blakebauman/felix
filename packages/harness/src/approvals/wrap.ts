@@ -29,6 +29,7 @@ interface GateConfig {
   ttlSeconds: number | null;
   oneShot: boolean;
   bindPrincipal: boolean;
+  allowUnattended: boolean;
 }
 
 function canonicalize(args: ToolInput): string {
@@ -43,7 +44,7 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 function wrapOne(inner: Tool, manifestId: string, config: GateConfig): Tool {
-  const { ttlSeconds, oneShot, bindPrincipal } = config;
+  const { ttlSeconds, oneShot, bindPrincipal, allowUnattended } = config;
   return {
     ...inner,
     executor: wrapExecutor(inner.executor, async (args, ctx) => {
@@ -100,6 +101,40 @@ function wrapOne(inner: Tool, manifestId: string, config: GateConfig): Tool {
           transport: inner.executor.transport,
         });
       };
+
+      // Nobody is watching this run, and this tool needs a human. A live grant
+      // is NOT sufficient authorization here: the operator who approved it was
+      // answering for the call in front of them, not pre-authorizing a
+      // scheduled job to replay the same signature indefinitely. Deny before
+      // even looking one up, unless the rule explicitly says this tool may run
+      // unsupervised.
+      if (requestCtx.unattended && !allowUnattended) {
+        recordEvent({
+          tenantId,
+          eventType: 'approval_decision',
+          principalSubject: subject,
+          manifestId,
+          status: 'denied',
+          payload: {
+            tool: inner.name,
+            transport: inner.executor.transport,
+            reason: 'unattended_run',
+            unattended: true,
+          },
+        });
+        recordCounter('orchestrator_approval_decisions', {
+          outcome: 'denied_unattended',
+          manifest_id: manifestId,
+          transport: inner.executor.transport,
+        });
+        return denyOutput(
+          `[approval unavailable] tool '${inner.name}' requires human approval and this run is ` +
+            'unattended (scheduled job, replay, or background eval), so no one can decide it. ' +
+            'A previously approved grant does not carry over to an unattended run. If this tool is ' +
+            'meant to run unsupervised, set `allow_unattended: true` on its approval rule.',
+          'approvals',
+        );
+      }
 
       const existing = await findBySignature(env, tenantId, manifestId, inner.name, callSignature);
       if (existing) {
@@ -208,6 +243,9 @@ function wrapOne(inner: Tool, manifestId: string, config: GateConfig): Tool {
           approval_id: req.id,
           tool: inner.name,
           transport: inner.executor.transport,
+          // Surfaced so an operator reviewing the queue can tell a request
+          // raised by a scheduled job from one a person is waiting on.
+          ...(requestCtx.unattended ? { unattended: true } : {}),
         },
       });
       recordCounter('orchestrator_approval_requests', {
@@ -236,6 +274,7 @@ function matchRuleConfig(toolName: string, rules: ApprovalRule[]): GateConfig | 
     ttlSeconds: rule.ttl_seconds ?? null,
     oneShot: rule.one_shot ?? false,
     bindPrincipal: rule.bind_principal ?? false,
+    allowUnattended: rule.allow_unattended ?? false,
   };
 }
 

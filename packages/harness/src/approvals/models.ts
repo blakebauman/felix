@@ -51,6 +51,19 @@ export const ApprovalRuleSchema = z
           'tool / args gets a distinct signature and must re-request. Default false keeps the ' +
           'tenant-wide (subject-agnostic) signature, the pre-existing behavior.',
       }),
+    allow_unattended: z
+      .boolean()
+      .default(false)
+      .openapi({
+        description:
+          'Whether an approved grant may authorize a run with no human present — a cron tick, a ' +
+          'continuous-eval replay, a detached eval run. Default false: a human approving a call ' +
+          'during a conversation consented to that call, not to a background job replaying the ' +
+          'same signature indefinitely, so unattended runs are denied even when a live grant ' +
+          'exists. Set true only for tools a scheduled job is *meant* to perform unsupervised, ' +
+          'and prefer pairing it with `ttl_seconds` or `one_shot` so the standing authorization ' +
+          'is bounded.',
+      }),
   })
   .strict()
   .openapi('ApprovalRule');

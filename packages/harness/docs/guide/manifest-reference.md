@@ -519,6 +519,7 @@ approvals:
     ttl_seconds: 3600          # optional; grant expires this many seconds after it is DECIDED
     one_shot: true             # default: false; grant is consumed on first execution
     bind_principal: true       # default: false; grant is bound to the requesting subject
+    allow_unattended: false    # default: false; may a grant authorize a run with no human present
 ```
 
 When a tool listed under an approval rule is called, the wrapper synthesizes a deterministic call signature, persists an `approval_request` row, and returns a deny string to the model. The approver decides through `POST /approvals/:id/decide`; the next retry with the same arguments goes through. ApprovalsDO serializes concurrent decisions. `tools` matches by exact name or a trailing-`*` prefix — gate MCP servers with `serverName__*` so a server can't dodge approval by renaming its tools (see [spec.policies](#specpolicies)).
@@ -528,6 +529,7 @@ By default a grant is a **permanent, tenant-wide, replayable** authorization: th
 - **`ttl_seconds`** — the grant expires `ttl_seconds` after the operator decides (`expires_at = decided_at + ttl_seconds`). A call that lands after expiry re-requests approval with a fresh id (the stale grant is archived as `expired`) instead of replaying.
 - **`one_shot`** — the grant is consumed on first execution and can't be reused; the next call re-requests. The grant is claimed (`approved → consumed`) through ApprovalsDO **before** the tool runs, so two concurrent retries can never both execute (the loser re-requests). This spends the grant on the attempt even if the tool then errors.
 - **`bind_principal`** — the requesting principal subject is mixed into the call signature, so a grant approved for one subject yields a different signature for another; a different user must re-request rather than riding the first user's grant.
+- **`allow_unattended`** — whether an approved grant may authorize a run with **no human present**: a cron tick, a continuous-eval replay, a detached eval run, a plugin scheduled task. Default `false`, and the deny is unconditional — an unattended run is refused *before* the store is even consulted, so a live grant is neither checked nor consumed. The reasoning is that approval is a point-in-time human judgment about the call in front of the operator, not a standing authorization for a background job to replay the same signature indefinitely. Set it `true` only for tools a scheduled job is *meant* to perform unsupervised, and prefer pairing it with `ttl_seconds` or `one_shot` so the standing authorization stays bounded. With it enabled the normal flow resumes: the run still needs a real grant, it just no longer loses one for being unattended.
 
 When several rules match one tool, the **first** matching rule (manifest declaration order) supplies these settings. A consumed or expired grant is archived (its row stays for the audit trail) and no longer authorizes; consumption emits an `approval_consumed` audit event + `orchestrator_approval_grants_consumed` counter, expiry emits `approval_expired` + `orchestrator_approval_grants_expired`.
 

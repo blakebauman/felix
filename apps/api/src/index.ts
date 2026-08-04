@@ -12,7 +12,7 @@ import { createApp } from '@felix/harness/app';
 import type { AuditEvent } from '@felix/harness/audit/models';
 import { persistBatch } from '@felix/harness/audit/store';
 import {
-  buildAnonymousContext,
+  buildBackgroundContext,
   disposeContextDb,
   disposeLimitState,
   runWithContext,
@@ -69,11 +69,13 @@ export default {
   },
 
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Cron runs outside the auth middleware, so install a fresh anonymous
-    // RequestContext here. Without it, recordEvent falls back to console.log
-    // instead of enqueueing audit events, and any future agent invocation
-    // from within runScheduledJobs would be missing its LimitState.
-    const reqCtx = buildAnonymousContext(env, ctx);
+    // Cron runs outside the auth middleware, so install a fresh RequestContext
+    // here. Without it, recordEvent falls back to console.log instead of
+    // enqueueing audit events, and any agent invocation from within a cron task
+    // would be missing its LimitState. It is marked `unattended` because no one
+    // is watching this tick — human-in-the-loop controls read that flag rather
+    // than trying to infer "is a person present" from an anonymous principal.
+    const reqCtx = buildBackgroundContext(env, { execCtx: ctx });
     ctx.waitUntil(
       runWithContext(reqCtx, async () => {
         try {
@@ -147,10 +149,11 @@ export default {
   },
 
   async queue(batch: MessageBatch<AuditEvent>, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Runs under an anonymous RequestContext (like `scheduled`) so `getDb`
+    // Runs under a background RequestContext (like `scheduled`) so `getDb`
     // caches one Postgres client per batch instead of opening a connection
-    // per store call.
-    const reqCtx = buildAnonymousContext(env, ctx);
+    // per store call. This consumer only persists already-enqueued audit rows,
+    // but it is genuinely unattended, so it carries the flag too.
+    const reqCtx = buildBackgroundContext(env, { execCtx: ctx });
     try {
       await runWithContext(reqCtx, async () => {
         // Dead-letter branch: the `felix-audit-dlq-*` queues collect audit
