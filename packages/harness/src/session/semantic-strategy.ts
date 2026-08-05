@@ -28,6 +28,7 @@
 import { getContext } from '../context';
 import { recordCounter } from '../observability/metrics';
 import type { ChatMessage } from '../patterns/types';
+import { completeToolGroups } from './pairing';
 import { isPinned } from './strategies';
 import { eventToChatMessage, type Session, type SessionEvent, type SessionStrategy } from './types';
 
@@ -101,7 +102,10 @@ class SemanticRetrievalStrategy implements SessionStrategy {
       const pinned = filtered.filter(isPinned);
       const unpinned = filtered.filter((e) => !isPinned(e));
       const windowed = unpinned.slice(-this.topK);
-      const merged = [...pinned, ...windowed].sort((a, b) => a.seq - b.seq);
+      const merged = completeToolGroups(
+        filtered,
+        [...pinned, ...windowed].sort((a, b) => a.seq - b.seq),
+      );
       return [
         { role: 'system', content: opts.systemPrompt },
         ...merged.map(eventToChatMessage),
@@ -114,7 +118,7 @@ class SemanticRetrievalStrategy implements SessionStrategy {
     // through to a tail window.
     const query = incoming[incoming.length - 1]?.content ?? '';
     if (!query) {
-      const tail = filtered.slice(-this.topK);
+      const tail = completeToolGroups(filtered, filtered.slice(-this.topK));
       return [
         { role: 'system', content: opts.systemPrompt },
         ...tail.map(eventToChatMessage),
@@ -143,7 +147,10 @@ class SemanticRetrievalStrategy implements SessionStrategy {
         manifest_id: getContext()?.manifestId ?? '',
       });
       const windowed = candidates.slice(-this.topK);
-      const merged = [...pinned, ...windowed].sort((a, b) => a.seq - b.seq);
+      const merged = completeToolGroups(
+        filtered,
+        [...pinned, ...windowed].sort((a, b) => a.seq - b.seq),
+      );
       return [
         { role: 'system', content: opts.systemPrompt },
         ...merged.map(eventToChatMessage),
@@ -158,7 +165,13 @@ class SemanticRetrievalStrategy implements SessionStrategy {
       .slice(0, this.topK)
       .map((s) => s.event);
 
-    const merged = [...pinned, ...scored].sort((a, b) => a.seq - b.seq);
+    // Relevance ranking has no reason to keep an exchange together — it can
+    // rank a tool result highly and its declaring assistant turn nowhere at
+    // all, which is the single most likely way to hand a provider half a pair.
+    const merged = completeToolGroups(
+      filtered,
+      [...pinned, ...scored].sort((a, b) => a.seq - b.seq),
+    );
     return [
       { role: 'system', content: opts.systemPrompt },
       ...merged.map(eventToChatMessage),

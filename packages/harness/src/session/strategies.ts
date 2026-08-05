@@ -21,6 +21,7 @@ import { currentSignal } from '../limits/state';
 import { recordCounter } from '../observability/metrics';
 import { recordUsage } from '../patterns/model';
 import type { ChatMessage } from '../patterns/types';
+import { completeToolGroups } from './pairing';
 import { makeSemanticRetrievalSessionStrategy } from './semantic-strategy';
 import {
   eventToChatMessage,
@@ -88,7 +89,14 @@ class WindowedStrategy implements SessionStrategy {
     const pinned = filtered.filter(isPinned);
     const unpinned = filtered.filter((e) => !isPinned(e));
     const windowed = this.maxTurns > 0 ? unpinned.slice(-this.maxTurns) : [];
-    const merged = [...pinned, ...windowed].sort((a, b) => a.seq - b.seq);
+    // Slicing by count can cut between an assistant's tool call and the result
+    // that answers it, which providers reject outright — repair the selection
+    // before rendering. The window grows slightly; a refused request doesn't
+    // degrade gracefully.
+    const merged = completeToolGroups(
+      filtered,
+      [...pinned, ...windowed].sort((a, b) => a.seq - b.seq),
+    );
     return [
       { role: 'system', content: opts.systemPrompt },
       ...merged.map(eventToChatMessage),
@@ -144,8 +152,13 @@ class SummarizingStrategy implements SessionStrategy {
       return assemble(opts.systemPrompt, latestSummary?.content, merged, incoming);
     }
 
-    const toSummarize = compactable.slice(0, compactable.length - this.keep);
-    const keepEvents = compactable.slice(compactable.length - this.keep);
+    // The keep boundary can fall between an assistant's tool call and its
+    // result. Repair the kept side first, then summarize whatever is left, so
+    // an event pulled back into the window isn't also folded into the summary.
+    const rawKeep = compactable.slice(compactable.length - this.keep);
+    const keepEvents = completeToolGroups(raw, rawKeep);
+    const keptSeqs = new Set(keepEvents.map((e) => e.seq));
+    const toSummarize = compactable.filter((e) => !keptSeqs.has(e.seq));
 
     if (!opts.model || toSummarize.length === 0) {
       // No model available — degrade to windowed behavior using the
