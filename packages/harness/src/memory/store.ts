@@ -28,12 +28,14 @@ export interface MemoryRecord {
 
 const EMBED_MODEL = '@cf/baai/bge-base-en-v1.5';
 const DEFAULT_K = 5;
-const MEMORY_KINDS = ['fact', 'preference', 'episode'] as const;
+/** The agent-memory kinds. Exported so sweeps can't drift from this list. */
+export const MEMORY_KINDS = ['fact', 'preference', 'episode'] as const;
 
 export interface MemoryStore {
   remember(text: string, kind?: MemoryRecord['kind']): Promise<MemoryRecord | null>;
   recall(query: string, k?: number): Promise<MemoryRecord[]>;
-  forget(id: string): Promise<void>;
+  /** True when a row was actually removed — false when the id was already gone. */
+  forget(id: string): Promise<boolean>;
 }
 
 class PgMemoryStore implements MemoryStore {
@@ -109,16 +111,17 @@ class PgMemoryStore implements MemoryStore {
     }
   }
 
-  async forget(id: string): Promise<void> {
+  async forget(id: string): Promise<boolean> {
     try {
-      if (!this.env.HYPERDRIVE) return;
+      if (!this.env.HYPERDRIVE) return false;
       const ctx = getContext();
       const tenant = ctx?.auth.principal.tenantId ?? 'default';
       // The tenant-scoped WHERE is the cross-tenant guard: an id belonging
       // to another tenant simply deletes nothing.
-      await deleteVector(this.env, tenant, id);
+      return await deleteVector(this.env, tenant, id);
     } catch (err) {
       console.warn('memory.forget failed', err);
+      return false;
     }
   }
 }
@@ -130,7 +133,9 @@ class NoopMemoryStore implements MemoryStore {
   async recall(): Promise<MemoryRecord[]> {
     return [];
   }
-  async forget(): Promise<void> {}
+  async forget(): Promise<boolean> {
+    return false;
+  }
 }
 
 /** Resolve a memory store from the manifest's `spec.memory.store` value. */

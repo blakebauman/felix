@@ -133,3 +133,74 @@ export async function deleteVector(env: Env, tenantId: string, id: string): Prom
   `;
   return res.count > 0;
 }
+
+export interface VectorListQuery {
+  tenantId: string;
+  kinds: readonly string[];
+  manifestId?: string;
+  limit: number;
+}
+
+/**
+ * List a pool's rows without a similarity query.
+ *
+ * Everything else here retrieves by nearness to some probe vector, which is
+ * the wrong shape for a pass that has to reason about a pool as a WHOLE —
+ * consolidation cannot reconcile a superseded fact it never saw because
+ * nothing happened to be near it. Ordered oldest-first so a numbered list
+ * handed to a model reads chronologically, which is what makes "this one was
+ * later corrected" legible.
+ */
+export async function listVectors(env: Env, q: VectorListQuery): Promise<VectorMatch[]> {
+  if (q.kinds.length === 0) return [];
+  const sql = getDb(env);
+  const rows = await sql<
+    {
+      id: string;
+      kind: string;
+      manifest_id: string;
+      metadata: Record<string, unknown>;
+      created_at: number;
+    }[]
+  >`
+    SELECT id, kind, manifest_id, metadata, created_at
+      FROM memory_vectors
+      WHERE tenant_id = ${q.tenantId} AND kind IN ${sql([...q.kinds])}
+        ${q.manifestId !== undefined ? sql`AND manifest_id = ${q.manifestId}` : sql``}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${Math.max(1, q.limit)}
+  `;
+  return rows.map((r) => ({ ...r, metadata: r.metadata ?? {}, score: 0 }));
+}
+
+export interface VectorPoolCount {
+  tenant_id: string;
+  manifest_id: string;
+  count: number;
+}
+
+/**
+ * Pools at or over `minCount`, so a sweep can find the memory that needs
+ * attention without enumerating every tenant. Deliberately cross-tenant: the
+ * caller re-derives the tenant from each row and runs each pool under its own
+ * scoped context, the same shape the scheduled-job sweep uses.
+ */
+export async function listVectorPools(
+  env: Env,
+  kinds: readonly string[],
+  minCount: number,
+  limit: number,
+): Promise<VectorPoolCount[]> {
+  if (kinds.length === 0) return [];
+  const sql = getDb(env);
+  const rows = await sql<{ tenant_id: string; manifest_id: string; count: number }[]>`
+    SELECT tenant_id, manifest_id, COUNT(*)::int AS count
+      FROM memory_vectors
+      WHERE kind IN ${sql([...kinds])} AND manifest_id <> ''
+      GROUP BY tenant_id, manifest_id
+      HAVING COUNT(*) >= ${Math.max(1, minCount)}
+      ORDER BY COUNT(*) DESC
+      LIMIT ${Math.max(1, limit)}
+  `;
+  return rows;
+}

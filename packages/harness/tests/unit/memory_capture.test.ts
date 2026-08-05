@@ -90,7 +90,9 @@ function recordingStore(): { store: MemoryStore; written: string[] } {
       async recall() {
         return [];
       },
-      async forget() {},
+      async forget() {
+        return true;
+      },
     },
   };
 }
@@ -446,7 +448,9 @@ describe('capture does not re-store what is already remembered', () => {
             ts: 0,
           }));
         },
-        async forget() {},
+        async forget() {
+          return true;
+        },
       },
     };
   }
@@ -493,7 +497,9 @@ describe('capture does not re-store what is already remembered', () => {
       async recall() {
         throw new Error('vector store down');
       },
-      async forget() {},
+      async forget() {
+        return true;
+      },
     };
     await runWithContext(attendedCtx(env), () =>
       captureMemories(env, config(), store, [{ role: 'user', content: 'a long enough message' }]),
