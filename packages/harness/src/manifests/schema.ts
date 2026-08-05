@@ -729,6 +729,58 @@ const Memory = z
           'Automatic post-turn fact extraction. Requires `store` to be a real backend — capture ' +
           'with `store: none` has nowhere to write.',
       }),
+    consolidate: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .openapi({
+            description:
+              "Periodically reconcile this manifest's memory pool: merge duplicates and drop " +
+              'facts a later one superseded. Runs on the cron sweep, not on the request path.',
+          }),
+        model: z
+          .string()
+          .default('@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+          .openapi({ description: 'Workers-AI model that proposes the reconciliation.' }),
+        after_facts: z
+          .number()
+          .int()
+          .min(10)
+          .default(50)
+          .openapi({
+            description:
+              'Pool size at which a manifest becomes eligible. Small pools rarely contain ' +
+              'contradictions worth a model call. Floored at 10 because the cross-tenant ' +
+              'discovery query has to pick a threshold before it knows whose pools it found; ' +
+              'a lower value here would simply never be reached.',
+          }),
+        max_facts: z
+          .number()
+          .int()
+          .positive()
+          .max(500)
+          .default(200)
+          .openapi({
+            description:
+              'Most facts loaded into one pass, oldest first. A pool larger than this is ' +
+              'consolidated in successive sweeps rather than in one oversized prompt.',
+          }),
+      })
+      .strict()
+      .default({
+        enabled: false,
+        model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        after_facts: 50,
+        max_facts: 200,
+      })
+      .openapi({
+        description:
+          'Periodic memory reconciliation. Capture only ever appends — and deliberately writes a ' +
+          'CONFLICTING fact rather than suppressing it, since embedding nearness is not sameness ' +
+          '— so without this a long-lived pool accumulates contradictions with no signal about ' +
+          'which entry is current.',
+      }),
   })
   .strict()
   .openapi('Memory');

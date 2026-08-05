@@ -25,6 +25,7 @@ import {
   runContinuousEvalTick,
 } from '@felix/harness/jobs/continuous-eval';
 import { runScheduledJobs } from '@felix/harness/jobs/cron';
+import { runMemoryConsolidation } from '@felix/harness/jobs/memory-consolidation';
 import { sweepOrphanQueueDispatches } from '@felix/harness/jobs/queue-orphan-cleanup';
 import { runRetentionSweep } from '@felix/harness/jobs/retention';
 import { recordCounter } from '@felix/harness/observability/metrics';
@@ -96,6 +97,12 @@ export default {
           } catch (err) {
             console.error('queue orphan cleanup failed', err);
             recordCounter('orchestrator_cron_task_failures', { task: 'queue_orphan_cleanup' });
+          }
+          try {
+            await runMemoryConsolidation(env, Date.now(), ctx);
+          } catch (err) {
+            console.error('cron: memory consolidation failed', err);
+            recordCounter('orchestrator_cron_task_failures', { task: 'memory_consolidation' });
           }
           try {
             await runAnomalyScan(env);

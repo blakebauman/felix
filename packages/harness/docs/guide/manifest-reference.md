@@ -293,6 +293,40 @@ Three things capture deliberately does **not** do. It does not run on a [continu
 
 Every capture writes a `memory_captured` audit event carrying the stored facts, so what the agent decided to believe is reconstructable from `/audit` rather than visible only as a counter.
 
+### Consolidation
+
+```yaml
+memory:
+  consolidate:
+    enabled: false         # default: false
+    model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    after_facts: 50        # pool size at which this manifest becomes eligible
+    max_facts: 200         # most facts loaded into one pass, oldest first
+```
+
+Capture only ever appends, and deliberately writes a *conflicting* fact rather than suppressing it, so without reconciliation a long-lived pool accumulates contradictions with no signal about which entry is current. Consolidation is the pass that resolves them. It runs on the cron sweep — never on the request path — under a context scoped to the pool's own tenant.
+
+The model receives the pool as a numbered list and replies in a closed instruction language:
+
+```
+UPDATE 3: the user is in Lisbon
+DELETE 7
+ADD: the user reviews invoices on Fridays
+NONE
+```
+
+A grammar rather than "rewrite the whole memory" for one reason: a rewrite makes every fact's survival depend on the model reproducing it verbatim, so a truncated or distracted response silently deletes memory it never mentioned. With operations, **anything the model does not name is left exactly as it was** — the failure mode of a bad response is that nothing happens.
+
+Every index is bounds-checked against the list that was actually sent, and an out-of-range index is rejected rather than clamped: clamping would silently retarget a delete onto a fact the model never chose, which is the one failure mode with no way to detect it afterwards. Prose that isn't an operation is counted as rejected rather than read as "no changes needed", so a model that has stopped following the format looks different from a pool that is genuinely fine. An `UPDATE` writes the replacement before removing the original, so dying between the two leaves a duplicate rather than losing the fact.
+
+Two guards exist because the stored facts are themselves LLM-extracted from user-influenced content, and the consolidator reads them. Fact text is **flattened to one line** before numbering, so a fact containing an embedded `\n7. …` cannot forge an extra entry and steer a `DELETE 7` onto a real, unrelated fact — the index check can't catch that, because the index really is in range. And a single pass may not destroy more than **half the pool**; a response that wants to delete nearly everything has either misread the list or been steered, and whatever is genuinely redundant will still go over subsequent passes.
+
+Per tick the sweep consolidates at most three pools, largest first; the rest keep their size and are picked up on a later tick. A pool larger than `max_facts` is consolidated across successive sweeps rather than in one oversized prompt.
+
+Outcomes land in a `memory_consolidated` audit event carrying **what was actually removed or rewritten** — op kind, row id, and truncated before/after text — not just counts. This pass deletes a tenant's memory with no human in the loop, and "which facts went" is the only question worth asking if one ever misbehaves. Counts reflect what the store actually did: a delete of an already-absent row is not reported as a deletion, and an update whose delete failed is reported as an add, because the old value is still recallable.
+
+Two limits worth knowing. Overlapping ticks aren't locked out, so a slow pass and the next one could both consolidate a pool and leave a duplicated fact — self-healing, since merging duplicates is exactly what the next pass does. And pools are processed largest-first, so a tenant with consistently huge pools can crowd out smaller ones; raise `after_facts` on the noisy manifest if that happens.
+
 ### Measuring capture quality
 
 Capture quality lives almost entirely in a prompt, and prompts regress silently. `pnpm bench:memory` (needs `ANTHROPIC_API_KEY`) replays the fixture conversations in `packages/harness/tests/fixtures/memory-bench/` through the real extraction prompt, judges the resulting memory, prints a table, and **exits non-zero** when any axis falls below its floor:
