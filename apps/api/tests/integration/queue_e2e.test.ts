@@ -30,6 +30,7 @@ import {
 import { getDb } from '@felix/harness/db/client';
 import type { Env as AppEnv } from '@felix/harness/env';
 import { conversationStub } from '@felix/harness/memory/conversation-do';
+import { mintQueueToken } from '@felix/harness/security/queue-token';
 import { analyzeWake, type SessionEvent } from '@felix/harness/session/types';
 import { QueueExecutor } from '@felix/harness/tools/queue-executor';
 import { describe, expect, it } from 'vitest';
@@ -231,5 +232,122 @@ describe('queue transport end-to-end', () => {
     // Nothing landed on the forged thread.
     const events = await readEvents(threadId);
     expect(events).toEqual([]);
+  });
+});
+
+describe('capability-token write-back', () => {
+  /** Seed the dispatch row the pairing check needs. */
+  async function seedDispatch(tenant: string, threadId: string, toolCallId: string) {
+    await getDb(testEnv)`
+      INSERT INTO audit_events
+        (id, tenant_id, ts, event_type, manifest_id, principal_subj, status, payload_json)
+        VALUES (${crypto.randomUUID()}, ${tenant}, ${Date.now()}, 'queue_dispatch', 'researcher', '',
+                'enqueued',
+                ${{ job_id: crypto.randomUUID(), tool: 'long_research', tool_call_id: toolCallId, thread_id: threadId }})
+    `;
+  }
+
+  function writeBack(threadId: string, toolCallId: string, headers: Record<string, string>) {
+    return SELF.fetch(
+      `https://orchestrator.test/internal/sessions/${encodeURIComponent(threadId)}/events`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({
+          events: [
+            { kind: 'tool_result', tool_call_id: toolCallId, name: 'long_research', content: 'ok' },
+          ],
+        }),
+      },
+    );
+  }
+
+  it('accepts a token minted for exactly this dispatch', async () => {
+    const threadId = 'acme:tok-ok';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    const token = await mintQueueToken(SECRET, { t: 'acme', th: threadId, c: toolCallId });
+
+    const resp = await writeBack(threadId, toolCallId, { 'x-consumer-token': token });
+    expect(resp.status).toBe(200);
+  });
+
+  it('does not require the shared secret when a token is supplied', async () => {
+    // The whole point: the long-lived secret stops travelling to consumers.
+    const threadId = 'acme:tok-nosecret';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    const token = await mintQueueToken(SECRET, { t: 'acme', th: threadId, c: toolCallId });
+
+    const resp = await writeBack(threadId, toolCallId, { 'x-consumer-token': token });
+    expect(resp.status).toBe(200);
+  });
+
+  it('refuses a token minted for a different thread', async () => {
+    const threadId = 'acme:tok-thread-a';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    // Genuine signature, wrong scope — a consumer reusing a token it holds.
+    const token = await mintQueueToken(SECRET, {
+      t: 'acme',
+      th: 'acme:tok-thread-b',
+      c: toolCallId,
+    });
+
+    expect((await writeBack(threadId, toolCallId, { 'x-consumer-token': token })).status).toBe(401);
+  });
+
+  it('refuses a token minted for a different tool call', async () => {
+    const threadId = 'acme:tok-call';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    const token = await mintQueueToken(SECRET, { t: 'acme', th: threadId, c: 'call_other' });
+
+    expect((await writeBack(threadId, toolCallId, { 'x-consumer-token': token })).status).toBe(401);
+  });
+
+  it('refuses a token signed with the wrong key', async () => {
+    const threadId = 'acme:tok-forged';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    const token = await mintQueueToken('not-the-real-secret-value', {
+      t: 'acme',
+      th: threadId,
+      c: toolCallId,
+    });
+
+    expect((await writeBack(threadId, toolCallId, { 'x-consumer-token': token })).status).toBe(401);
+  });
+
+  it('refuses an expired token', async () => {
+    const threadId = 'acme:tok-expired';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+    const token = await mintQueueToken(
+      SECRET,
+      { t: 'acme', th: threadId, c: toolCallId },
+      1_000,
+      Date.now() - 60_000,
+    );
+
+    expect((await writeBack(threadId, toolCallId, { 'x-consumer-token': token })).status).toBe(401);
+  });
+
+  it('still accepts the shared secret, so jobs enqueued before this deploy report back', async () => {
+    const threadId = 'acme:tok-legacy';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+
+    expect((await writeBack(threadId, toolCallId, { 'x-consumer-secret': SECRET })).status).toBe(
+      200,
+    );
+  });
+
+  it('still refuses a request with neither credential', async () => {
+    const threadId = 'acme:tok-none';
+    const toolCallId = `call_${crypto.randomUUID()}`;
+    await seedDispatch('acme', threadId, toolCallId);
+
+    expect((await writeBack(threadId, toolCallId, {})).status).toBe(401);
   });
 });

@@ -1,8 +1,14 @@
 /**
  * Internal routes for trusted infrastructure callers (queue consumers,
  * peer Workers running this same harness, scheduled jobs in adjacent
- * deployments). Authn is a shared secret in the `x-consumer-secret`
- * header, compared in constant time against `env.CONSUMER_SHARED_SECRET`.
+ * deployments).
+ *
+ * Authn is a per-dispatch capability token in `x-consumer-token` — minted when
+ * the job was enqueued, carried in the queue message, and authorizing exactly
+ * one tool call on one thread until it expires. A shared secret in
+ * `x-consumer-secret` (constant-time compared against
+ * `env.CONSUMER_SHARED_SECRET`) is still accepted, because jobs enqueued
+ * before tokens existed carry none and must still be able to report back.
  *
  * The only route today is the queue-consumer write-back path:
  *
@@ -14,9 +20,14 @@
  *   - The shared secret is the only authn — there is no JWT path here.
  *   - The tenant_id is parsed from the thread_id prefix (`tenant:suffix`).
  *     A malformed thread_id is rejected.
- *   - **Dispatch pairing.** The shared secret is fleet-global, so it alone
- *     would let any holder inject an arbitrary `tool_result` into ANY
- *     tenant's thread. Before writing, each event's `tool_call_id` is
+ *   - **Capability scope.** When a token is presented, tenant / thread /
+ *     tool-call identity comes from the SIGNED CLAIM rather than from the
+ *     addressed path and body: a token for a neighbouring dispatch, or one
+ *     whose claims name a different thread, authorizes nothing here. Holding a
+ *     valid token is not by itself sufficient.
+ *   - **Dispatch pairing.** Retained under both credentials. The shared secret
+ *     is fleet-global, so it alone would let any holder inject an arbitrary
+ *     `tool_result` into ANY tenant's thread. Before writing, each event's `tool_call_id` is
  *     matched against an outstanding `queue_dispatch` audit row for THIS
  *     tenant whose recorded `thread_id` equals the addressed thread. A
  *     write-back with no matching dispatch — a forged / cross-tenant id —
@@ -38,7 +49,9 @@ import { findQueueDispatchState, recordEvent } from '../audit/store';
 import type { AuthContext } from '../auth/context';
 import type { Env } from '../env';
 import { conversationStub } from '../memory/conversation-do';
+import { recordCounter } from '../observability/metrics';
 import { constantTimeEqual } from '../security/constant-time';
+import { verifyQueueToken } from '../security/queue-token';
 import { ErrorBodySchema } from './openapi-shared';
 
 const ToolResultEventSchema = z
@@ -113,9 +126,25 @@ const writeBackRoute = createRoute({
       // Required operationally — but declared optional so the handler can
       // emit a precise 401 ("unauthorized") when missing instead of the
       // generic 400 OpenAPIHono returns for schema-validation failures.
-      'x-consumer-secret': z.string().min(1).optional().openapi({
-        description: 'Shared secret. Must match `env.CONSUMER_SHARED_SECRET`.',
-      }),
+      'x-consumer-token': z
+        .string()
+        .min(1)
+        .optional()
+        .openapi({
+          description:
+            'Per-dispatch capability token from the queue message `callback_token`. Preferred over ' +
+            'the shared secret: it authorizes exactly one tool call on one thread and expires. ' +
+            'When present it must authorize the addressed thread and every event`s tool_call_id.',
+        }),
+      'x-consumer-secret': z
+        .string()
+        .min(1)
+        .optional()
+        .openapi({
+          description:
+            'Fleet-global shared secret, matched against `env.CONSUMER_SHARED_SECRET`. Fallback ' +
+            'for jobs enqueued before capability tokens existed; prefer `x-consumer-token`.',
+        }),
     }),
     body: { content: { 'application/json': { schema: WriteBackBodySchema } } },
   },
@@ -171,9 +200,24 @@ export function buildInternalRouter(): OpenAPIHono<{
         503,
       ) as never;
     }
-    const supplied = c.req.header('x-consumer-secret') ?? '';
-    if (!(await constantTimeEqual(supplied, secret))) {
-      return c.json({ error: 'unauthorized' }, 401) as never;
+    // Two ways in, and the difference matters. A capability token
+    // (`x-consumer-token`) is minted per dispatch and authorizes exactly one
+    // tool call on one thread until it expires — it is the intended path, and
+    // it means the long-lived secret never leaves the Worker. The shared
+    // secret is the fallback, kept because jobs enqueued before this deploy
+    // carry no token and must still be able to report back.
+    //
+    // The token is checked below against the specific work being requested;
+    // holding one is not by itself sufficient.
+    const suppliedToken = c.req.header('x-consumer-token') ?? '';
+    const suppliedSecret = c.req.header('x-consumer-secret') ?? '';
+    if (!suppliedToken) {
+      if (!(await constantTimeEqual(suppliedSecret, secret))) {
+        return c.json({ error: 'unauthorized' }, 401) as never;
+      }
+      // Counted so the fallback can eventually be removed on evidence rather
+      // than on hope: watch this reach zero, then drop the shared-secret path.
+      recordCounter('orchestrator_queue_legacy_secret_used', {});
     }
 
     // Dispatch pairing needs the audit store. Fail closed if it's absent —
@@ -191,6 +235,35 @@ export function buildInternalRouter(): OpenAPIHono<{
     }
 
     const body = c.req.valid('json');
+
+    // With a token, identity comes from the signed claim rather than from the
+    // addressed path and body: the token has to authorize this exact tenant,
+    // thread, and tool call. A token for a neighbouring dispatch — or a
+    // correctly-signed one whose claims were swapped for another thread's —
+    // authorizes nothing here.
+    if (suppliedToken) {
+      // Verify the signature once — it is one token for the whole request, and
+      // re-deriving the HMAC per event would repeat a key import and sign up
+      // to 50 times for no added assurance.
+      const verified = await verifyQueueToken(secret, suppliedToken);
+      const rejection = !verified.ok
+        ? verified.reason
+        : body.events.every(
+              (e) =>
+                verified.claims.t === tenantId &&
+                verified.claims.th === threadId &&
+                verified.claims.c === e.tool_call_id,
+            )
+          ? null
+          : ('claim_mismatch' as const);
+
+      if (rejection) {
+        recordCounter('orchestrator_queue_token_rejected', { reason: rejection });
+        // One 401 for every failure: distinguishing "expired" from "forged" in
+        // the response would tell a prober which half of a guess landed.
+        return c.json({ error: 'unauthorized' }, 401) as never;
+      }
+    }
 
     // Prove each event pairs to a REAL, still-outstanding queue dispatch for
     // this tenant + thread BEFORE anything is written. The shared secret is
