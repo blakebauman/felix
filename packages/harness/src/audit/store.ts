@@ -15,6 +15,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../env';
 import { recordCounter } from '../observability/metrics';
 import { redactSecrets } from '../security/redact';
+import { maskSecretsDeep } from '../security/secret-masking';
 import type { AuditEvent, AuditEventType } from './models';
 
 function genId(): string {
@@ -83,7 +84,13 @@ export function recordEvent(opts: RecordOptions): AuditEvent {
     manifest_id: opts.manifestId ?? '',
     principal_subject: opts.principalSubject ?? '',
     status: opts.status ?? '',
-    payload: opts.payload ? redactSecrets(opts.payload) : {},
+    // Two passes, because they catch different things: `redactSecrets` knows
+    // secret-SHAPED values and secret-sounding key names, while the masker
+    // knows this deployment's ACTUAL secret values — including opaque ones no
+    // pattern would recognize. A secret can reach a payload through a path the
+    // tool-output masker never sees, e.g. a model echoing one back as a
+    // tool-call argument.
+    payload: opts.payload ? maskSecretsDeep(ctx?.env as Env, redactSecrets(opts.payload)) : {},
   };
 
   if (ctx) {
@@ -113,7 +120,7 @@ export function recordEventDetached(
     manifest_id: opts.manifestId ?? '',
     principal_subject: opts.principalSubject ?? '',
     status: opts.status ?? '',
-    payload: opts.payload ? redactSecrets(opts.payload) : {},
+    payload: opts.payload ? maskSecretsDeep(env, redactSecrets(opts.payload)) : {},
   };
   enqueueOrFallback(env, event, execCtx);
   return event;

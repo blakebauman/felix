@@ -47,11 +47,13 @@ const SECRET_VALUE_PATTERNS = [
 const MAX_DEPTH = 6;
 export const REDACTED = '[REDACTED]';
 
-function isSecretKey(key: string): boolean {
+/** True when a key NAME implies its value is a secret. */
+export function isSecretKey(key: string): boolean {
   return SECRET_KEY_PATTERNS.some((p) => p.test(key));
 }
 
-function isSecretValue(value: unknown): boolean {
+/** True when a VALUE is shaped like a known credential format. */
+export function isSecretValue(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   if (value.length < 16) return false;
   return SECRET_VALUE_PATTERNS.some((p) => p.test(value));
