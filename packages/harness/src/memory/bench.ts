@@ -24,6 +24,7 @@
  */
 
 import type { ChatMessage } from '../patterns/types';
+import { normalizeFact } from './capture';
 
 /** One scripted exchange. Replayed verbatim; no model produces these. */
 export interface BenchConversation {
@@ -45,11 +46,26 @@ export interface BenchResult {
   scores: BenchScores;
 }
 
-/** Minimum acceptable average per axis. Below any of these, the run fails. */
+/**
+ * Minimum acceptable average per axis. Below any of these, the run fails.
+ *
+ * These are measured, not guessed. Four runs on 2026-08-07 against
+ * `claude-sonnet-4-6` scored s/n 6.0-6.3, staleness 8.3 every time, and
+ * observation 8.3-8.7. Each floor sits about half a point under the worst
+ * observed run — wide enough that ordinary judge jitter won't fail CI, tight
+ * enough that a real regression does. Signal-to-noise is the noisiest axis
+ * and the one to watch: it moved 0.3 across runs with nothing changed.
+ *
+ * The earlier placeholder floors (5 / 4 / 5) passed with room to spare on
+ * every axis and would have waved through a serious regression.
+ *
+ * Re-measure when the extraction prompt, the judge prompt, or the benchmark
+ * model changes — all three move these numbers.
+ */
 export const DEFAULT_FLOORS: Omit<BenchScores, 'notes'> = {
-  signalToNoise: 5,
-  staleness: 4,
-  inferenceVsObservation: 5,
+  signalToNoise: 5.5,
+  staleness: 7,
+  inferenceVsObservation: 7.5,
 };
 
 export const JUDGE_PROMPT = [
@@ -137,11 +153,28 @@ export async function replayConversation(
   capture: (messages: ChatMessage[]) => Promise<string[]>,
 ): Promise<string[]> {
   const facts: string[] = [];
+  const seen = new Set<string>();
   const soFar: ChatMessage[] = [];
   for (const turn of conversation.turns) {
     soFar.push({ role: 'user', content: turn.input });
     soFar.push({ role: 'assistant', content: turn.reply });
-    facts.push(...(await capture([...soFar])));
+    // Capture re-reads the whole exchange each turn, so a fact established
+    // early is re-extracted on every later turn. Production drops those
+    // re-writes in `alreadyStored`; without the same filter here the benchmark
+    // scores a pile of verbatim repeats no real store would ever hold, and the
+    // judge marks it down for duplication that does not exist in production.
+    //
+    // It deliberately uses capture's OWN normalization rather than a second
+    // copy of the rule, so the two cannot drift apart — and it is deliberately
+    // no smarter than production: near-duplicate PARAPHRASES survive here
+    // exactly as they survive a real write, because catching those is
+    // consolidation's job and the benchmark should show the gap.
+    for (const fact of await capture([...soFar])) {
+      const key = normalizeFact(fact);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      facts.push(fact);
+    }
   }
   return facts;
 }
