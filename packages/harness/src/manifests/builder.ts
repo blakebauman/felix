@@ -14,7 +14,8 @@
  *     and `PLAN_TOOLS` for the `deep` pattern. This injection happens
  *     BEFORE the governance pipeline so pattern-injected tools are gated
  *     by policies/limits/guardrails/judges/approvals like any other.
- * 10. Governance pipeline: `mergeWithManifest` → `applyPolicies`
+ * 10. Governance pipeline: `applySecretMasking` (innermost, always on)
+ *     → `mergeWithManifest` → `applyPolicies`
  *     → `applyCommandScreening` → `applyContentScreening` → `applyLimits`
  *     → `applyGuardrails` → `applyJudges` → `applyApprovals`.
  *     Each wrapper replaces `tool.executor` via `wrapExecutor(...)` so
@@ -65,6 +66,7 @@ import { ensureFederationSynced } from '../policy/federation-do';
 import { applyPolicies } from '../policy/wrap';
 import { contentScreeningEnabled } from '../screening/models';
 import { applyContentScreening } from '../screening/wrap';
+import { applySecretMasking } from '../security/masking-wrap';
 import { getSessionStore } from '../session/do-session';
 import { getSessionStrategy } from '../session/strategies';
 import { getActivated } from '../skills/activation-store';
@@ -283,8 +285,9 @@ export async function buildAgent(
     }
 
     // -------------------------------------------------------------------
-    // Governance pipeline: policies → command screening → content screening →
-    // limits → guardrails → judges → approvals
+    // Governance pipeline: secret masking (innermost, always on) → policies →
+    // command screening → content screening → limits → guardrails → judges →
+    // approvals
     // -------------------------------------------------------------------
     // Mirror the FederationDO's active bundle into this isolate before
     // merging so centrally-distributed policies actually apply. Without this
@@ -293,6 +296,14 @@ export async function buildAgent(
     // build.
     await ensureFederationSynced(deps.env);
     const merged = mergeWithManifest(manifest.spec.policies, manifest.spec.approvals);
+
+    // Innermost, and unconditional. Applied first at build time so it is the
+    // FIRST post-processing to run on the way out — the injection classifier,
+    // the guardrail filter, judges, and the react loop's audit row all see
+    // output that has already had this Worker's own credentials removed. A
+    // secret still present by the time any of those run has already leaked
+    // into a model or a durable row.
+    resolvedTools = applySecretMasking(resolvedTools, deps.env, manifest.metadata.name);
 
     if (merged.policies.length) {
       resolvedTools = applyPolicies(resolvedTools, merged.policies, manifest.metadata.name);

@@ -1,10 +1,10 @@
 ---
-description: "Seven governance layers — policies, command screening, content screening, limits, guardrails, LLM judges, approvals — compose at build time and run on every tool invocation."
+description: "Eight governance layers — secret masking, policies, command screening, content screening, limits, guardrails, LLM judges, approvals — compose at build time and run on every tool invocation."
 ---
 
 # Governance
 
-Felix applies seven governance layers to every tool call: policies, command screening, content screening, limits, guardrails, llm_judge, approvals. They compose at build time and run on every invocation. A federated `PolicyBundle` overlays manifest-declared policies and approvals.
+Felix applies eight governance layers to every tool call: secret masking, policies, command screening, content screening, limits, guardrails, llm_judge, approvals. They compose at build time and run on every invocation. A federated `PolicyBundle` overlays manifest-declared policies and approvals.
 
 ## Composition
 
@@ -13,6 +13,7 @@ Felix applies seven governance layers to every tool call: policies, command scre
 ```ts
 const merged = mergeWithManifest(manifest.spec.policies, manifest.spec.approvals);
 
+tools = applySecretMasking(tools, env, manifestId);   // innermost, always on
 if (merged.policies.length)              tools = applyPolicies(tools,    merged.policies,   manifestId);
 if (commandScreeningEnabled(screening))  tools = applyCommandScreening(tools, screening,    manifestId);
 if (contentScreeningEnabled(content))    tools = applyContentScreening(tools, content,      manifestId);
@@ -33,8 +34,11 @@ model call -> tool dispatch
             -> Content screen (injection classifier, post-call)
             -> Command screen (shell-aware command rules)
             -> Policies      (scope-check)
+            -> Secret masking (strip our own credentials from output)
             -> inner tool
 ```
+
+Secret masking is the innermost layer and the only one that is **always on**. Being innermost means it is the first post-processing to run on the way out, so the injection classifier, the guardrail filter, judges, and the react loop's audit row all see output whose credentials are already gone — a secret still present when any of those run has already reached a model or a durable row. It is not opt-in because there is no manifest where echoing this Worker's own credentials into a context window is the intended behavior, and a flag would mean the manifests that forgot it are exactly the ones that leak. See [internals/auth.md](auth.md) and `src/security/secret-masking.ts`.
 
 Read the two screening layers in the direction that matters for each: command screening acts on the way **in** (it inspects arguments and can refuse before the tool runs), content screening acts on the way **out** (it classifies the result). Content screening is applied inner precisely so that, on the return path, it sees the raw tool output before the guardrail filter, the judges, and the approvals wrapper — a judge is itself a model reading that text, so screening after it would just move the attack surface. See [spec.content_screening](../guide/manifest-reference.md#speccontent_screening).
 
