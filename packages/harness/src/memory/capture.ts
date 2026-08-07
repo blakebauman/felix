@@ -235,7 +235,7 @@ export async function captureMemories(
 }
 
 /** Normalize for comparison — casing and punctuation shouldn't defeat dedup. */
-function normalizeFact(text: string): string {
+export function normalizeFact(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, '')

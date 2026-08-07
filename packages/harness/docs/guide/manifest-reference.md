@@ -356,6 +356,10 @@ Capture quality lives almost entirely in a prompt, and prompts regress silently.
 
 The fixtures are chosen to make each failure visible: one supersedes facts mid-conversation, one has the assistant proposing preferences the user never agrees to, one pastes credentials in passing, and one contains nothing memorable at all — where an empty memory is the correct answer. Run it before and after any change to the extraction prompt and compare. It measures the prompt rather than the exact production model, since a Workers-AI binding isn't reachable from a plain Node script.
 
+The replay applies capture's own dedup rule between turns. Extraction re-reads the whole exchange each turn, so a fact established early is re-extracted on every later turn; production drops those re-writes in `alreadyStored`, and without the same filter the benchmark would score a pile of verbatim repeats no real store ever holds. It is deliberately no smarter than production: near-duplicate **paraphrases** survive here exactly as they survive a real write. That is not a benchmark artifact but the live gap — `alreadyStored` compares normalized text, so "prefers TypeScript over JavaScript" and "prefers TypeScript examples over JavaScript in code samples" are two rows. Closing it is [consolidation's](#memory-consolidation) job, and the benchmark is where you can see how much it has left to do.
+
+The floors are calibrated against measured runs rather than chosen up front — see `DEFAULT_FLOORS` in `packages/harness/src/memory/bench.ts` for the observed spread and the date it was taken. Re-measure when the extraction prompt, the judge prompt, or `MEMORY_BENCH_MODEL` changes; all three move the numbers. The default model is the upstream that the `claude-sonnet-4` route alias resolves to, because the script calls the API directly and cannot resolve Felix route names.
+
 ## spec.session
 
 ```yaml

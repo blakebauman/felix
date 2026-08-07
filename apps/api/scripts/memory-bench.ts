@@ -12,8 +12,14 @@
  * production; what the benchmark measures is the PROMPT, which is the part
  * that actually regresses. Run it before and after a prompt edit and compare.
  *
+ * The default model is the one `claude-sonnet-4` resolves to in
+ * `DEFAULT_MODEL_ROUTES` — the script talks to the API directly, so it has to
+ * name a real upstream model rather than a Felix route alias. Overriding it
+ * with a newer model is possible but not free: models after the 4.6 generation
+ * reject `temperature`, and a gating benchmark wants a deterministic sample.
+ *
  *   ANTHROPIC_API_KEY=... pnpm bench:memory
- *   MEMORY_BENCH_MODEL=claude-sonnet-4 pnpm bench:memory
+ *   MEMORY_BENCH_MODEL=claude-sonnet-4-6 pnpm bench:memory
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -35,7 +41,7 @@ import { EXTRACTION_PROMPT, parseFacts, renderExchange } from '@felix/harness/me
 import type { ChatMessage } from '@felix/harness/patterns/types';
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = process.env.MEMORY_BENCH_MODEL ?? 'claude-sonnet-4';
+const MODEL = process.env.MEMORY_BENCH_MODEL ?? 'claude-sonnet-4-6';
 const MAX_FACTS = Number(process.env.MEMORY_BENCH_MAX_FACTS ?? 5);
 const FIXTURE_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
