@@ -104,7 +104,7 @@ Enforced scopes:
 
 ### Self-authenticating mounts
 
-`selfAuthenticatingMounts` (contributed by plugins and threaded into `authMiddleware` by `createApp`; currently `['/acp']` from the commerce plugin) tells `authMiddleware` to skip JWT bearer parsing for those path prefixes — the mount enforces its own credential inside the router (constant-time `ACP_API_KEY` compare for ACP). `/internal/*` and `/entities/:type/push` use the `x-consumer-secret` header against `CONSUMER_SHARED_SECRET`; Stripe webhooks verify the Stripe signature. All shared-secret compares go through `src/security/constant-time.ts`.
+`selfAuthenticatingMounts` (contributed by plugins and threaded into `authMiddleware` by `createApp`; currently `['/acp']` from the commerce plugin) tells `authMiddleware` to skip JWT bearer parsing for those path prefixes — the mount enforces its own credential inside the router (constant-time `ACP_API_KEY` compare for ACP). `/internal/*` and `/entities/:type/push` use the `x-consumer-token` / `x-consumer-secret` header against `CONSUMER_SHARED_SECRET`; Stripe webhooks verify the Stripe signature. All shared-secret compares go through `src/security/constant-time.ts`.
 
 ## RequestContext
 

@@ -40,6 +40,7 @@ import { z } from 'zod';
 import { recordEvent } from '../audit/store';
 import { getContext } from '../context';
 import type { Env } from '../env';
+import { DEFAULT_TOKEN_TTL_MS, mintQueueToken } from '../security/queue-token';
 import { toolErrorOutput } from './errors';
 import type { ToolExecutor } from './executor';
 import {
@@ -73,6 +74,18 @@ export interface QueueJobMessage {
   manifest_id: string;
   arguments: Record<string, unknown>;
   deadline_ms?: number;
+  /**
+   * Capability token authorizing the write-back for THIS dispatch only.
+   *
+   * Present it as `x-consumer-token` on `POST /internal/sessions/:id/events`
+   * instead of the fleet-global shared secret. Scoped to this tenant, thread,
+   * and tool call, and expiring — so it authorizes one already-known dispatch
+   * and nothing else, and the long-lived secret never leaves the Worker.
+   *
+   * Absent when `CONSUMER_SHARED_SECRET` isn't configured, in which case the
+   * write-back channel isn't available at all.
+   */
+  callback_token?: string;
 }
 
 export class QueueExecutor implements ToolExecutor {
@@ -117,6 +130,18 @@ export class QueueExecutor implements ToolExecutor {
       );
     }
 
+    // Mint a capability scoped to this one dispatch. Its lifetime tracks the
+    // job's own deadline when there is one — a token outliving the work it
+    // authorizes is a standing credential nobody asked for.
+    const signingSecret = requestCtx?.env.CONSUMER_SHARED_SECRET;
+    const callbackToken = signingSecret
+      ? await mintQueueToken(
+          signingSecret,
+          { t: tenantId, th: threadId, c: toolCallId },
+          this.opts.deadlineMs ?? DEFAULT_TOKEN_TTL_MS,
+        )
+      : undefined;
+
     const message: QueueJobMessage = {
       job_id: jobId,
       thread_id: threadId,
@@ -126,6 +151,7 @@ export class QueueExecutor implements ToolExecutor {
       manifest_id: this.opts.manifestId,
       arguments: args,
       ...(this.opts.deadlineMs ? { deadline_ms: Date.now() + this.opts.deadlineMs } : {}),
+      ...(callbackToken ? { callback_token: callbackToken } : {}),
     };
 
     try {

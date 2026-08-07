@@ -24,13 +24,27 @@ interface QueueJobMessage {
   manifest_id: string;
   arguments: Record<string, unknown>;
   deadline_ms?: number;
+  /**
+   * Capability token authorizing the write-back for THIS job only — scoped to
+   * its tenant, thread, and tool call, and expiring. Present it as
+   * `x-consumer-token`; it is the intended credential, and using it means this
+   * consumer never needs to hold the fleet-global secret at all.
+   */
+  callback_token?: string;
 }
 
 interface Env {
   /** Service binding pointing at the Felix Worker. */
   FELIX: Fetcher;
-  /** Shared secret on the internal write-back route — match it in Felix. */
-  CONSUMER_SHARED_SECRET: string;
+  /**
+   * Fleet-global shared secret for the internal write-back route.
+   *
+   * Only needed for jobs enqueued before capability tokens existed, which
+   * carry no `callback_token`. A deployment with no such jobs in flight can
+   * leave this unset — that is the point of the token, since a consumer that
+   * never holds this value cannot leak it.
+   */
+  CONSUMER_SHARED_SECRET?: string;
 }
 
 export default {
@@ -77,15 +91,33 @@ async function doWork(job: QueueJobMessage): Promise<string> {
 
 async function writeResult(env: Env, job: QueueJobMessage, content: string): Promise<void> {
   // The Felix-side route this hits is a small internal endpoint that
-  // verifies the shared secret and forwards to the ConversationDO. The
-  // exact path is convention — pick whatever the Felix deployment
-  // exposes for consumer write-backs.
+  // authenticates the caller and forwards to the ConversationDO. The exact
+  // path is convention — pick whatever the Felix deployment exposes for
+  // consumer write-backs.
+  //
+  // Prefer the per-job capability token: it authorizes exactly this tool call
+  // on this thread and expires, so a leak from this consumer is worth one
+  // already-known dispatch rather than the whole fleet's credential. The
+  // shared secret is the fallback for jobs enqueued before tokens existed.
+  // Note that when a token is sent it is authoritative — Felix will NOT fall
+  // back to the secret if the token fails to verify.
+  const auth: Record<string, string> = job.callback_token
+    ? { 'x-consumer-token': job.callback_token }
+    : env.CONSUMER_SHARED_SECRET
+      ? { 'x-consumer-secret': env.CONSUMER_SHARED_SECRET }
+      : {};
+  if (Object.keys(auth).length === 0) {
+    throw new Error(
+      `job ${job.job_id} has no callback_token and CONSUMER_SHARED_SECRET is unset — cannot authenticate the write-back`,
+    );
+  }
+
   const resp = await env.FELIX.fetch(
     new Request(`https://felix/internal/sessions/${encodeURIComponent(job.thread_id)}/events`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-consumer-secret': env.CONSUMER_SHARED_SECRET,
+        ...auth,
       },
       body: JSON.stringify({
         events: [

@@ -6,7 +6,7 @@ description: "All Felix public HTTP endpoints — /chat, /v1, /a2a, /mcp, /healt
 
 The public HTTP surface. Every route runs through `authMiddleware` (verifies JWT, populates `RequestContext`) and `rateLimitMiddleware` (per-tenant sliding window of 100 req/60s). `/health`, `/.well-known/*`, `/docs`, `/openapi.json` are exempt from rate limiting.
 
-A few mounts are **self-authenticating** — the middleware still runs, but JWT verification is skipped in favor of the mount's own scheme: `/acp/*` (constant-time `ACP_API_KEY` bearer), `/internal/*` and `/entities/:type/push` (`x-consumer-secret` shared secret), and the Stripe webhooks (`/commerce/stripe/webhook`, `/b2b/billing/webhook` — Stripe signature verification).
+A few mounts are **self-authenticating** — the middleware still runs, but JWT verification is skipped in favor of the mount's own scheme: `/acp/*` (constant-time `ACP_API_KEY` bearer), `/internal/*` and `/entities/:type/push` (`x-consumer-token` (per-dispatch capability) or `x-consumer-secret` shared secret), and the Stripe webhooks (`/commerce/stripe/webhook`, `/b2b/billing/webhook` — Stripe signature verification).
 
 For the management surfaces (audit, plans, jobs, approvals, manifests, eval), see [management-api.md](management-api.md). For the commerce surfaces (`/acp`, `/shop`, `/widget`, `/structured`, `/brands`, `/b2b`, `/entities`, `/geo`, consent/attribution), see [the commerce docs](../../../commerce/docs/index.md).
 
