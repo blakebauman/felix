@@ -10,6 +10,7 @@
 import { commercePlugin } from '@felix/commerce';
 import { getContext } from '@felix/harness/context';
 import type { Env } from '@felix/harness/env';
+import { buildSchedulingTools } from '@felix/harness/jobs/agent-tools';
 import { resolveManifest } from '@felix/harness/manifests/resolver';
 import type { Manifest } from '@felix/harness/manifests/schema';
 import type { FelixPlugin } from '@felix/harness/plugins/types';
@@ -68,6 +69,14 @@ export function compose(_env: Env): ToolProvider {
       },
     }),
   );
+
+  // Agent-facing scheduling. Opt-in per manifest via `spec.tools` rather than
+  // auto-injected: letting an agent create recurring unattended work is a
+  // capability an operator should grant deliberately, not one that appears
+  // because a manifest happened to enable something else.
+  for (const tool of buildSchedulingTools()) {
+    provider.register(tool.name, () => tool);
+  }
 
   // Skill activation tools. The overlay enforces a strict "restrict only"
   // semantic — a tenant may disable a skill the manifest declares, but it

@@ -83,7 +83,24 @@ Parts are joined with `"\n\n---\n\n"` in the order **soul → base → inline** 
 tools: []                    # default
 ```
 
-List of tool names registered with the `ToolProvider`. The core built-ins are `calculator`, `list_skills`, `activate_skill`, `deactivate_skill`, plus the commerce suite registered in `apps/api/src/composition.ts`: catalog/cart/order tools (`catalog_search`, `catalog_get`, `catalog_categories`, `cart_view`, `cart_add`, `cart_update`, `cart_remove`, `order_status`), `commerce_checkout`, `commerce_record_consent`, personalization (`recommend_products`, `identify_customer`), visual search (`search_by_image`), and the B2B suite (`account_get`, `buyer_get`, `purchase_authority_check`, `price_lookup`, `create_quote`, `quote_get`, `send_quote`, `accept_quote`, `convert_quote`, `invoice_get`, `pay_invoice`) — see [Agentic commerce](../../../commerce/docs/index.md). Skills can fold additional tool names into this list at build time.
+List of tool names registered with the `ToolProvider`. The core built-ins are `calculator`, `list_skills`, `activate_skill`, `deactivate_skill`, the scheduling set (`schedule_task`, `list_scheduled_tasks`, `scheduled_task_runs`, `cancel_scheduled_task` — see below), plus the commerce suite registered in `apps/api/src/composition.ts`: catalog/cart/order tools (`catalog_search`, `catalog_get`, `catalog_categories`, `cart_view`, `cart_add`, `cart_update`, `cart_remove`, `order_status`), `commerce_checkout`, `commerce_record_consent`, personalization (`recommend_products`, `identify_customer`), visual search (`search_by_image`), and the B2B suite (`account_get`, `buyer_get`, `purchase_authority_check`, `price_lookup`, `create_quote`, `quote_get`, `send_quote`, `accept_quote`, `convert_quote`, `invoice_get`, `pay_invoice`) — see [Agentic commerce](../../../commerce/docs/index.md). Skills can fold additional tool names into this list at build time.
+
+### Agent-facing scheduling
+
+Adding `schedule_task`, `list_scheduled_tasks`, `scheduled_task_runs`, and `cancel_scheduled_task` to `tools` lets an agent set up its own recurring work and read back how prior runs went. They are opt-in per manifest rather than auto-injected: letting an agent create recurring *unattended* work is a capability an operator should grant deliberately.
+
+Each firing runs in a **fresh conversation** with no memory of previous runs, so the stored `input` has to be self-contained. That is also why `scheduled_task_runs` exists — reading the fire log is the only way a run can learn that the task has been failing for a week. The log is read from the `job_run` audit rows the sweep already writes, so it inherits audit retention rather than needing its own.
+
+Four guards, because scheduling is a privilege:
+
+- **The manifest is pinned to the caller's own.** An agent can schedule *itself* and nothing else. Letting it name a manifest would be privilege escalation with extra steps — pick the one with the widest tool set and have the sweep run it unattended.
+- **A frequency floor of 15 minutes**, measured across the schedule's whole cadence rather than its next two firings. An uneven expression can show a wide first gap and a one-minute one right after: `0,58,59 * * * *` looks like 58 minutes if you sample the next pair, and actually fires three times an hour, a minute apart.
+- **A cap of 25 tasks per tenant**, so a loop calling this can't fill the table. Replacing an existing task still works at the cap. The check is a read-then-write, so concurrent calls can land a tenant marginally over — it's a resource guard, not a boundary.
+- **Per-manifest ownership.** Listing, history, cancellation, and replacement are scoped to the caller's own manifest. Without that, one agent could enumerate another's schedule, cancel it, or take a job over by name collision — and since replacement reassigns `manifest_id`, a takeover would silently redirect that job's unattended runs to a different agent's tool set.
+
+Creating, replacing, and cancelling emit a `job_scheduled` audit event; until a task first fires there would otherwise be no trace of it at all.
+
+Scheduled runs are [unattended](../internals/governance.md#approvals), so approval-gated tools fail closed inside them regardless of what gets scheduled. See [spec.memory](#specmemory) for how a task can leave itself notes across firings.
 
 ## spec.skills
 

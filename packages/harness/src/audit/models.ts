@@ -30,6 +30,7 @@ export const AuditEventType = z
     'guardrail_block',
     'plan_step',
     'job_run',
+    'job_scheduled',
     'approval_request',
     'approval_decision',
     'approval_consumed',

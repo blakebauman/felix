@@ -38,18 +38,36 @@ function rowToJob(row: JobRow): JobRecord {
   });
 }
 
-export async function listJobs(env: Env, tenantId: string): Promise<JobRecord[]> {
+/**
+ * Jobs for a tenant. `manifestId` narrows to one manifest's own jobs — the
+ * agent-facing tools pass it so one agent cannot enumerate another's schedule;
+ * the operator REST surface omits it and sees the whole tenant.
+ */
+export async function listJobs(
+  env: Env,
+  tenantId: string,
+  manifestId?: string,
+): Promise<JobRecord[]> {
   const sql = getDb(env);
   const rows = await sql<JobRow[]>`
-    SELECT * FROM jobs WHERE tenant_id = ${tenantId} ORDER BY name
+    SELECT * FROM jobs WHERE tenant_id = ${tenantId}
+      ${manifestId !== undefined ? sql`AND manifest_id = ${manifestId}` : sql``}
+      ORDER BY name
   `;
   return rows.map(rowToJob);
 }
 
-export async function getJob(env: Env, tenantId: string, name: string): Promise<JobRecord | null> {
+export async function getJob(
+  env: Env,
+  tenantId: string,
+  name: string,
+  manifestId?: string,
+): Promise<JobRecord | null> {
   const sql = getDb(env);
   const rows = await sql<JobRow[]>`
-    SELECT * FROM jobs WHERE tenant_id = ${tenantId} AND name = ${name} LIMIT 1
+    SELECT * FROM jobs WHERE tenant_id = ${tenantId} AND name = ${name}
+      ${manifestId !== undefined ? sql`AND manifest_id = ${manifestId}` : sql``}
+      LIMIT 1
   `;
   return rows[0] ? rowToJob(rows[0]) : null;
 }
@@ -143,4 +161,81 @@ export async function claimJobSlot(
       RETURNING name
   `;
   return rows.length > 0;
+}
+
+export interface JobRunRecord {
+  fired_at: number;
+  status: string;
+  trigger: string;
+  duration_ms: number;
+  error: string;
+  output_preview: string;
+}
+
+/**
+ * Fire history for one job.
+ *
+ * Read from the `job_run` audit rows the sweep already writes rather than a
+ * dedicated table: the trail exists, carries everything a caller wants
+ * (outcome, duration, thread, error, output preview), and is already bounded
+ * by the audit retention sweep. A second table would duplicate all of that and
+ * add a retention policy to keep in sync.
+ *
+ * Each fire is one row, so an agent reading this back can see whether its
+ * previous runs actually worked — the thing a fresh-thread run cannot learn
+ * any other way.
+ */
+export async function listJobRuns(
+  env: Env,
+  tenantId: string,
+  name: string,
+  limit = 20,
+  manifestId?: string,
+): Promise<JobRunRecord[]> {
+  const sql = getDb(env);
+  const rows = await sql<{ ts: number; status: string; payload_json: Record<string, unknown> }[]>`
+    SELECT ts, status, payload_json
+      FROM audit_events
+      WHERE tenant_id = ${tenantId}
+        AND event_type = 'job_run'
+        AND payload_json->>'job' = ${name}
+        ${manifestId !== undefined ? sql`AND manifest_id = ${manifestId}` : sql``}
+      ORDER BY ts DESC
+      LIMIT ${Math.min(Math.max(1, limit), 100)}
+  `;
+  return rows.map((row) => {
+    const payload = row.payload_json ?? {};
+    return {
+      fired_at: row.ts,
+      status: row.status,
+      trigger: String(payload.trigger ?? ''),
+      duration_ms: Number(payload.duration_ms ?? 0),
+      error: String(payload.error ?? ''),
+      output_preview: String(payload.output_preview ?? ''),
+    };
+  });
+}
+
+/** How many jobs a tenant already has — the cap the agent-facing tool enforces. */
+export async function countJobs(env: Env, tenantId: string): Promise<number> {
+  const sql = getDb(env);
+  const rows = await sql<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count FROM jobs WHERE tenant_id = ${tenantId}
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+/** Remove a job. Returns false when the tenant has no job by that name. */
+export async function deleteJob(
+  env: Env,
+  tenantId: string,
+  name: string,
+  manifestId?: string,
+): Promise<boolean> {
+  const sql = getDb(env);
+  const res = await sql`
+    DELETE FROM jobs WHERE tenant_id = ${tenantId} AND name = ${name}
+      ${manifestId !== undefined ? sql`AND manifest_id = ${manifestId}` : sql``}
+  `;
+  return res.count > 0;
 }

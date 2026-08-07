@@ -101,6 +101,7 @@ Audit events are persisted to Postgres and queryable through `GET /audit?tenant=
 | `queue_complete` | queue consumer (external) | `ok`, `error` | `job_id`, `tool_call_id`, `duration_ms?` |
 | `queue_expired` | orphan-cleanup cron | `expired` | `job_id`, `tool_call_id`, `thread_id`, `age_ms` |
 | `job_run` | cron sweep / `POST /jobs/run/:name` | `ok`, `error`, `skipped`, `scheduled`, `manual` | `job`, `trigger`, `schedule`, `duration_ms`, `thread_id`, `unattended`, plus `error` or `output_preview`. `scheduled` means the sweep recorded a due job that isn't configured to execute; `skipped` means execution was attempted but the job lacked an `enabled` flag, a manifest, or a `payload.input`. |
+| `job_scheduled` | agent scheduling tools (`jobs/agent-tools.ts`) | `created`, `replaced`, `cancelled` | `job`, `schedule`, `interval_minutes`, `by`. Creating recurring unattended work is the privileged act; without this row there is no trace of it until the task first fires. |
 | `manifest_created` / `manifest_activated` / `manifest_deleted` | `/manifests` REST | varies | `manifest_id`, `version` |
 | `manifest_canary_set` / `manifest_canary_cleared` | `/manifests/:name/canary` | `ok` | `manifest_id`, `stable_version`, `canary_version`, `canary_weight` |
 | `auto_rollback` | `jobs/anomaly-detector.ts` | `ok` | `manifest_id`, `canary_version`, `error_rate`, `baseline`, `breakdown` |
